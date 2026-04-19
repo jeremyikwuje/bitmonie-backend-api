@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: bitmonie-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bitmonie
+      POSTGRES_PASSWORD: bitmonie
+      POSTGRES_DB: bitmonie_db
+    ports:
+      - "55432:5432"
+    volumes:
+      - bitmonie_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bitmonie -d bitmonie_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: bitmonie-redis
+    restart: unless-stopped
+    ports:
+      - "56379:6379"
+    volumes:
+      - bitmonie_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  bitmonie_postgres_data:
+  bitmonie_redis_data:

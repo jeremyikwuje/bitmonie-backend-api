@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "generateOptions": {
+    "module": {
+      "path": "modules"
+    },
+    "controller": {
+      "path": "modules",
+      "spec": false
+    },
+    "service": {
+      "path": "modules",
+      "spec": false
+    },
+    "repository": {
+      "path": "modules",
+      "spec": false
+    },
+    "provider": {
+      "path": "providers",
+      "spec": false,
+      "flat": true
+    }
+  },
+  "compilerOptions": {
+    "deleteOutDir": true,
+    "tsConfigPath": "tsconfig.build.json"
+  }
+}

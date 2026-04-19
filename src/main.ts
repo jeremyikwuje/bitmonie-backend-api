@@ -1,0 +1,53 @@
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe, Logger } from '@nestjs/common';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import { AppModule } from './app.module';
+import { GlobalExceptionFilter } from '@/common/filters/global-exception.filter';
+import type { AppConfig } from '@/config/app.config';
+
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true,
+    bufferLogs: true,
+  });
+
+  const config = app.get(ConfigService);
+  const app_config = config.get<AppConfig>('app');
+  const port = app_config?.port ?? 3000;
+  const allowed_origin = app_config?.allowed_origin ?? '*';
+
+  app.setGlobalPrefix('v1');
+
+  app.use(helmet());
+  app.use(cookieParser());
+  app.enableCors({ credentials: true, origin: allowed_origin });
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: false },
+    }),
+  );
+
+  app.useGlobalFilters(new GlobalExceptionFilter());
+
+  const swagger_config = new DocumentBuilder()
+    .setTitle('Bitmonie API')
+    .setDescription('Crypto-backed instant Naira credit (Lightning MVP)')
+    .setVersion('1.0')
+    .addCookieAuth('session')
+    .build();
+  SwaggerModule.setup('v1/docs', app, SwaggerModule.createDocument(app, swagger_config));
+
+  await app.listen(port);
+  Logger.log(`Bitmonie API listening on http://localhost:${port}/v1`, 'Bootstrap');
+  Logger.log(`Swagger UI available at http://localhost:${port}/v1/docs`, 'Bootstrap');
+}
+
+void bootstrap();

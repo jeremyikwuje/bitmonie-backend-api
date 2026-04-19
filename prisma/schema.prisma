@@ -1,0 +1,550 @@
+// prisma/schema.prisma — Bitmonie v1.0 (Lightning MVP)
+// Source of truth for all DB models. Mirrors docs/tdd.md Section 3.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────
+
+model User {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email           String        @unique @db.VarChar(255)
+  email_verified  Boolean       @default(false)
+  password_hash   String        @db.VarChar(512)
+  totp_secret     String?       @db.VarChar(512)
+  totp_enabled    Boolean       @default(false)
+  created_at      DateTime      @default(now()) @db.Timestamptz
+  updated_at      DateTime      @updatedAt @db.Timestamptz
+
+  kyc                  Kyc?
+  disbursement_accounts DisbursementAccount[]
+  loans                Loan[]
+  payment_requests PaymentRequest[]
+  inflows          Inflow[]
+  disbursements    Disbursement[]
+  audit_logs       AuditLog[]
+  sessions         Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String    @db.Uuid
+  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  token_hash  String    @unique @db.VarChar(512)
+  expires_at  DateTime  @db.Timestamptz
+  ip_address  String?   @db.VarChar(45)
+  user_agent  String?   @db.VarChar(512)
+  created_at  DateTime  @default(now()) @db.Timestamptz
+
+  @@map("sessions")
+}
+
+// ─────────────────────────────────────────
+// KYC
+// ─────────────────────────────────────────
+
+enum KycStatus {
+  PENDING
+  VERIFIED
+  FAILED
+  MANUAL_REVIEW
+
+  @@map("kyc_status")
+}
+
+enum KycMethod {
+  BVN
+  NIN
+  PASSPORT
+
+  @@map("kyc_method")
+}
+
+model Kyc {
+  id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String      @unique @db.Uuid
+  user                User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  method              KycMethod
+  status              KycStatus   @default(PENDING)
+
+  bvn_hash            String?     @db.VarChar(512)
+  encrypted_bvn       String?     @db.VarChar(512)
+
+  legal_name          String      @db.VarChar(255)
+  verified_at         DateTime?   @db.Timestamptz
+  failure_reason      String?     @db.VarChar(500)
+  provider_reference  String?     @db.VarChar(255)
+
+  created_at          DateTime    @default(now()) @db.Timestamptz
+  updated_at          DateTime    @updatedAt @db.Timestamptz
+
+  @@map("kycs")
+}
+
+// ─────────────────────────────────────────
+// DISBURSEMENT ACCOUNTS — saved payout destinations (rail-agnostic)
+// Supersedes BankAccount. `kind` discriminates BANK / MOBILE_MONEY / CRYPTO_ADDRESS.
+// Generic destination columns (provider_name, provider_code, account_unique, network)
+// mirror the Disbursement snapshot shape so snapshots can copy fields directly.
+// ─────────────────────────────────────────
+
+enum DisbursementAccountKind {
+  BANK
+  MOBILE_MONEY
+  CRYPTO_ADDRESS
+
+  @@map("disbursement_account_kind")
+}
+
+enum DisbursementAccountStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+
+  @@map("disbursement_account_status")
+}
+
+model DisbursementAccount {
+  id                  String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String                    @db.Uuid
+  user                User                      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  kind                DisbursementAccountKind
+  currency            String                    @db.VarChar(10)
+
+  // Generic destination — mirrors Disbursement snapshot shape
+  provider_name       String                    @db.VarChar(100)   // 'GTBank' | 'MTN Nigeria' | 'USDT'
+  provider_code       String                    @db.VarChar(50)    // '058' | 'MTN' | 'USDT'
+  account_unique      String                    @db.VarChar(512)   // account_number | phone | address
+  account_unique_tag  String?                   @db.VarChar(100)   // memo / destination tag (crypto)
+  network             PaymentNetwork?                               // crypto-only; NULL for BANK/MOBILE_MONEY
+
+  label               String?                   @db.VarChar(100)
+  account_holder_name String?                   @db.VarChar(255)   // required for BANK + MOBILE_MONEY
+  name_match_score    Float?
+
+  is_default          Boolean                   @default(false)
+  status              DisbursementAccountStatus @default(PENDING_VERIFICATION)
+  verified_at         DateTime?                 @db.Timestamptz
+
+  created_at          DateTime                  @default(now()) @db.Timestamptz
+  updated_at          DateTime                  @updatedAt @db.Timestamptz
+
+  loans               Loan[]
+
+  // Partial unique indexes added in migration raw SQL (NULLS NOT DISTINCT + WHERE is_default):
+  //   (user_id, kind, provider_code, network, account_unique) — dedupe destinations
+  //   (user_id, kind) WHERE is_default = true — one default per kind
+  @@index([user_id, kind, status])
+  @@map("disbursement_accounts")
+}
+
+// ─────────────────────────────────────────
+// PAYMENT REQUESTS — instructions given to the customer
+// ─────────────────────────────────────────
+
+enum PaymentRequestType {
+  COLLATERAL
+  OFFRAMP_DEPOSIT
+
+  @@map("payment_request_type")
+}
+
+enum PaymentNetwork {
+  LIGHTNING
+  BTC_ONCHAIN
+  TRC20
+  ERC20
+
+  @@map("payment_network")
+}
+
+enum PaymentRequestStatus {
+  PENDING
+  PAID
+  EXPIRED
+  CANCELLED
+
+  @@map("payment_request_status")
+}
+
+model PaymentRequest {
+  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String               @db.Uuid
+
+  request_type        PaymentRequestType
+
+  // Polymorphic source: source_type='LOAN' → loans.id | 'OFFRAMP' → ramp_orders.id (v2)
+  source_type         String               @db.VarChar(50)
+  source_id           String               @db.Uuid
+
+  asset               String               @db.VarChar(20)
+  network             PaymentNetwork
+  expected_amount     Decimal              @db.Decimal(20, 8)
+  currency            String               @db.VarChar(10)
+
+  receiving_address   String               @db.VarChar(512)
+  payment_request     String?
+  provider_reference  String?              @db.VarChar(512)
+
+  status              PaymentRequestStatus @default(PENDING)
+  expires_at          DateTime             @db.Timestamptz
+  paid_at             DateTime?            @db.Timestamptz
+
+  inflow_id           String?              @unique @db.Uuid
+
+  created_at          DateTime             @default(now()) @db.Timestamptz
+  updated_at          DateTime             @updatedAt @db.Timestamptz
+
+  user                User                 @relation(fields: [user_id], references: [id])
+  inflow              Inflow?              @relation(fields: [inflow_id], references: [id])
+
+  @@index([source_type, source_id])
+  @@index([receiving_address])
+  @@index([status, expires_at])
+  @@index([user_id, created_at(sort: Desc)])
+  @@map("payment_requests")
+}
+
+// ─────────────────────────────────────────
+// INFLOWS — every incoming payment received
+// ─────────────────────────────────────────
+
+model Inflow {
+  id                     String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                String?        @db.Uuid
+
+  asset                  String         @db.VarChar(20)
+  amount                 Decimal        @db.Decimal(20, 8)
+  currency               String         @db.VarChar(10)
+  network                PaymentNetwork
+
+  receiving_address      String         @db.VarChar(512)
+  sender_address         String?        @db.VarChar(512)
+
+  // @unique = primary defence against double-processing (duplicate tx hash / payment hash)
+  provider_reference     String         @unique @db.VarChar(512)
+
+  confirmations_required Int?
+  confirmations_received Int            @default(0)
+  block_number           BigInt?
+  block_timestamp        DateTime?      @db.Timestamptz
+
+  is_matched             Boolean        @default(false)
+  matched_at             DateTime?      @db.Timestamptz
+
+  source_type            String?        @db.VarChar(50)
+  source_id              String?        @db.Uuid
+
+  provider_response      Json?
+
+  created_at             DateTime       @default(now()) @db.Timestamptz
+  updated_at             DateTime       @updatedAt @db.Timestamptz
+
+  user                   User?          @relation(fields: [user_id], references: [id])
+  payment_request        PaymentRequest?
+
+  @@index([receiving_address])
+  @@index([provider_reference])
+  @@index([is_matched, created_at])
+  @@index([source_type, source_id])
+  @@index([user_id, created_at(sort: Desc)])
+  @@map("inflows")
+}
+
+// ─────────────────────────────────────────
+// DISBURSEMENTS + OUTFLOWS — two-layer outflow system
+// ─────────────────────────────────────────
+
+enum DisbursementType {
+  LOAN
+  OFFRAMP
+
+  @@map("disbursement_type")
+}
+
+enum DisbursementRail {
+  BANK_TRANSFER
+  MOBILE_MONEY
+  LIGHTNING
+  ONCHAIN
+
+  @@map("disbursement_rail")
+}
+
+enum DisbursementStatus {
+  PENDING
+  PROCESSING
+  SUCCESSFUL
+  FAILED
+
+  @@map("disbursement_status")
+}
+
+model Disbursement {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String              @db.Uuid
+
+  disbursement_type   DisbursementType
+  disbursement_rail   DisbursementRail
+
+  // Polymorphic source — values reuse DisbursementType (LOAN_PAYOUT → loans.id, OFFRAMP → ramp_orders.id v2)
+  source_type         DisbursementType
+  source_id           String              @db.Uuid
+
+  amount              Decimal             @db.Decimal(20, 8)
+  currency            String              @db.VarChar(10)
+
+  // Destination snapshot — provider-agnostic, self-contained, never JOIN to bank_accounts later
+  provider_name       String              @db.VarChar(255)
+  account_unique      String              @db.VarChar(512)
+  account_name        String?             @db.VarChar(255)
+
+  status              DisbursementStatus  @default(PENDING)
+  failure_reason      String?             @db.VarChar(500)
+
+  created_at          DateTime            @default(now()) @db.Timestamptz
+  updated_at          DateTime            @updatedAt @db.Timestamptz
+
+  user                User                @relation(fields: [user_id], references: [id])
+  outflows            Outflow[]
+  loan                Loan?
+
+  @@index([user_id, created_at(sort: Desc)])
+  @@index([source_type, source_id])
+  @@index([status, created_at])
+  @@map("disbursements")
+}
+
+enum OutflowStatus {
+  PENDING
+  PROCESSING
+  SUCCESSFUL
+  FAILED
+
+  @@map("outflow_status")
+}
+
+model Outflow {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  disbursement_id     String        @db.Uuid
+  user_id             String        @db.Uuid
+
+  // Increment per retry. A failed outflow is NEVER updated — new row with attempt_number + 1.
+  attempt_number      Int           @default(1)
+
+  // Provider name as DATA (e.g. 'palmpay' | 'flutterwave' | 'blink') — never in column names.
+  provider String        @db.VarChar(100)
+
+  // Idempotency key — format: "{disbursement_id}:outflow:{attempt_number}" — DB-level dedup
+  provider_reference  String        @unique @db.VarChar(512)
+
+  provider_tx_id     String?       @db.VarChar(512)
+  provider_response   Json?
+
+  status              OutflowStatus @default(PENDING)
+  failure_reason      String?       @db.VarChar(500)
+  failure_code        String?       @db.VarChar(100)
+
+  initiated_at        DateTime?     @db.Timestamptz
+  confirmed_at        DateTime?     @db.Timestamptz
+
+  created_at          DateTime      @default(now()) @db.Timestamptz
+  updated_at          DateTime      @updatedAt @db.Timestamptz
+
+  disbursement        Disbursement  @relation(fields: [disbursement_id], references: [id])
+
+  @@index([disbursement_id, attempt_number])
+  @@index([provider, status])
+  @@index([status, created_at])
+  @@map("outflows")
+}
+
+// ─────────────────────────────────────────
+// PRICE FEEDS
+// ─────────────────────────────────────────
+
+enum AssetPair {
+  SAT_NGN
+  BTC_NGN
+  USDT_NGN
+  USDC_NGN
+}
+
+model PriceFeed {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pair        AssetPair
+  rate_buy    Decimal   @db.Decimal(20, 6)
+  rate_sell   Decimal   @db.Decimal(20, 6)
+  source      String    @db.VarChar(50)
+  fetched_at  DateTime  @db.Timestamptz
+  created_at  DateTime  @default(now()) @db.Timestamptz
+
+  @@index([pair, fetched_at(sort: Desc)])
+  @@map("price_feeds")
+}
+
+// ─────────────────────────────────────────
+// LOANS
+// ─────────────────────────────────────────
+
+enum LoanStatus {
+  PENDING_COLLATERAL
+  ACTIVE
+  REPAID
+  LIQUIDATED
+  EXPIRED
+  CANCELLED
+}
+
+enum CollateralAsset {
+  SAT
+}
+
+enum RepaymentMethod {
+  NGN
+  SAT
+}
+
+model Loan {
+  id                          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                     String           @db.Uuid
+  user                        User             @relation(fields: [user_id], references: [id])
+  disbursement_account_id     String               @db.Uuid
+  disbursement_account        DisbursementAccount  @relation(fields: [disbursement_account_id], references: [id])
+
+  collateral_asset            CollateralAsset  @default(SAT)
+  collateral_amount_sat       BigInt
+  ltv_percent                 Decimal          @db.Decimal(5, 2)
+
+  principal_ngn               Decimal          @db.Decimal(20, 2)
+  origination_fee_ngn         Decimal          @db.Decimal(20, 2)
+  daily_fee_ngn               Decimal          @db.Decimal(20, 2)
+  duration_days               Int
+  total_fees_ngn              Decimal          @db.Decimal(20, 2)
+  total_amount_ngn            Decimal          @db.Decimal(20, 2)
+
+  sat_ngn_rate_at_creation    Decimal          @db.Decimal(20, 6)
+  liquidation_rate_ngn        Decimal          @db.Decimal(20, 6)
+  alert_rate_ngn              Decimal          @db.Decimal(20, 6)
+
+  status                      LoanStatus       @default(PENDING_COLLATERAL)
+
+  // Denormalised convenience — set when matched Inflow confirmed. Used by liquidation monitor.
+  collateral_received_at      DateTime?        @db.Timestamptz
+
+  disbursement_id             String?          @unique @db.Uuid
+  disbursement                Disbursement?    @relation(fields: [disbursement_id], references: [id])
+
+  repayment_method            RepaymentMethod?
+  repayment_reference         String?          @db.VarChar(512)
+  repaid_at                   DateTime?        @db.Timestamptz
+
+  // Where to send collateral back after repayment / liquidation surplus
+  collateral_release_address  String?          @db.VarChar(512)
+  collateral_released_at      DateTime?        @db.Timestamptz
+  collateral_release_reference String?         @db.VarChar(512)
+
+  liquidated_at               DateTime?        @db.Timestamptz
+  liquidation_reference       String?          @db.VarChar(512)
+  liquidation_rate_actual     Decimal?         @db.Decimal(20, 6)
+  surplus_released_sat        BigInt?
+
+  due_at                      DateTime         @db.Timestamptz
+
+  created_at                  DateTime         @default(now()) @db.Timestamptz
+  updated_at                  DateTime         @updatedAt @db.Timestamptz
+
+  status_logs                 LoanStatusLog[]
+
+  @@index([user_id, created_at(sort: Desc)])
+  @@index([status])
+  @@map("loans")
+}
+
+// ─────────────────────────────────────────
+// LOAN STATUS LOGS — append-only, written in same tx as every status change
+// ─────────────────────────────────────────
+
+enum StatusTrigger {
+  CUSTOMER
+  SYSTEM
+  COLLATERAL_WEBHOOK
+  DISBURSEMENT_WEBHOOK
+
+  @@map("status_trigger")
+}
+
+model LoanStatusLog {
+  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loan_id          String        @db.Uuid
+  user_id          String        @db.Uuid
+
+  from_status      LoanStatus?
+  to_status        LoanStatus
+
+  triggered_by     StatusTrigger
+  triggered_by_id  String?       @db.VarChar(255)
+  reason_code      String        @db.VarChar(100)
+  reason_detail    String?       @db.VarChar(500)
+  metadata         Json?
+
+  created_at       DateTime      @default(now()) @db.Timestamptz
+
+  loan             Loan          @relation(fields: [loan_id], references: [id])
+
+  @@index([loan_id, created_at])
+  @@index([user_id, created_at])
+  @@map("loan_status_logs")
+}
+
+// ─────────────────────────────────────────
+// AUDIT LOGS — INSERT ONLY
+// ─────────────────────────────────────────
+
+model AuditLog {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String?   @db.Uuid
+  user        User?     @relation(fields: [user_id], references: [id])
+  action      String    @db.VarChar(255)
+  resource    String?   @db.VarChar(255)
+  ip_address  String?   @db.VarChar(45)
+  user_agent  String?   @db.VarChar(512)
+  metadata    Json?
+  created_at  DateTime  @default(now()) @db.Timestamptz
+
+  @@index([user_id, created_at])
+  @@index([action, created_at])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────
+// LARGE LOAN ENQUIRIES (> N10M)
+// ─────────────────────────────────────────
+
+model LargeQuoteEnquiry {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String    @db.VarChar(255)
+  phone             String    @db.VarChar(20)
+  email             String    @db.VarChar(255)
+  loan_amount       Decimal   @db.Decimal(20, 2)
+  loan_currency     String    @default("NGN") @db.VarChar(10)
+  collateral_type   String    @db.VarChar(50)
+  preferred_contact String    @db.VarChar(20)
+  notes             String?   @db.VarChar(1000)
+  status            String    @default("PENDING") @db.VarChar(20)
+  created_at        DateTime  @default(now()) @db.Timestamptz
+  updated_at        DateTime  @updatedAt @db.Timestamptz
+
+  @@map("large_quote_enquiries")
+}

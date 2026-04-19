@@ -1,0 +1,48 @@
+node_modules
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment files — never commit real secrets
+.env
+.env.development
+.env.staging
+.env.production
+.env.local
+
+# Prisma
+prisma/migrations/*.sql.bak
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# VSCode — keep .vscode/ tracked except user-specific files
+.vscode/settings.json.user
+
+# TypeScript incremental compilation
+*.tsbuildinfo
+
+# Test artifacts
+junit.xml

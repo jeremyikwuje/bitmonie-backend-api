@@ -1,0 +1,46 @@
+{
+  "extends": ["airbnb-typescript/base"],
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "project": "./tsconfig.json"
+  },
+  "plugins": ["unused-imports"],
+  "rules": {
+    "camelcase": "off",
+    "import/extensions": "off",
+    "import/no-extraneous-dependencies": "off",
+    "@typescript-eslint/indent": ["error", 2],
+    "@typescript-eslint/dot-notation": "off",
+    "@typescript-eslint/no-redeclare": "off",
+    "@typescript-eslint/naming-convention": [
+      "error",
+      { "selector": "typeLike", "format": ["PascalCase"] },
+      { "selector": "enumMember", "format": ["UPPER_CASE"] },
+      { "selector": "function", "format": ["camelCase"] },
+      { "selector": "method", "format": ["camelCase"] },
+      {
+        "selector": "variable",
+        "format": ["snake_case", "UPPER_CASE", "camelCase", "PascalCase"]
+      },
+      {
+        "selector": "parameter",
+        "format": ["snake_case", "camelCase"]
+      },
+      {
+        "selector": "parameter",
+        "modifiers": ["unused"],
+        "format": ["snake_case", "camelCase"],
+        "leadingUnderscore": "allow"
+      },
+      {
+        "selector": "objectLiteralProperty",
+        "format": null
+      }
+    ],
+    "unused-imports/no-unused-imports": "error",
+    "import/prefer-default-export": "off",
+    "class-methods-use-this": "off",
+    "no-useless-constructor": "off",
+    "@typescript-eslint/no-useless-constructor": "off"
+  }
+}
