@@ -10,7 +10,7 @@
 
 ### 1.1 Product Summary
 
-Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market. Customers lock Bitcoin (via Lightning Network using Blink/Galoy) as collateral and receive Naira to their verified bank account within seconds. No crypto is sold. The loan is repaid in SAT (Lightning) or NGN, after which the locked SAT collateral is released to a customer-specified Lightning address.
+Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market. Customers lock Bitcoin (via Lightning Network) as collateral and receive Naira to their verified bank account within seconds. No crypto is sold. The loan is repaid in SAT (Lightning) or NGN, after which the locked SAT collateral is released to a customer-specified Lightning address.
 
 ### 1.2 Mission
 
@@ -18,12 +18,12 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 
 ### 1.3 MVP Scope (v1.0)
 
-- **Collateral:** SAT only via Blink (Galoy) Lightning wallet
-- **Disbursement:** NGN to customer's default bank account via Palmpay
+- **Collateral:** SAT only via Lightning Network
+- **Disbursement:** NGN to customer's default bank account
 - **Repayment:** NGN bank transfer or SAT Lightning payment
 - **Collateral Release:** SAT sent to customer's specified Lightning address on loan closure
-- **KYC:** BVN verification via Qore ID
-- **Price Feed:** SAT/NGN, BTC/NGN, USDT/NGN via Monierate
+- **KYC:** BVN verification
+- **Price Feed:** SAT/NGN, BTC/NGN, USDT/NGN
 - **No wallet balances** — loan balances only
 
 ### 1.4 Out of Scope (v1.0)
@@ -95,7 +95,7 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 |----|---------|--------------|------------|
 | US-16 | Verified user | Checkout a loan from the calculator | The flow is seamless from quote to funding |
 | US-17 | Verified user | See a final loan summary before confirming | I confirm exact terms before sending SAT |
-| US-18 | Verified user | Receive a Blink Lightning invoice to send SAT collateral | I can pay from my Blink wallet |
+| US-18 | Verified user | Receive a Lightning invoice to send SAT collateral | I can pay from my Lightning wallet |
 | US-19 | Verified user | Have NGN credited to my default bank account within 60 seconds of SAT confirmation | The promise of instant funding is kept |
 | US-20 | Verified user | Receive a loan confirmation with all terms | I have a record of what I agreed to |
 
@@ -154,20 +154,20 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 | Fee | N500 per $100 equivalent per day |
 | Origination fee | N500 flat per loan |
 | Fee timing | Charged upfront at loan creation |
-| Collateral | SAT (Lightning via Blink) |
-| Disbursement | NGN to verified bank account (Palmpay) |
+| Collateral | SAT via Lightning Network |
+| Disbursement | NGN to verified bank account |
 
 ### 4.2 Price Feeds
 
-- Primary source: Monierate API (SAT/NGN, BTC/NGN, USDT/NGN)
+- Pairs: SAT/NGN, BTC/NGN, USDT/NGN
 - Refresh interval: Every 60 seconds minimum, every 15 seconds during active loan monitoring
 - Liquidation monitoring: Every 30 seconds for all active loans
 - Feed failure behaviour: Pause new loan creation, continue monitoring existing loans with last known rate + staleness flag
 
 ### 4.3 KYC Requirements
 
-- BVN verification via Qore ID (primary)
-- NIN verification via Qore ID (secondary)
+- BVN verification (primary)
+- NIN verification (secondary)
 - Passport (manual review fallback)
 - Bank account name must fuzzy-match BVN legal name (threshold: 85% similarity)
 - One KYC per user — reuse across all loans
@@ -185,7 +185,7 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 | Trigger | Channel |
 |---------|---------|
 | Loan created | Email + in-app |
-| NGN disbursed | Email + SMS (via Palmpay) + in-app |
+| NGN disbursed | Email + SMS + in-app |
 | Collateral alert (120%) | Email + in-app + push (if mobile) |
 | Liquidation triggered | Email + SMS + in-app |
 | Repayment received | Email + in-app |

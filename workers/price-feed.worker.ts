@@ -1,22 +1,18 @@
 /**
  * Price Feed Worker — standalone Node.js process (NOT NestJS).
- * Polls Monierate every WORKER_PRICE_FEED_INTERVAL_MS, writes to DB + Redis.
+ * Polls the active price feed provider every WORKER_PRICE_FEED_INTERVAL_MS.
+ * Writes results to DB + Redis. Sets price:stale flag on consecutive failures.
  * Run with: ts-node -r tsconfig-paths/register workers/price-feed.worker.ts
  */
 
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
-import Decimal from 'decimal.js';
-import { z } from 'zod';
+import { QuidaxProvider } from '@/providers/quidax/quidax.provider';
 
 const PRICE_CACHE_TTL_SEC = 90;
-const PRICE_FEED_STALE_MS = 120_000;
 const STALE_ALERT_THRESHOLD_MS = 5 * 60 * 1_000;
-const SATS_PER_BTC = new Decimal('100000000');
 
 const WORKER_INTERVAL_MS = parseInt(process.env.WORKER_PRICE_FEED_INTERVAL_MS ?? '30000', 10);
-const MONIERATE_API_KEY = process.env.MONIERATE_API_KEY ?? '';
-const MONIERATE_BASE_URL = process.env.MONIERATE_BASE_URL ?? 'https://api.monierate.com';
 const INTERNAL_ALERT_EMAIL = process.env.INTERNAL_ALERT_EMAIL ?? 'ops@bitmonie.com';
 const DATABASE_URL = process.env.DATABASE_URL;
 const REDIS_URL = process.env.REDIS_URL;
@@ -26,40 +22,12 @@ if (!REDIS_URL) { console.error('REDIS_URL is required'); process.exit(1); }
 
 const prisma = new PrismaClient();
 const redis = new Redis(REDIS_URL);
+const provider = new QuidaxProvider({
+  api_key: process.env.QUIDAX_API_KEY ?? '',
+  base_url: process.env.QUIDAX_BASE_URL ?? 'https://app.quidax.io/api/v1',
+});
 
 redis.on('error', (err) => log('error', 'redis_error', { error: err.message }));
-
-// ── Zod schema ─────────────────────────────────────────────────────────────
-
-const MonierateEntrySchema = z.object({
-  slug: z.string(),
-  buy: z.number().positive(),
-  sell: z.number().positive(),
-  created_at: z.string().optional(),
-});
-
-const MonierateResponseSchema = z.object({
-  status: z.literal(true),
-  data: z.array(MonierateEntrySchema),
-});
-
-// ── Types ──────────────────────────────────────────────────────────────────
-
-type AssetPair = 'SAT_NGN' | 'BTC_NGN' | 'USDT_NGN' | 'USDC_NGN';
-
-interface RateData {
-  pair: AssetPair;
-  rate_buy: Decimal;
-  rate_sell: Decimal;
-  fetched_at: Date;
-}
-
-const SLUG_TO_PAIR: Record<string, AssetPair> = {
-  'BTC-NGN': 'BTC_NGN',
-  'USDT-NGN': 'USDT_NGN',
-};
-
-// ── Logging ────────────────────────────────────────────────────────────────
 
 function log(level: string, event: string, extra: Record<string, unknown> = {}): void {
   process.stdout.write(
@@ -67,64 +35,12 @@ function log(level: string, event: string, extra: Record<string, unknown> = {}):
   );
 }
 
-// ── Fetch rates from Monierate ─────────────────────────────────────────────
-
-async function fetch_rates(): Promise<RateData[]> {
-  const response = await fetch(`${MONIERATE_BASE_URL}/v1/pairs`, {
-    headers: { 'api-key': MONIERATE_API_KEY, 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(10_000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Monierate API error: ${response.status} ${response.statusText}`);
-  }
-
-  const raw: unknown = await response.json();
-  const parsed = MonierateResponseSchema.safeParse(raw);
-
-  if (!parsed.success) {
-    throw new Error(`Monierate validation failed: ${parsed.error.message}`);
-  }
-
-  const results: RateData[] = [];
-  const fetched_at = new Date();
-
-  for (const entry of parsed.data.data) {
-    const pair = SLUG_TO_PAIR[entry.slug.toUpperCase()];
-    if (!pair) continue;
-
-    results.push({
-      pair,
-      rate_buy: new Decimal(entry.buy),
-      rate_sell: new Decimal(entry.sell),
-      fetched_at,
-    });
-
-    if (pair === 'BTC_NGN') {
-      results.push({
-        pair: 'SAT_NGN',
-        rate_buy: new Decimal(entry.buy).dividedBy(SATS_PER_BTC),
-        rate_sell: new Decimal(entry.sell).dividedBy(SATS_PER_BTC),
-        fetched_at,
-      });
-    }
-  }
-
-  if (results.length === 0) throw new Error('No usable rate pairs returned from Monierate');
-
-  return results;
-}
-
-// ── Worker state ───────────────────────────────────────────────────────────
-
 let consecutive_failures = 0;
 let stale_since: number | null = null;
 
-// ── Main cycle ─────────────────────────────────────────────────────────────
-
 async function run_cycle(): Promise<void> {
   try {
-    const rates = await fetch_rates();
+    const rates = await provider.fetchRates();
 
     await Promise.all(
       rates.map((rate) =>
@@ -134,7 +50,7 @@ async function run_cycle(): Promise<void> {
             rate_buy: rate.rate_buy,
             rate_sell: rate.rate_sell,
             fetched_at: rate.fetched_at,
-            source: 'monierate',
+            source: process.env.PRICE_FEED_PROVIDER ?? 'unknown',
           },
         }),
       ),
@@ -174,22 +90,16 @@ async function run_cycle(): Promise<void> {
         stale_duration_ms: now - stale_since,
         consecutive_failures,
       });
-      // Reset so next alert fires STALE_ALERT_THRESHOLD_MS from now, not immediately again
       stale_since = now;
     }
 
-    // Emit heartbeat even on failure so the monitor can distinguish dead vs erroring
     await redis.set('worker:price_feed:last_run', String(now)).catch(() => undefined);
   }
 }
 
 async function main(): Promise<void> {
   log('info', 'started', { interval_ms: WORKER_INTERVAL_MS });
-
-  // Validate connectivity before first cycle
   await redis.ping();
-
-  // Run immediately, then on interval
   await run_cycle();
 
   setInterval(() => {

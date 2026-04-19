@@ -39,8 +39,8 @@
          │                   │                       │
 ┌────────▼───────┐  ┌────────▼───────┐  ┌───────────▼──────┐
 │   PostgreSQL   │  │     Redis      │  │  External APIs   │
-│   (Prisma)     │  │  (ioredis)     │  │  Blink · Palmpay │
-└────────────────┘  └────────────────┘  │  Monierate · Qore│
+│   (Prisma)     │  │  (ioredis)     │  │  External APIs   │
+└────────────────┘  └────────────────┘  │  (see providers/)│
                                         └──────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
@@ -629,7 +629,7 @@ model PriceFeed {
   id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   pair        AssetPair
   rate_ngn    Decimal   @db.Decimal(20, 6)  // NGN per 1 unit of asset
-  source      String    @db.VarChar(50)     // e.g. "monierate"
+  source      String    @db.VarChar(50)     // e.g. "quidax"
   fetched_at  DateTime  @db.Timestamptz
   created_at  DateTime  @default(now()) @db.Timestamptz
 
@@ -847,93 +847,45 @@ worker:payment_request_expiry:last_run        —       Heartbeat for expiry wor
 
 ## 5. External Integrations
 
-All external providers are NestJS `@Injectable()` classes implementing a generic interface. The interface is what services depend on — the concrete provider class is wired up in the module. Swapping providers requires only changing the `useClass` in the module, nothing in the service.
+All providers live in `src/providers/<name>/` — outside feature modules. Each implements one of four role interfaces. The active provider per role is selected by an env var (`PRICE_FEED_PROVIDER`, `COLLATERAL_PROVIDER`, `DISBURSEMENT_PROVIDER`, `KYC_PROVIDER`). The feature module factory reads the selector and returns the matching injectable — nothing in the service layer changes when a provider is swapped.
 
-### 5.1 Monierate (Price Feed Provider)
+**Provider structure:** `src/providers/<name>/` contains three files:
+- `<name>.provider.ts` — implements the role interface; constructor takes a plain config object so it can be instantiated from both NestJS modules and standalone workers
+- `<name>.module.ts` — NestJS module that creates the provider via `useFactory` reading `providers.config.ts`
+- `<name>.types.ts` — Zod schemas for validating that provider's API response shape
+
+**Role interfaces** (each defined in the module that owns the contract):
 
 ```typescript
-// src/modules/price-feed/providers/monierate.provider.ts
-// Implements PriceFeedProvider interface.
-// File path contains "monierate" — the provider name.
-// The interface and all field names are generic.
+// src/modules/price-feed/price-feed.provider.interface.ts
+interface PriceFeedProvider {
+  fetchRates(): Promise<RateResult[]>;
+}
 
-@Injectable()
-export class MonierateProvider implements PriceFeedProvider {
-  async fetchRates(): Promise<Array<{ pair: AssetPair; rate_ngn: Decimal; fetched_at: Date }>> {
-    // Calls Monierate API, validates response with Zod schema, returns generic shape
-  }
+// src/modules/payment-requests/collateral.provider.interface.ts
+interface CollateralProvider {
+  createPaymentRequest(params): Promise<{ provider_reference, payment_request, receiving_address, expires_at }>;
+  sendToAddress(params): Promise<string>;                     // returns provider_reference
+  verifyWebhookSignature(raw_body, signature): boolean;       // called on RAW body before JSON.parse
+}
+
+// src/modules/disbursements/disbursement.provider.interface.ts
+interface DisbursementProvider {
+  initiateTransfer(params): Promise<{ provider_txn_id, provider_response }>;
+  getTransferStatus(provider_reference): Promise<{ status, failure_reason?, failure_code? }>;
+  verifyWebhookSignature(raw_body, signature): boolean;       // IP allowlist + HMAC on RAW body
+}
+
+// src/modules/kyc/kyc.provider.interface.ts
+interface KycProvider {
+  verifyBvn(bvn): Promise<{ legal_name, provider_reference }>;
+  verifyNin(nin): Promise<{ legal_name, provider_reference }>;
 }
 ```
 
-Worker behaviour: polls every 30s → inserts into `price_feeds` → caches in Redis → sets `price:stale` if two consecutive failures.
+**Webhook endpoints** are named by role, not provider: `POST /v1/webhooks/collateral`, `POST /v1/webhooks/disbursement`.
 
-### 5.2 Blink / Galoy (Collateral Provider — v1 Lightning)
-
-```typescript
-// src/modules/payment-requests/providers/blink.provider.ts
-// Implements CollateralProvider interface.
-// No Blink-specific naming leaks outside this file.
-
-@Injectable()
-export class BlinkProvider implements CollateralProvider {
-  async createPaymentRequest(params) {
-    // Calls Blink API, returns generic { provider_reference, payment_request, receiving_address, expires_at }
-    // provider_reference = Blink's internal invoice ID — named generically on the way out
-  }
-
-  async sendToAddress(params) {
-    // Sends SAT to a Lightning address or onchain address
-    // Returns generic provider_reference (Lightning payment hash)
-  }
-
-  verifyWebhookSignature(raw_body: string, signature: string): boolean {
-    // HMAC-SHA256 — called on RAW body before JSON.parse()
-  }
-}
-```
-
-**Webhook endpoint:** `POST /v1/webhooks/collateral` — named by role, not provider.
-
-### 5.3 Palmpay (Disbursement Provider — v1 Bank Transfer)
-
-```typescript
-// src/modules/disbursements/providers/palmpay.provider.ts
-// Implements DisbursementProvider interface.
-// All method signatures use generic field names.
-
-@Injectable()
-export class PalmpayProvider implements DisbursementProvider {
-  async initiateTransfer(params: {
-    amount:         Decimal;
-    currency:       string;
-    provider_name:  string;
-    account_unique: string;
-    account_name:   string | null;
-    reference:      string;   // outflow.provider_reference — idempotency key
-    narration:      string;
-  }): Promise<{ provider_txn_id: string; provider_response: Record<string, unknown> }> {
-    // Maps generic params to Palmpay API shape internally
-    // Returns generic field names on the way out
-  }
-
-  verifyWebhookSignature(raw_body: string, signature: string): boolean {
-    // IP allowlist check + HMAC — called on RAW body before JSON.parse()
-  }
-}
-```
-
-**Webhook endpoint:** `POST /v1/webhooks/disbursement` — named by role, not provider.
-
-### 5.4 Qore ID (KYC Provider)
-
-```typescript
-// src/modules/kyc/providers/qoreid.provider.ts
-@Injectable()
-export class QoreidProvider implements KycProvider {
-  async verifyBvn(bvn: string): Promise<{ legal_name: string; provider_reference: string }>
-  async verifyNin(nin: string): Promise<{ legal_name: string; provider_reference: string }>
-}
-```
+**Disbursement provider** is only ever called from `OutflowsService` — never directly from any other service.
 
 ### 5.5 Loan Lifecycle — How the Modules Wire Together
 
@@ -942,7 +894,7 @@ POST /v1/loans/checkout (SessionGuard + KycVerifiedGuard)
   → LoansController → LoansService.checkoutLoan()
   → CalculatorService.calculateFees() [pure math]
   → PaymentRequestsService.create()
-     → CollateralProvider.createPaymentRequest()  [Blink in v1]
+     → CollateralProvider.createPaymentRequest()
      → PaymentRequest saved to DB
      → receiving_address cached in Redis
   → Loan created, LoanStatusLog written [same transaction]
@@ -960,7 +912,7 @@ POST /v1/webhooks/collateral (raw body, no auth guard — signature verified fir
         → DisbursementsService.createForLoan()
            → Disbursement created
            → OutflowsService.dispatch()
-              → DisbursementProvider.initiateTransfer()  [Palmpay in v1]
+              → DisbursementProvider.initiateTransfer()
               → Outflow created, Disbursement → PROCESSING
 
 POST /v1/webhooks/disbursement (raw body, no auth guard — signature + IP verified first)
@@ -1020,7 +972,7 @@ async function checkoutLoan(
   //    a. INSERT loan (status: PENDING_COLLATERAL)
   //    b. INSERT loan_status_log (LOAN_CREATED)
   // 6. PaymentRequestsService.create():
-  //    a. CollateralProvider.createPaymentRequest() [BlinkProvider in v1]
+  //    a. CollateralProvider.createPaymentRequest()
   //    b. INSERT payment_request with provider_reference + expires_at
   //    c. Cache receiving_address in Redis (35min TTL)
   // 7. Return { loan_id, payment_request, receiving_address, expires_at, fee_breakdown }
@@ -1194,39 +1146,17 @@ GET    /v1/docs                                # Swagger UI
 
 ## 11. Environment Variables
 
-```bash
-NODE_ENV=development|staging|production
-PORT=3000
+Canonical reference: `.env.example` — always check that file for the current list.
 
-DATABASE_URL=postgresql://user:pass@localhost:5432/bitmonie_db
-REDIS_URL=redis://localhost:6379
-
-SESSION_SECRET=                           # 32 random bytes hex
-ENCRYPTION_KEY=                           # 32 bytes hex — AES-256 for BVN/NIN
-
-MONIERATE_API_KEY=
-MONIERATE_BASE_URL=https://api.monierate.com
-
-COLLATERAL_PROVIDER_API_KEY=              # Generic — Blink in v1
-COLLATERAL_PROVIDER_BASE_URL=
-COLLATERAL_PROVIDER_WEBHOOK_SECRET=
-
-DISBURSEMENT_PROVIDER_API_KEY=            # Generic — Palmpay in v1
-DISBURSEMENT_PROVIDER_SECRET_KEY=
-DISBURSEMENT_PROVIDER_BASE_URL=
-DISBURSEMENT_PROVIDER_WEBHOOK_SECRET=
-DISBURSEMENT_PROVIDER_WEBHOOK_IP_ALLOWLIST=
-
-KYC_PROVIDER_CLIENT_ID=                   # Generic — Qore ID in v1
-KYC_PROVIDER_CLIENT_SECRET=
-KYC_PROVIDER_BASE_URL=
-
-WORKER_PRICE_FEED_INTERVAL_MS=30000
-WORKER_LIQUIDATION_INTERVAL_MS=30000
-WORKER_PAYMENT_REQUEST_EXPIRY_INTERVAL_MS=60000
-
-LOG_LEVEL=info
-INTERNAL_ALERT_EMAIL=ops@bitmonie.com
+Key groups:
+- **Application:** `NODE_ENV`, `PORT`, `API_BASE_URL`
+- **Database:** `DATABASE_URL`, `REDIS_URL`
+- **Auth:** `SESSION_SECRET`, `ENCRYPTION_KEY`
+- **Provider selectors** — change the value to swap the active implementation:
+  `PRICE_FEED_PROVIDER`, `COLLATERAL_PROVIDER`, `DISBURSEMENT_PROVIDER`, `KYC_PROVIDER`
+- **Per-provider credentials** — one named block per concrete provider in `src/providers/`
+- **Worker intervals:** `WORKER_PRICE_FEED_INTERVAL_MS`, `WORKER_LIQUIDATION_INTERVAL_MS`, `WORKER_PAYMENT_REQUEST_EXPIRY_INTERVAL_MS`
+- **Observability:** `LOG_LEVEL`, `INTERNAL_ALERT_EMAIL`
 ```
 
 ---

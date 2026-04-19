@@ -69,11 +69,10 @@ export class CheckoutLoanDto {
   collateral_asset: CollateralAsset;
 }
 
-// ✅ Zod for external API responses
-const MonierateResponseSchema = z.object({
-  pair: z.string(),
-  rate: z.number().positive(),
-  updated_at: z.string().datetime(),
+// ✅ Zod for external API responses — schema lives in src/providers/<name>/<name>.types.ts
+const ExternalApiResponseSchema = z.object({
+  status: z.literal(true),
+  data: z.record(z.string(), z.object({ value: z.number().positive() })),
 });
 
 // ❌ Zod for DTO — use class-validator
@@ -146,7 +145,7 @@ await prisma.loanStatusLog.create({ data: { ... } });
     PaymentRequestsRepository,
     {
       provide: 'COLLATERAL_PROVIDER',
-      useClass: BlinkProvider,        // swap to QuidaxProvider in v2 with no service changes
+      useClass: ConcreteCollateralProvider,  // swap via env — zero service changes
     },
   ],
   exports: [PaymentRequestsService],

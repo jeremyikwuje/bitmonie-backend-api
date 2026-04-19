@@ -13,7 +13,7 @@ Only create folders and files for in-scope modules. Do not scaffold deferred mod
 bitmonie-api/
 ├── src/
 │   ├── main.ts                          # Bootstrap: global pipes, guards, filters, Swagger, CORS
-│   ├── app.module.ts                    # Root module — imports all feature modules
+│   ├── app.module.ts                    # Root module — imports all feature + provider modules
 │   │
 │   ├── common/                          # Shared infrastructure — used by every module
 │   │   ├── constants/
@@ -25,7 +25,7 @@ bitmonie-api/
 │   │   │   ├── paginated-response.dto.ts
 │   │   │   └── error-response.dto.ts
 │   │   ├── errors/
-│   │   │   └── bitmonie.errors.ts        # All typed domain exceptions
+│   │   │   └── bitmonie.errors.ts       # All typed domain exceptions
 │   │   ├── filters/
 │   │   │   └── global-exception.filter.ts  # Maps exceptions → standard error schema
 │   │   ├── guards/
@@ -43,10 +43,34 @@ bitmonie-api/
 │   │   ├── app.config.ts
 │   │   ├── database.config.ts
 │   │   ├── redis.config.ts
-│   │   └── providers.config.ts          # Collateral provider, disbursement provider, KYC, price feed
+│   │   └── providers.config.ts          # Credentials for all external providers
 │   │
 │   ├── database/
 │   │   └── prisma.service.ts            # PrismaClient singleton, onModuleInit, onModuleDestroy
+│   │
+│   ├── providers/                       # One sub-folder per external service — shared across modules
+│   │   │  # Concrete implementations live here. Interfaces stay in the module that owns the contract.
+│   │   │  # Rule: a provider that serves multiple domains belongs here, not inside any single module.
+│   │   │
+│   │   ├── blink/
+│   │   │   ├── blink.module.ts          # @Module — exports provider
+│   │   │   ├── blink.provider.ts        # Implements CollateralProvider
+│   │   │   └── blink.types.ts           # Zod schemas for API response validation
+│   │   │
+│   │   ├── palmpay/
+│   │   │   ├── palmpay.module.ts        # @Module — exports provider
+│   │   │   ├── palmpay.provider.ts      # Implements DisbursementProvider
+│   │   │   └── palmpay.types.ts         # Zod schemas for API response validation
+│   │   │
+│   │   ├── qoreid/
+│   │   │   ├── qoreid.module.ts         # @Module — exports provider
+│   │   │   ├── qoreid.provider.ts       # Implements KycProvider
+│   │   │   └── qoreid.types.ts          # Zod schemas for API response validation
+│   │   │
+│   │   └── quidax/
+│   │       ├── quidax.module.ts         # @Module — exports provider
+│   │       ├── quidax.provider.ts       # Implements PriceFeedProvider
+│   │       └── quidax.types.ts          # Zod schemas for API response validation
 │   │
 │   └── modules/
 │       │
@@ -59,12 +83,11 @@ bitmonie-api/
 │       │   └── dto/
 │       │
 │       ├── kyc/
-│       │   ├── kyc.module.ts
+│       │   ├── kyc.module.ts            # imports active KYC provider module; binds 'KYC_PROVIDER' token
 │       │   ├── kyc.controller.ts        # POST /v1/kyc/bvn, GET /v1/kyc/status
 │       │   ├── kyc.service.ts
 │       │   ├── kyc.repository.ts
-│       │   ├── providers/
-│       │   │   └── qoreid.provider.ts   # Implements KycProvider interface
+│       │   ├── kyc.provider.interface.ts  # KycProvider contract — owned by this domain
 │       │   └── dto/
 │       │
 │       ├── disbursement-accounts/
@@ -72,24 +95,24 @@ bitmonie-api/
 │       │   ├── disbursement-accounts.controller.ts  # CRUD /v1/disbursement-accounts
 │       │   ├── disbursement-accounts.service.ts
 │       │   ├── disbursement-accounts.repository.ts
-│       │   ├── name-match.service.ts    # Fuzzy match account holder name vs KYC legal name (BANK + MOBILE_MONEY only; skipped for CRYPTO_ADDRESS)
-│       │   └── dto/
+│       │   ├── name-match.service.ts    # Fuzzy match account holder name vs KYC legal name
+│       │   └── dto/                     # BANK + MOBILE_MONEY only; skipped for CRYPTO_ADDRESS
 │       │
 │       │  # ── PRICE FEED ──────────────────────────────────────────────────
 │       ├── price-feed/
-│       │   ├── price-feed.module.ts
+│       │   ├── price-feed.module.ts     # imports active price feed provider module; binds 'PRICE_FEED_PROVIDER' token
 │       │   ├── price-feed.controller.ts # GET /v1/rates
 │       │   ├── price-feed.service.ts
 │       │   ├── price-feed.repository.ts
-│       │   ├── providers/
-│       │   │   └── monierate.provider.ts  # Implements PriceFeedProvider interface
+│       │   ├── price-feed.provider.interface.ts  # PriceFeedProvider contract
 │       │   └── dto/
 │       │
 │       │  # ── PAYMENT MECHANICS ───────────────────────────────────────────
 │       ├── payment-requests/
-│       │   ├── payment-requests.module.ts
-│       │   ├── payment-requests.service.ts   # Create, match, expire
+│       │   ├── payment-requests.module.ts   # imports active collateral provider module; binds 'COLLATERAL_PROVIDER' token
+│       │   ├── payment-requests.service.ts  # Create, match, expire
 │       │   ├── payment-requests.repository.ts
+│       │   ├── collateral.provider.interface.ts  # CollateralProvider contract
 │       │   └── dto/
 │       │   # No public controller — payment requests are system-generated
 │       │   # Exposed read-only under /v1/loans/:id/payment-request
@@ -103,14 +126,13 @@ bitmonie-api/
 │       │   # Internal POST /internal/inflows — not exposed publicly
 │       │
 │       ├── disbursements/
-│       │   ├── disbursements.module.ts
+│       │   ├── disbursements.module.ts  # imports active disbursement provider module; binds 'DISBURSEMENT_PROVIDER' token
 │       │   ├── disbursements.service.ts      # Business record creation
 │       │   ├── disbursements.repository.ts
+│       │   ├── disbursement.provider.interface.ts  # DisbursementProvider contract
 │       │   ├── outflows/
-│       │   │   ├── outflows.service.ts       # Execution layer — calls processing providers
+│       │   │   ├── outflows.service.ts       # Execution layer — only caller of DisbursementProvider
 │       │   │   └── outflows.repository.ts
-│       │   ├── providers/
-│       │   │   └── palmpay.provider.ts       # Implements DisbursementProvider interface
 │       │   └── dto/
 │       │
 │       │  # ── CORE PRODUCT ────────────────────────────────────────────────
@@ -135,9 +157,12 @@ bitmonie-api/
 │           # Signature verification happens before any processing
 │
 ├── workers/                             # Standalone Node.js processes — NOT NestJS
-│   ├── price-feed.worker.ts             # Poll Monierate every 30s → DB + Redis
-│   ├── liquidation-monitor.worker.ts    # Check all ACTIVE loans every 30s
-│   └── payment-request-expiry.worker.ts # Expire PENDING PaymentRequests past expires_at
+│   ├── price-feed/
+│   │   └── index.ts                     # Poll price feed provider every 30s → DB + Redis
+│   ├── liquidation-monitor/
+│   │   └── index.ts                     # Check all ACTIVE loans every 30s
+│   └── payment-request-expiry/
+│       └── index.ts                     # Expire PENDING PaymentRequests past expires_at
 │
 ├── prisma/
 │   ├── schema.prisma                    # SINGLE SOURCE OF TRUTH for all DB models
@@ -165,7 +190,7 @@ bitmonie-api/
 
 ```
 src/modules/loans/
-├── loans.module.ts          # @Module — declares providers, imports, exports, controllers
+├── loans.module.ts          # @Module — imports provider modules, declares providers/controllers
 ├── loans.controller.ts      # @Controller — HTTP handlers, @ApiOperation, @UseGuards
 ├── loans.service.ts         # @Injectable — business logic, state machine, orchestration
 ├── loans.repository.ts      # @Injectable — all Prisma queries for this module
@@ -176,6 +201,35 @@ src/modules/loans/
 │   └── loan-response.dto.ts      # @ApiProperty() on every field
 └── exceptions/
     └── loan.exceptions.ts        # Domain exceptions extending BitmonieException
+```
+
+Modules that depend on an external provider:
+1. Import the provider's module from `src/providers/<name>/<name>.module.ts`
+2. Bind the DI token in their own `@Module` providers array
+3. The provider interface file lives in this module alongside the service that uses it
+
+```typescript
+// src/modules/kyc/kyc.module.ts
+@Module({
+  imports: [ActiveKycProviderModule],   // import whichever provider is active
+  controllers: [KycController],
+  providers: [
+    KycService,
+    KycRepository,
+    {
+      provide: 'KYC_PROVIDER',
+      inject: [ConfigService, ActiveKycProvider],
+      useFactory: (config: ConfigService, provider: KycProvider): KycProvider => {
+        switch (config.get('providers').active.kyc) {
+          case '<name>': return provider;
+          default: throw new Error('Unknown KYC provider');
+        }
+      },
+    },
+  ],
+  exports: [KycService],
+})
+export class KycModule {}
 ```
 
 ## main.ts bootstrap

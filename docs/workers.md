@@ -11,10 +11,10 @@ All worker DB queries use `FOR UPDATE SKIP LOCKED` to allow safe concurrent exec
 ## price-feed
 **File:** `workers/price-feed/index.ts`
 **Schedule:** every 30 seconds
-**Purpose:** poll Monierate for SAT/NGN, BTC/NGN, USDT/NGN; write to DB and Redis.
+**Purpose:** poll the active price feed provider for SAT/NGN, BTC/NGN, USDT/NGN; write to DB and Redis.
 
 ```
-1. Fetch all three pairs from Monierate API
+1. Call provider.fetchRates() — provider implementation handles API call + Zod validation
 2. Validate response with Zod — if invalid, do not update cache, log error
 3. INSERT row into price_feeds for each pair
 4. SET Redis: price:SAT_NGN, price:BTC_NGN, price:USDT_NGN with 90s TTL
@@ -50,7 +50,7 @@ On fetch failure:
 
    c. IF ratio <= LIQUIDATION_THRESHOLD (1.10):
       → Inside Prisma transaction:
-        1. Sell SAT via Blink/exchange at current rate
+        1. Sell SAT via the active collateral provider at current rate
         2. Recover principal_ngn
         3. surplus_sat = collateral - amount_to_recover_principal
         4. If surplus > 0 AND release_address set:

@@ -38,9 +38,9 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 | Module | Purpose |
 |---|---|
 | `auth` | Sessions, email OTP, 2FA (TOTP), password reset |
-| `kyc` | BVN/NIN via Qore ID — required before first loan |
+| `kyc` | BVN/NIN verification — required before first loan |
 | `disbursement-accounts` | Add/remove/default payout destinations (BANK / MOBILE_MONEY / CRYPTO_ADDRESS) — max 5 per kind; name-matched against BVN for BANK + MOBILE_MONEY |
-| `price-feed` | SAT/NGN, BTC/NGN, USDT/NGN from Monierate — polled every 30s |
+| `price-feed` | SAT/NGN, BTC/NGN, USDT/NGN — polled every 30s |
 | `loans` | Full loan lifecycle: checkout → collateral → disbursement → repayment → release |
 | `payment-requests` | Customer-facing payment instructions (collateral receipt) |
 | `inflows` | Every incoming payment, matched or not |
@@ -218,13 +218,146 @@ Terminal: `REPAID`, `LIQUIDATED`, `EXPIRED`, `CANCELLED`. No further transitions
 
 ## 7. PROVIDERS
 
-- All external integrations behind a TypeScript interface — `*.provider.interface.ts`.
-- Concrete classes in `providers/` (e.g. `blink.provider.ts`, `palmpay.provider.ts`, `qoreid.provider.ts`, `monierate.provider.ts`).
-- Registered via NestJS DI token: `{ provide: 'COLLATERAL_PROVIDER', useClass: BlinkProvider }`.
-- Inject by token: `@Inject('COLLATERAL_PROVIDER') private readonly collateral_provider: CollateralProvider`.
-- Never call a provider SDK directly from a service.
+### 7.1 Folder layout
+
+Providers live in `src/providers/` — **outside** feature modules. One sub-folder per external service.
+
+```
+src/
+├── providers/
+│   ├── blink/
+│   │   ├── blink.module.ts           # exports provider
+│   │   ├── blink.provider.ts         # implements CollateralProvider
+│   │   └── blink.types.ts            # Zod schemas for API response validation
+│   ├── palmpay/
+│   │   ├── palmpay.module.ts
+│   │   ├── palmpay.provider.ts       # implements DisbursementProvider
+│   │   └── palmpay.types.ts
+│   ├── qoreid/
+│   │   ├── qoreid.module.ts
+│   │   ├── qoreid.provider.ts        # implements KycProvider
+│   │   └── qoreid.types.ts
+│   └── quidax/
+│       ├── quidax.module.ts
+│       ├── quidax.provider.ts        # implements PriceFeedProvider
+│       └── quidax.types.ts
+│
+└── modules/
+    ├── kyc/
+    │   └── kyc.provider.interface.ts     # interface stays with the domain that owns the contract
+    ├── price-feed/
+    │   └── price-feed.provider.interface.ts
+    ├── payment-requests/
+    │   └── collateral.provider.interface.ts
+    └── disbursements/
+        └── disbursement.provider.interface.ts
+```
+
+**Why:** a provider that serves multiple domains (e.g. price data AND deposit-address generation) cannot live inside a single feature module without duplication or awkward cross-module imports. One folder per external service, one source of truth.
+
+### 7.2 Registration rules
+
+- Each provider module exports its concrete class.
+- Feature modules import the provider module and bind via DI token.
+- Never call a provider SDK directly from a service — always inject through the interface.
 - Webhook controllers named by **role** (`collateral.webhook.controller.ts`), not provider.
-- `PalmpayProvider` (or any disbursement provider) only called from `OutflowsService` — never from anywhere else.
+- Any disbursement provider is only called from `OutflowsService` — never from anywhere else.
+
+```typescript
+// src/providers/<name>/<name>.module.ts — one per external service
+@Module({
+  imports: [ConfigModule],
+  providers: [
+    {
+      provide: ConcreteProvider,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => new ConcreteProvider(config.get('providers')!.<name>),
+    },
+  ],
+  exports: [ConcreteProvider],
+})
+export class ConcreteProviderModule {}
+
+// src/modules/payment-requests/payment-requests.module.ts
+@Module({
+  imports: [ConcreteProviderModule],   // import whichever provider is active
+  providers: [
+    PaymentRequestsService,
+    PaymentRequestsRepository,
+    {
+      provide: 'COLLATERAL_PROVIDER',
+      inject: [ConfigService, ConcreteProvider],
+      useFactory: (config, provider) => {
+        switch (config.get('providers').active.collateral) {
+          case '<name>': return provider;
+          default: throw new Error('Unknown collateral provider');
+        }
+      },
+    },
+  ],
+  exports: [PaymentRequestsService],
+})
+export class PaymentRequestsModule {}
+
+// src/modules/payment-requests/payment-requests.service.ts
+@Injectable()
+export class PaymentRequestsService {
+  constructor(
+    @Inject('COLLATERAL_PROVIDER')
+    private readonly collateral_provider: CollateralProvider,
+  ) {}
+}
+```
+
+### 7.3 Provider interfaces (each in the module that owns the contract)
+
+```typescript
+// src/modules/payment-requests/collateral.provider.interface.ts
+export interface CollateralProvider {
+  createPaymentRequest(params: {
+    amount_sat: bigint;
+    memo: string;
+    expiry_seconds: number;
+  }): Promise<{
+    provider_reference: string;
+    payment_request: string;
+    receiving_address: string;
+    expires_at: Date;
+  }>;
+  sendToAddress(params: { address: string; amount_sat: bigint; memo: string }): Promise<string>;
+  verifyWebhookSignature(raw_body: string, signature: string): boolean;
+}
+
+// src/modules/disbursements/disbursement.provider.interface.ts
+export interface DisbursementProvider {
+  initiateTransfer(params: {
+    amount: Decimal;
+    currency: string;
+    provider_name: string;
+    account_unique: string;
+    account_name: string | null;
+    reference: string;
+    narration: string;
+  }): Promise<{ provider_txn_id: string; provider_response: Record<string, unknown> }>;
+  getTransferStatus(provider_reference: string): Promise<{
+    status: 'processing' | 'successful' | 'failed';
+    failure_reason?: string;
+    failure_code?: string;
+  }>;
+  verifyWebhookSignature(raw_body: string, signature: string): boolean;
+}
+
+// src/modules/price-feed/price-feed.provider.interface.ts
+export interface PriceFeedProvider {
+  fetchRates(): Promise<Array<{ pair: AssetPair; rate_ngn: Decimal; fetched_at: Date }>>;
+}
+
+// src/modules/kyc/kyc.provider.interface.ts
+export interface KycProvider {
+  verifyBvn(bvn: string): Promise<{ legal_name: string; provider_reference: string }>;
+  verifyNin(nin: string): Promise<{ legal_name: string; provider_reference: string }>;
+}
+```
 
 ---
 
@@ -241,7 +374,7 @@ This keeps TypeScript, Prisma, raw SQL, JSON responses, and logs visually consis
 | Files | kebab-case | `loan.service.ts` |
 | Directories | kebab-case | `disbursement-accounts/` |
 | Classes | PascalCase | `LoanService` |
-| Interfaces / Types | PascalCase (no `I` prefix) | `BlinkInvoice` |
+| Interfaces / Types | PascalCase (no `I` prefix) | `RateResult` |
 | Enums (name) | PascalCase | `LoanStatus` |
 | Enum members | SCREAMING_SNAKE_CASE | `PENDING_COLLATERAL` |
 | Functions / Methods | camelCase | `checkoutLoan()` |
@@ -309,13 +442,13 @@ Each phase must have passing tests before the next begins.
 | Phase | Build | Acceptance |
 |---|---|---|
 | 0 | NestJS scaffold, Docker Compose, Prisma schema, `common/`, `prisma.service.ts` | `pnpm start:dev` runs, `/v1/docs` loads |
-| 1 | `price-feed` module + Monierate provider + worker | Rates in Redis within 30s; `GET /v1/rates` live |
+| 1 | `price-feed` module + price feed provider + worker | Rates in Redis within 30s; `GET /v1/rates` live |
 | 2 | `auth` module + `SessionGuard` | Auth tests pass, session cookie set on login |
-| 3 | `kyc` module + Qore ID provider + encrypted storage | BVN verifies; raw BVN absent from DB |
+| 3 | `kyc` module + KYC provider + encrypted storage | BVN verifies; raw BVN absent from DB |
 | 4 | `disbursement-accounts` + `NameMatchService` (BANK + MOBILE_MONEY) + `KycVerifiedGuard` | Max 5/kind enforced; score < 0.85 rejected for name-matched kinds |
-| 5 | Provider interfaces + concrete classes (Blink, Palmpay) with Jest mocks | All interface contracts unit tested |
+| 5 | Provider interfaces + concrete implementations with Jest mocks | All interface contracts unit tested |
 | 6 | `CalculatorService` — pure math | All calculator cases pass |
-| 7 | `disbursements` + `OutflowsService` + Palmpay wired | Disbursement created, Outflow dispatched, idempotent on duplicate |
+| 7 | `disbursements` + `OutflowsService` + disbursement provider wired | Disbursement created, Outflow dispatched, idempotent on duplicate |
 | 8 | `payment-requests` + `inflows` + Redis cache | PaymentRequest created with correct expiry; Inflow matched atomically |
 | 9 | `loans` + `LoansController` + `LoanStatusService` | `POST /v1/loans/checkout` → PaymentRequest; `GET /v1/loans/:id` shows timeline |
 | 10 | `webhooks` — collateral + disbursement controllers | Mismatch → 401; duplicate → idempotent; valid → loan advances |

@@ -1,17 +1,26 @@
 import { registerAs } from '@nestjs/config';
 
-export interface PriceFeedProviderConfig {
+// ── Selector — which concrete provider is active for each role ────────────────
+export interface ActiveProviders {
+  price_feed: string;   // 'quidax'
+  collateral: string;   // 'blink'
+  disbursement: string; // 'palmpay' | 'opay'
+  kyc: string;          // 'qoreid'
+}
+
+// ── Per-provider credential shapes ───────────────────────────────────────────
+export interface QuidaxConfig {
   api_key: string;
   base_url: string;
 }
 
-export interface CollateralProviderConfig {
+export interface BlinkConfig {
   api_key: string;
   base_url: string;
   webhook_secret: string;
 }
 
-export interface DisbursementProviderConfig {
+export interface PalmpayConfig {
   api_key: string;
   secret_key: string;
   base_url: string;
@@ -19,17 +28,19 @@ export interface DisbursementProviderConfig {
   webhook_ip_allowlist: string[];
 }
 
-export interface KycProviderConfig {
+export interface QoreidConfig {
   client_id: string;
   client_secret: string;
   base_url: string;
 }
 
+// ── Aggregate config ──────────────────────────────────────────────────────────
 export interface ProvidersConfig {
-  price_feed: PriceFeedProviderConfig;
-  collateral: CollateralProviderConfig;
-  disbursement: DisbursementProviderConfig;
-  kyc: KycProviderConfig;
+  active: ActiveProviders;
+  quidax: QuidaxConfig;
+  blink: BlinkConfig;
+  palmpay: PalmpayConfig;
+  qoreid: QoreidConfig;
 }
 
 const splitCsv = (raw?: string): string[] =>
@@ -39,25 +50,31 @@ const splitCsv = (raw?: string): string[] =>
     .filter((s) => s.length > 0);
 
 export default registerAs('providers', (): ProvidersConfig => ({
-  price_feed: {
-    api_key: process.env.MONIERATE_API_KEY ?? '',
-    base_url: process.env.MONIERATE_BASE_URL ?? 'https://api.monierate.com',
+  active: {
+    price_feed:   process.env.PRICE_FEED_PROVIDER   ?? 'quidax',
+    collateral:   process.env.COLLATERAL_PROVIDER   ?? 'blink',
+    disbursement: process.env.DISBURSEMENT_PROVIDER ?? 'palmpay',
+    kyc:          process.env.KYC_PROVIDER          ?? 'qoreid',
   },
-  collateral: {
-    api_key: process.env.COLLATERAL_PROVIDER_API_KEY ?? '',
-    base_url: process.env.COLLATERAL_PROVIDER_BASE_URL ?? '',
-    webhook_secret: process.env.COLLATERAL_PROVIDER_WEBHOOK_SECRET ?? '',
+  quidax: {
+    api_key:  process.env.QUIDAX_API_KEY  ?? '',
+    base_url: process.env.QUIDAX_BASE_URL ?? 'https://app.quidax.io/api/v1',
   },
-  disbursement: {
-    api_key: process.env.DISBURSEMENT_PROVIDER_API_KEY ?? '',
-    secret_key: process.env.DISBURSEMENT_PROVIDER_SECRET_KEY ?? '',
-    base_url: process.env.DISBURSEMENT_PROVIDER_BASE_URL ?? '',
-    webhook_secret: process.env.DISBURSEMENT_PROVIDER_WEBHOOK_SECRET ?? '',
-    webhook_ip_allowlist: splitCsv(process.env.DISBURSEMENT_PROVIDER_WEBHOOK_IP_ALLOWLIST),
+  blink: {
+    api_key:        process.env.BLINK_API_KEY        ?? '',
+    base_url:       process.env.BLINK_BASE_URL        ?? 'https://api.blink.sv',
+    webhook_secret: process.env.BLINK_WEBHOOK_SECRET  ?? '',
   },
-  kyc: {
-    client_id: process.env.KYC_PROVIDER_CLIENT_ID ?? '',
-    client_secret: process.env.KYC_PROVIDER_CLIENT_SECRET ?? '',
-    base_url: process.env.KYC_PROVIDER_BASE_URL ?? '',
+  palmpay: {
+    api_key:              process.env.PALMPAY_API_KEY              ?? '',
+    secret_key:           process.env.PALMPAY_SECRET_KEY           ?? '',
+    base_url:             process.env.PALMPAY_BASE_URL             ?? '',
+    webhook_secret:       process.env.PALMPAY_WEBHOOK_SECRET       ?? '',
+    webhook_ip_allowlist: splitCsv(process.env.PALMPAY_WEBHOOK_IP_ALLOWLIST),
+  },
+  qoreid: {
+    client_id:     process.env.QOREID_CLIENT_ID     ?? '',
+    client_secret: process.env.QOREID_CLIENT_SECRET ?? '',
+    base_url:      process.env.QOREID_BASE_URL      ?? '',
   },
 }));
