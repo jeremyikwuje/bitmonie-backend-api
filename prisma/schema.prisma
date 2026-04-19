@@ -382,13 +382,23 @@ enum AssetPair {
 }
 
 model PriceFeed {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  pair        AssetPair
-  rate_buy    Decimal   @db.Decimal(20, 6)
-  rate_sell   Decimal   @db.Decimal(20, 6)
-  source      String    @db.VarChar(50)
-  fetched_at  DateTime  @db.Timestamptz
-  created_at  DateTime  @default(now()) @db.Timestamptz
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pair             AssetPair
+
+  // Raw rates directly from the provider — stored for audit and reconciliation
+  rate_buy_origin  Decimal   @db.Decimal(20, 6)
+  rate_sell_origin Decimal   @db.Decimal(20, 6)
+
+  // Marked-up rates — used for all loan calculations, liquidation, and API responses
+  rate_buy         Decimal   @db.Decimal(20, 6)
+  rate_sell        Decimal   @db.Decimal(20, 6)
+
+  // Markup applied at capture time — self-contained for historical accuracy
+  markup_percent   Decimal   @db.Decimal(6, 4)
+
+  source           String    @db.VarChar(50)
+  fetched_at       DateTime  @db.Timestamptz
+  created_at       DateTime  @default(now()) @db.Timestamptz
 
   @@index([pair, fetched_at(sort: Desc)])
   @@map("price_feeds")

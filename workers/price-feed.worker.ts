@@ -7,7 +7,9 @@
 
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
+import Decimal from 'decimal.js';
 import { QuidaxProvider } from '@/providers/quidax/quidax.provider';
+import { RATE_MARKUP_PERCENT } from '@/common/constants';
 
 const PRICE_CACHE_TTL_SEC = 90;
 const STALE_ALERT_THRESHOLD_MS = 5 * 60 * 1_000;
@@ -43,17 +45,22 @@ async function run_cycle(): Promise<void> {
     const rates = await provider.fetchRates();
 
     await Promise.all(
-      rates.map((rate) =>
-        prisma.priceFeed.create({
+      rates.map((rate) => {
+        const rate_buy  = rate.rate_buy.mul(new Decimal(1).plus(RATE_MARKUP_PERCENT));
+        const rate_sell = rate.rate_sell.mul(new Decimal(1).minus(RATE_MARKUP_PERCENT));
+        return prisma.priceFeed.create({
           data: {
-            pair: rate.pair,
-            rate_buy: rate.rate_buy,
-            rate_sell: rate.rate_sell,
-            fetched_at: rate.fetched_at,
-            source: process.env.PRICE_FEED_PROVIDER ?? 'unknown',
+            pair:             rate.pair,
+            rate_buy_origin:  rate.rate_buy,
+            rate_sell_origin: rate.rate_sell,
+            rate_buy,
+            rate_sell,
+            markup_percent:   RATE_MARKUP_PERCENT,
+            fetched_at:       rate.fetched_at,
+            source:           process.env.PRICE_FEED_PROVIDER ?? 'unknown',
           },
-        }),
-      ),
+        });
+      }),
     );
 
     const pipeline = redis.pipeline();

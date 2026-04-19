@@ -11,6 +11,7 @@ import { RedisModule } from '@/database/redis.module';
 import { CryptoModule } from '@/common/crypto/crypto.module';
 import { IdempotencyInterceptor } from '@/common/interceptors/idempotency.interceptor';
 import { PriceFeedModule } from './modules/price-feed/price-feed.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PriceFeedModule } from './modules/price-feed/price-feed.module';
     RedisModule,
     CryptoModule,
     PriceFeedModule,
+    AuthModule,
   ],
   providers: [
     {

@@ -6,6 +6,7 @@ export interface ActiveProviders {
   collateral: string;   // 'blink'
   disbursement: string; // 'palmpay' | 'opay'
   kyc: string;          // 'qoreid'
+  email: string;        // 'mailgun' | 'resend' | 'postmark'
 }
 
 // ── Per-provider credential shapes ───────────────────────────────────────────
@@ -34,6 +35,27 @@ export interface QoreidConfig {
   base_url: string;
 }
 
+export interface MailgunConfig {
+  api_key: string;
+  domain: string;
+  region: 'us' | 'eu';   // determines which base URL the provider uses
+  from_address: string;
+  from_name: string;
+}
+
+export interface ResendConfig {
+  api_key: string;
+  from_address: string;
+  from_name: string;
+}
+
+export interface PostmarkConfig {
+  server_token: string;
+  from_address: string;
+  from_name: string;
+  message_stream?: string;
+}
+
 // ── Aggregate config ──────────────────────────────────────────────────────────
 export interface ProvidersConfig {
   active: ActiveProviders;
@@ -41,6 +63,9 @@ export interface ProvidersConfig {
   blink: BlinkConfig;
   palmpay: PalmpayConfig;
   qoreid: QoreidConfig;
+  mailgun: MailgunConfig;
+  resend: ResendConfig;
+  postmark: PostmarkConfig;
 }
 
 const splitCsv = (raw?: string): string[] =>
@@ -55,6 +80,7 @@ export default registerAs('providers', (): ProvidersConfig => ({
     collateral:   process.env.COLLATERAL_PROVIDER   ?? 'blink',
     disbursement: process.env.DISBURSEMENT_PROVIDER ?? 'palmpay',
     kyc:          process.env.KYC_PROVIDER          ?? 'qoreid',
+    email:        process.env.EMAIL_PROVIDER        ?? 'resend',
   },
   quidax: {
     api_key:  process.env.QUIDAX_API_KEY  ?? '',
@@ -76,5 +102,23 @@ export default registerAs('providers', (): ProvidersConfig => ({
     client_id:     process.env.QOREID_CLIENT_ID     ?? '',
     client_secret: process.env.QOREID_CLIENT_SECRET ?? '',
     base_url:      process.env.QOREID_BASE_URL      ?? '',
+  },
+  mailgun: {
+    api_key:      process.env.MAILGUN_API_KEY      ?? '',
+    domain:       process.env.MAILGUN_DOMAIN       ?? '',
+    region:       (process.env.MAILGUN_REGION ?? 'eu') as 'us' | 'eu',
+    from_address: process.env.EMAIL_FROM_ADDRESS   ?? '',
+    from_name:    process.env.EMAIL_FROM_NAME      ?? 'Bitmonie',
+  },
+  resend: {
+    api_key:      process.env.RESEND_API_KEY       ?? '',
+    from_address: process.env.EMAIL_FROM_ADDRESS   ?? '',
+    from_name:    process.env.EMAIL_FROM_NAME      ?? 'Bitmonie',
+  },
+  postmark: {
+    server_token:   process.env.POSTMARK_SERVER_TOKEN  ?? '',
+    from_address:   process.env.EMAIL_FROM_ADDRESS     ?? '',
+    from_name:      process.env.EMAIL_FROM_NAME        ?? 'Bitmonie',
+    message_stream: process.env.POSTMARK_MESSAGE_STREAM ?? 'outbound',
   },
 }));

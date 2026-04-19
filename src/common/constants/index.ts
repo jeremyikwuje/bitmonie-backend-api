@@ -1,5 +1,6 @@
 import { Decimal } from 'decimal.js';
 
+export const RATE_MARKUP_PERCENT       = new Decimal('0.005');  // 0.5% spread on each side
 export const LOAN_LTV_PERCENT          = new Decimal('0.80');
 export const LIQUIDATION_THRESHOLD     = new Decimal('1.10');
 export const ALERT_THRESHOLD           = new Decimal('1.20');

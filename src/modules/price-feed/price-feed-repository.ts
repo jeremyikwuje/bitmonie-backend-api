@@ -7,16 +7,17 @@ import Decimal from 'decimal.js';
 export class PriceFeedRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async insertRate(
-    pair: AssetPair,
-    rate_buy: Decimal,
-    rate_sell: Decimal,
-    fetched_at: Date,
-    source: string,
-  ): Promise<void> {
-    await this.prisma.priceFeed.create({
-      data: { pair, rate_buy, rate_sell, fetched_at, source },
-    });
+  async insertRate(params: {
+    pair: AssetPair;
+    rate_buy_origin: Decimal;
+    rate_sell_origin: Decimal;
+    rate_buy: Decimal;
+    rate_sell: Decimal;
+    markup_percent: Decimal;
+    source: string;
+    fetched_at: Date;
+  }): Promise<void> {
+    await this.prisma.priceFeed.create({ data: params });
   }
 
   async getLatestRate(pair: AssetPair): Promise<{
