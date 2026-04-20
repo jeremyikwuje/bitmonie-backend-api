@@ -62,6 +62,7 @@ export class KycService {
     let legal_name: string;
     let provider_reference: string;
     let provider_raw_response: Record<string, unknown>;
+    let verified_dob: Date | null = null;
 
     try {
       const result = await this.resolveIdNumber(TIER_1, dto);
@@ -69,6 +70,10 @@ export class KycService {
       provider_reference = result.provider_reference;
       provider_raw_response = result.raw_response;
       this.verifyBiodata(dto, result.legal_name, result.date_of_birth);
+      if (result.date_of_birth) {
+        const normalised = normalize_dob(result.date_of_birth);
+        if (normalised) verified_dob = new Date(normalised);
+      }
     } catch (err) {
       if (err instanceof KycBiodataMismatchException) throw err;
       throw new BitmonieException(
@@ -88,6 +93,7 @@ export class KycService {
           id_number_hash,
           encrypted_id_number,
           legal_name,
+          date_of_birth: verified_dob,
           provider_reference,
           provider_raw_response: provider_raw_response as object,
           status: KycStatus.VERIFIED,
@@ -98,6 +104,7 @@ export class KycService {
           id_number_hash,
           encrypted_id_number,
           legal_name,
+          date_of_birth: verified_dob,
           provider_reference,
           provider_raw_response: provider_raw_response as object,
           status: KycStatus.VERIFIED,
@@ -108,7 +115,13 @@ export class KycService {
 
       await tx.user.update({
         where: { id: user_id },
-        data: { kyc_tier: TIER_1 },
+        data: {
+          kyc_tier: TIER_1,
+          first_name: dto.first_name,
+          middle_name: dto.middle_name ?? null,
+          last_name: dto.last_name,
+          date_of_birth: verified_dob,
+        },
       });
     });
 

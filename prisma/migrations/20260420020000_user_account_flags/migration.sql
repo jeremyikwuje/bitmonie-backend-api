@@ -1,0 +1,3 @@
+ALTER TABLE "users"
+  ADD COLUMN IF NOT EXISTS "is_active"            BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS "disbursement_enabled"  BOOLEAN NOT NULL DEFAULT true;

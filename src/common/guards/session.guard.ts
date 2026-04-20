@@ -7,6 +7,7 @@ import {
 import type { Request } from 'express';
 import { createHash } from 'crypto';
 import { PrismaService } from '@/database/prisma.service';
+import { AccountSuspendedException } from '@/common/errors/bitmonie.errors';
 
 function extractToken(request: Request): string | null {
   const cookies = (request as Request & { cookies?: Record<string, string> }).cookies ?? {};
@@ -38,6 +39,7 @@ export class SessionGuard implements CanActivate {
     });
 
     if (!user) throw new UnauthorizedException();
+    if (!user.is_active) throw new AccountSuspendedException();
 
     (request as Request & { user?: unknown }).user = user;
     return true;

@@ -4,7 +4,6 @@ import { registerAs } from '@nestjs/config';
 export interface ActiveProviders {
   price_feed: string;   // 'quidax'
   collateral: string;   // 'blink'
-  disbursement: string; // 'palmpay' | 'opay'
 }
 
 // ── Per-provider credential shapes ───────────────────────────────────────────
@@ -20,10 +19,13 @@ export interface BlinkConfig {
 }
 
 export interface PalmpayConfig {
-  api_key: string;
-  secret_key: string;
+  app_id: string;
+  merchant_id: string;
+  private_key: string;      // PEM RSA private key — signs outbound requests
+  public_key: string;       // PEM RSA public key  — sent to PalmPay for verification
+  webhook_pub_key: string;  // PEM RSA public key  — verifies inbound webhook signatures
   base_url: string;
-  webhook_secret: string;
+  notify_url: string;       // URL PalmPay POSTs disbursement status updates to
   webhook_ip_allowlist: string[];
 }
 
@@ -82,7 +84,6 @@ export default registerAs('providers', (): ProvidersConfig => ({
   active: {
     price_feed:   process.env.PRICE_FEED_PROVIDER   ?? 'quidax',
     collateral:   process.env.COLLATERAL_PROVIDER   ?? 'blink',
-    disbursement: process.env.DISBURSEMENT_PROVIDER ?? 'palmpay',
   },
   quidax: {
     api_key:  process.env.QUIDAX_API_KEY  ?? '',
@@ -94,10 +95,13 @@ export default registerAs('providers', (): ProvidersConfig => ({
     webhook_secret: process.env.BLINK_WEBHOOK_SECRET  ?? '',
   },
   palmpay: {
-    api_key:              process.env.PALMPAY_API_KEY              ?? '',
-    secret_key:           process.env.PALMPAY_SECRET_KEY           ?? '',
-    base_url:             process.env.PALMPAY_BASE_URL             ?? '',
-    webhook_secret:       process.env.PALMPAY_WEBHOOK_SECRET       ?? '',
+    app_id:              process.env.PALMPAY_APP_ID              ?? '',
+    merchant_id:         process.env.PALMPAY_MERCHANT_ID         ?? '',
+    private_key:         process.env.PALMPAY_PRIVATE_KEY         ?? '',
+    public_key:          process.env.PALMPAY_PUBLIC_KEY          ?? '',
+    webhook_pub_key:     process.env.PALMPAY_WEBHOOK_PUB_KEY     ?? '',
+    base_url:            process.env.PALMPAY_BASE_URL            ?? '',
+    notify_url:          process.env.PALMPAY_NOTIFY_URL          ?? '',
     webhook_ip_allowlist: splitCsv(process.env.PALMPAY_WEBHOOK_IP_ALLOWLIST),
   },
   qoreid: {

@@ -71,7 +71,7 @@ export class AuthService {
 
     const password_hash = await argon2.hash(dto.password);
     await this.prisma.user.create({
-      data: { email, password_hash, email_verified: false },
+      data: { email, password_hash, email_verified: false, country: 'NG' },
     });
     await this.sendEmailVerificationOtp(email);
   }

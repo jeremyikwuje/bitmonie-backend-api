@@ -13,6 +13,7 @@ import { IdempotencyInterceptor } from '@/common/interceptors/idempotency.interc
 import { PriceFeedModule } from './modules/price-feed/price-feed.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { KycModule } from './modules/kyc/kyc.module';
+import { DisbursementAccountsModule } from './modules/disbursement-accounts/disbursement-accounts.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { KycModule } from './modules/kyc/kyc.module';
     PriceFeedModule,
     AuthModule,
     KycModule,
+    DisbursementAccountsModule,
   ],
   providers: [
     {

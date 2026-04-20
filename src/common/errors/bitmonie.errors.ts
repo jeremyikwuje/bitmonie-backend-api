@@ -203,6 +203,38 @@ export class DisbursementTransferFailedException extends BitmonieException {
   }
 }
 
+// ── ACCOUNT ─────────────────────────────────────────────────────
+
+export class AccountSuspendedException extends BitmonieException {
+  constructor() {
+    super(
+      'ACCOUNT_SUSPENDED',
+      'Your account has been suspended. Please contact support.',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
+export class DisbursementDisabledException extends BitmonieException {
+  constructor() {
+    super(
+      'DISBURSEMENT_DISABLED',
+      'Disbursements are currently disabled on your account. Please contact support.',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
+export class LoanDisabledException extends BitmonieException {
+  constructor() {
+    super(
+      'LOAN_DISABLED',
+      'Loan creation is currently disabled on your account. Please contact support.',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
 // ── AUTH ────────────────────────────────────────────────────────
 
 export class AuthInvalidCredentialsException extends BitmonieException {
