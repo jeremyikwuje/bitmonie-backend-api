@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { SessionService } from './session.service';
@@ -11,8 +11,8 @@ import { PostmarkModule } from '@/providers/postmark/postmark.module';
 import { MailgunProvider } from '@/providers/mailgun/mailgun.provider';
 import { ResendProvider } from '@/providers/resend/resend.provider';
 import { PostmarkProvider } from '@/providers/postmark/postmark.provider';
-import type { ProvidersConfig } from '@/config/providers.config';
 import { EMAIL_PROVIDER, type EmailProvider } from './email.provider.interface';
+import { EMAIL_PROVIDER_CONFIG, EmailProviderName } from '@/config/email.config';
 import { RedisModule } from '@/database/redis.module';
 
 @Module({
@@ -23,19 +23,16 @@ import { RedisModule } from '@/database/redis.module';
     SessionService,
     {
       provide: EMAIL_PROVIDER,
-      inject: [ConfigService, MailgunProvider, ResendProvider, PostmarkProvider],
+      inject: [MailgunProvider, ResendProvider, PostmarkProvider],
       useFactory: (
-        config: ConfigService,
         mailgun: MailgunProvider,
         resend: ResendProvider,
         postmark: PostmarkProvider,
       ): EmailProvider => {
-        const { active } = config.get<ProvidersConfig>('providers')!;
-        switch (active.email) {
-          case 'mailgun':  return mailgun;
-          case 'resend':   return resend;
-          case 'postmark': return postmark;
-          default: throw new Error(`Unknown email provider: "${active.email}"`);
+        switch (EMAIL_PROVIDER_CONFIG) {
+          case EmailProviderName.Mailgun:  return mailgun;
+          case EmailProviderName.Resend:   return resend;
+          case EmailProviderName.Postmark: return postmark;
         }
       },
     },

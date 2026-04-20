@@ -12,6 +12,7 @@ import { CryptoModule } from '@/common/crypto/crypto.module';
 import { IdempotencyInterceptor } from '@/common/interceptors/idempotency.interceptor';
 import { PriceFeedModule } from './modules/price-feed/price-feed.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { KycModule } from './modules/kyc/kyc.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { AuthModule } from './modules/auth/auth.module';
     CryptoModule,
     PriceFeedModule,
     AuthModule,
+    KycModule,
   ],
   providers: [
     {

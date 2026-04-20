@@ -7,13 +7,14 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { BitmonieException } from '@/common/errors/bitmonie.errors';
 
 interface ErrorBody {
   code: string;
   message: string;
   details?: unknown;
   request_id?: string;
+  kyc_required?: boolean;
+  prompt_kyc?: string;
 }
 
 @Catch()
@@ -33,15 +34,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message: 'An unexpected error occurred.',
     };
 
-    if (exception instanceof BitmonieException) {
-      status = exception.getStatus();
-      const payload = exception.getResponse() as Record<string, unknown>;
-      body = {
-        code: (payload.code as string) ?? 'INTERNAL_ERROR',
-        message: (payload.message as string) ?? exception.message,
-        details: payload.details,
-      };
-    } else if (exception instanceof HttpException) {
+    if (exception instanceof HttpException) {
       status = exception.getStatus();
       const payload = exception.getResponse();
       if (typeof payload === 'string') {
@@ -57,6 +50,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
                 ? obj.message.join(', ')
                 : exception.message,
           details: obj.details ?? (Array.isArray(obj.message) ? obj.message : undefined),
+          ...(obj.kyc_required !== undefined && { kyc_required: obj.kyc_required as boolean }),
+          ...(obj.prompt_kyc !== undefined && { prompt_kyc: obj.prompt_kyc as string }),
         };
       }
     } else {

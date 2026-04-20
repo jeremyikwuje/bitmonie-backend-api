@@ -1,0 +1,1 @@
+ALTER TYPE "kyc_id_type" ADD VALUE 'DRIVERS_LICENSE';

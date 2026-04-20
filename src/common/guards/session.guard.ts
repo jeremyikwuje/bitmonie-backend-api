@@ -35,7 +35,6 @@ export class SessionGuard implements CanActivate {
 
     const user = await this.prisma.user.findUnique({
       where: { id: session.user_id },
-      include: { kyc: true },
     });
 
     if (!user) throw new UnauthorizedException();

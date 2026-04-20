@@ -5,8 +5,6 @@ export interface ActiveProviders {
   price_feed: string;   // 'quidax'
   collateral: string;   // 'blink'
   disbursement: string; // 'palmpay' | 'opay'
-  kyc: string;          // 'qoreid'
-  email: string;        // 'mailgun' | 'resend' | 'postmark'
 }
 
 // ── Per-provider credential shapes ───────────────────────────────────────────
@@ -33,6 +31,11 @@ export interface QoreidConfig {
   client_id: string;
   client_secret: string;
   base_url: string;
+}
+
+export interface DojahConfig {
+  app_id: string;
+  api_key: string;
 }
 
 export interface MailgunConfig {
@@ -63,6 +66,7 @@ export interface ProvidersConfig {
   blink: BlinkConfig;
   palmpay: PalmpayConfig;
   qoreid: QoreidConfig;
+  dojah: DojahConfig;
   mailgun: MailgunConfig;
   resend: ResendConfig;
   postmark: PostmarkConfig;
@@ -79,8 +83,6 @@ export default registerAs('providers', (): ProvidersConfig => ({
     price_feed:   process.env.PRICE_FEED_PROVIDER   ?? 'quidax',
     collateral:   process.env.COLLATERAL_PROVIDER   ?? 'blink',
     disbursement: process.env.DISBURSEMENT_PROVIDER ?? 'palmpay',
-    kyc:          process.env.KYC_PROVIDER          ?? 'qoreid',
-    email:        process.env.EMAIL_PROVIDER        ?? 'resend',
   },
   quidax: {
     api_key:  process.env.QUIDAX_API_KEY  ?? '',
@@ -102,6 +104,10 @@ export default registerAs('providers', (): ProvidersConfig => ({
     client_id:     process.env.QOREID_CLIENT_ID     ?? '',
     client_secret: process.env.QOREID_CLIENT_SECRET ?? '',
     base_url:      process.env.QOREID_BASE_URL      ?? '',
+  },
+  dojah: {
+    app_id:  process.env.DOJAH_APP_ID  ?? '',
+    api_key: process.env.DOJAH_API_KEY ?? '',
   },
   mailgun: {
     api_key:      process.env.MAILGUN_API_KEY      ?? '',

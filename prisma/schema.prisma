@@ -21,10 +21,11 @@ model User {
   password_hash   String        @db.VarChar(512)
   totp_secret     String?       @db.VarChar(512)
   totp_enabled    Boolean       @default(false)
+  kyc_tier        Int           @default(0)
   created_at      DateTime      @default(now()) @db.Timestamptz
   updated_at      DateTime      @updatedAt @db.Timestamptz
 
-  kyc                  Kyc?
+  kyc_verifications    KycVerification[]
   disbursement_accounts DisbursementAccount[]
   loans                Loan[]
   payment_requests PaymentRequest[]
@@ -55,40 +56,57 @@ model Session {
 
 enum KycStatus {
   PENDING
+  UNDER_REVIEW
   VERIFIED
   FAILED
-  MANUAL_REVIEW
 
   @@map("kyc_status")
 }
 
-enum KycMethod {
+enum KycIdType {
   BVN
   NIN
   PASSPORT
+  DRIVERS_LICENSE
 
-  @@map("kyc_method")
+  @@map("kyc_id_type")
 }
 
-model Kyc {
+model KycVerification {
   id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id             String      @unique @db.Uuid
+  user_id             String      @db.Uuid
   user                User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  method              KycMethod
-  status              KycStatus   @default(PENDING)
 
-  bvn_hash            String?     @db.VarChar(512)
-  encrypted_bvn       String?     @db.VarChar(512)
+  // Tier 1 — basic identity
+  tier                Int
+  id_type             KycIdType?
+  id_number_hash      String?     @db.VarChar(512)   // SHA-256+salt; never raw
+  encrypted_id_number String?     @db.VarChar(512)   // AES-256-GCM
+  legal_name          String?     @db.VarChar(255)
+  date_of_birth       DateTime?   @db.Date
 
-  legal_name          String      @db.VarChar(255)
-  verified_at         DateTime?   @db.Timestamptz
-  failure_reason      String?     @db.VarChar(500)
-  provider_reference  String?     @db.VarChar(255)
+  // Tier 2 — liveness (stub; fields populated in v1.1)
+  liveness_reference  String?     @db.VarChar(255)
+  selfie_url          String?     @db.VarChar(512)
+
+  // Tier 3 — address (stub; fields populated in v1.2)
+  address_line1       String?     @db.VarChar(255)
+  address_city        String?     @db.VarChar(100)
+  address_state       String?     @db.VarChar(100)
+  address_doc_url     String?     @db.VarChar(512)
+
+  status                  KycStatus   @default(PENDING)
+  failure_reason          String?     @db.VarChar(500)
+  provider_reference      String?     @db.VarChar(255)
+  provider_raw_response   Json?                          // audit snapshot — no photo/image/raw ID
+  verified_at             DateTime?   @db.Timestamptz
 
   created_at          DateTime    @default(now()) @db.Timestamptz
   updated_at          DateTime    @updatedAt @db.Timestamptz
 
-  @@map("kycs")
+  @@unique([user_id, tier])
+  @@index([user_id, status])
+  @@map("kyc_verifications")
 }
 
 // ─────────────────────────────────────────

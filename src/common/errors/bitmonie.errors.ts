@@ -134,6 +134,53 @@ export class KycAlreadyVerifiedException extends BitmonieException {
   }
 }
 
+export class KycUpgradeRequiredException extends HttpException {
+  public readonly code = 'KYC_UPGRADE_REQUIRED';
+  public readonly kyc_required = true;
+  public readonly prompt_kyc: string;
+
+  constructor(required_tier: number) {
+    const prompt = `tier-${required_tier}`;
+    super(
+      {
+        code: 'KYC_UPGRADE_REQUIRED',
+        message: `This action requires KYC tier ${required_tier} verification.`,
+        kyc_required: true,
+        prompt_kyc: prompt,
+        details: [{ field: 'kyc_tier', issue: `Required tier: ${required_tier}` }],
+      },
+      HttpStatus.FORBIDDEN,
+    );
+    this.prompt_kyc = prompt;
+  }
+}
+
+export class KycBiodataMismatchException extends BitmonieException {
+  constructor() {
+    super(
+      'KYC_BIODATA_MISMATCH',
+      'The name or date of birth you provided does not match the records on your identity document.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class KycPendingException extends BitmonieException {
+  constructor() {
+    super(
+      'KYC_PENDING',
+      'Your KYC verification is under review. Please wait for approval.',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
+export class KycNotFoundException extends BitmonieException {
+  constructor() {
+    super('KYC_NOT_FOUND', 'KYC record not found.', HttpStatus.NOT_FOUND);
+  }
+}
+
 // ── PROVIDER FAILURES ───────────────────────────────────────────
 
 export class CollateralInvoiceFailedException extends BitmonieException {

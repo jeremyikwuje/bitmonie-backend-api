@@ -1,8 +1,8 @@
 import { ExecutionContext, createParamDecorator } from '@nestjs/common';
 import type { Request } from 'express';
-import type { Kyc, User } from '@prisma/client';
+import type { User } from '@prisma/client';
 
-export type AuthenticatedUser = User & { kyc: Kyc | null };
+export type AuthenticatedUser = User;
 
 export const CurrentUser = createParamDecorator(
   (_data: unknown, ctx: ExecutionContext): AuthenticatedUser => {
