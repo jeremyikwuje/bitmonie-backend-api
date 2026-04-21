@@ -26,13 +26,25 @@ export class PalmpayProvider implements DisbursementProvider {
 
   // ── Signing ────────────────────────────────────────────────────────────────
 
-  // Builds the MD5 signature of all body params (sorted, key=value joined).
+  // PalmPay signing protocol:
+  //   1. Sort all params (excluding nulls/empty), concat as key=value&…
+  //   2. MD5-hash the result (uppercase hex)
+  //   3. RSA-SHA1 sign the MD5 string using the merchant private key
+  //   4. Base64-encode the signature → goes in the `Signature` request header
   private build_signature(params: Record<string, unknown>): string {
     const sorted = Object.keys(params)
+      .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== '')
       .sort()
       .map((k) => `${k}=${String(params[k])}`)
       .join('&');
-    return crypto.createHash('md5').update(sorted).digest('hex').toUpperCase();
+
+    const md5 = crypto.createHash('md5').update(sorted, 'utf8').digest('hex').toUpperCase();
+
+    const private_key = forge.pki.privateKeyFromPem(this.config.private_key);
+    const md = forge.md.sha1.create();
+    md.update(md5, 'utf8');
+    const signature = private_key.sign(md);
+    return Buffer.from(signature, 'binary').toString('base64');
   }
 
   private verify_webhook_sign(params: Record<string, unknown>, signature: string): boolean {

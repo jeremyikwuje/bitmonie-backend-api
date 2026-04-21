@@ -4,14 +4,17 @@ import { PalmpayProvider } from '@/providers/palmpay/palmpay.provider';
 import type { PalmpayConfig } from '@/config/providers.config';
 import Decimal from 'decimal.js';
 
-// ── RSA keypair generated once for all webhook-signature tests ────────────────
+// ── RSA keypair generated once for all tests ─────────────────────────────────
 // 1024-bit is sufficient for unit tests — we're verifying logic, not key strength.
-let TEST_PUB_PEM: string;
-let TEST_PRIV_KEY: forge.pki.rsa.PrivateKey;
+// merchant_* = our own key (signs outbound requests + used for webhook verification tests)
+let TEST_PUB_PEM:       string;
+let TEST_PRIV_PEM:      string;
+let TEST_PRIV_KEY:      forge.pki.rsa.PrivateKey;
 
 beforeAll(() => {
   const keypair = forge.pki.rsa.generateKeyPair({ bits: 1024 });
-  TEST_PUB_PEM = forge.pki.publicKeyToPem(keypair.publicKey);
+  TEST_PUB_PEM  = forge.pki.publicKeyToPem(keypair.publicKey);
+  TEST_PRIV_PEM = forge.pki.privateKeyToPem(keypair.privateKey);
   TEST_PRIV_KEY = keypair.privateKey;
 });
 
@@ -19,10 +22,10 @@ function make_config(overrides: Partial<PalmpayConfig> = {}): PalmpayConfig {
   return {
     app_id: 'test_app_id',
     merchant_id: 'test_merchant',
-    private_key: '',
-    public_key: '',
+    private_key: TEST_PRIV_PEM,
+    public_key:  TEST_PUB_PEM,
     webhook_pub_key: TEST_PUB_PEM,
-    base_url: 'https://api-dev.palmpay-inc.com',
+    base_url: 'https://open-gw-prod.palmpay-inc.com',
     notify_url: 'https://bitmonie.com/v1/webhooks/disbursement',
     webhook_ip_allowlist: [],
     ...overrides,
