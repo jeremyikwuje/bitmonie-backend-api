@@ -17,6 +17,7 @@ RUN pnpm build
 
 # ── runner: production image ─────────────────────────────────────────────────
 FROM node:24-alpine AS runner
+RUN apk add --no-cache openssl
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 WORKDIR /app
 ENV NODE_ENV=production
