@@ -7,7 +7,6 @@ import {
   DisbursementAccountNameMismatchException,
   DisbursementAccountMaxPerKindException,
   DisbursementAccountDefaultDeleteException,
-  KycUpgradeRequiredException,
 } from '@/common/errors/bitmonie.errors';
 import { DISBURSEMENT_NAME_MATCH_THRESHOLD, MAX_DISBURSEMENT_ACCOUNTS_PER_KIND } from '@/common/constants';
 import type { AddDisbursementAccountDto } from './dto/add-disbursement-account.dto';
@@ -35,12 +34,6 @@ export class DisbursementAccountsService {
     user_id: string,
     dto: AddDisbursementAccountDto,
   ): Promise<{ id: string; message: string }> {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: user_id } });
-
-    if (NAME_MATCHED_KINDS.includes(dto.kind) && user.kyc_tier < 1) {
-      throw new KycUpgradeRequiredException(1);
-    }
-
     const existing_count = await this.prisma.disbursementAccount.count({
       where: { user_id, kind: dto.kind },
     });
@@ -56,6 +49,7 @@ export class DisbursementAccountsService {
     let status = DisbursementAccountStatus.VERIFIED;
 
     if (NAME_MATCHED_KINDS.includes(dto.kind)) {
+      const user = await this.prisma.user.findUniqueOrThrow({ where: { id: user_id } });
       const rail = KIND_TO_RAIL[dto.kind]!;
       const provider = this.disbursement_router.forRoute('NGN', rail);
       const fetched_name = await provider.lookupAccountName({

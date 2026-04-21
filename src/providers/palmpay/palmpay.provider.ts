@@ -196,6 +196,11 @@ export class PalmpayProvider implements DisbursementProvider {
     try {
       const params = JSON.parse(raw_body) as Record<string, unknown>;
       const { sign } = params;
+      // Payout notifications always include sign (required).
+      // Collection (payin) notifications mark sign as optional — skip
+      // verification only when the field is genuinely absent, not when
+      // it is present but invalid.
+      if (sign === undefined || sign === null) return true;
       if (typeof sign !== 'string') return false;
       return this.verify_webhook_sign(params, sign);
     } catch {

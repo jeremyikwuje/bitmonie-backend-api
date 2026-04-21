@@ -3,8 +3,11 @@ import { PalmpayModule } from '@/providers/palmpay/palmpay.module';
 import { PalmpayProvider } from '@/providers/palmpay/palmpay.provider';
 import { StubDisbursementProvider } from '@/providers/stub/stub-disbursement.provider';
 import { DisbursementProviderName } from '@/config/disbursement.config';
+import { PrismaService } from '@/database/prisma.service';
 import type { DisbursementProvider } from './disbursement.provider.interface';
 import { DisbursementRouter, DISBURSEMENT_PROVIDERS_MAP } from './disbursement-router.service';
+import { DisbursementsService } from './disbursements.service';
+import { OutflowsService } from './outflows.service';
 
 const stub_disbursement_provider = new StubDisbursementProvider();
 
@@ -24,6 +27,7 @@ const ALL_PROVIDER_MODULES = [PalmpayModule];
 @Module({
   imports: [...ALL_PROVIDER_MODULES],
   providers: [
+    PrismaService,
     {
       provide: DISBURSEMENT_PROVIDERS_MAP,
       inject: [PalmpayProvider],
@@ -36,7 +40,9 @@ const ALL_PROVIDER_MODULES = [PalmpayModule];
         ),
     },
     DisbursementRouter,
+    DisbursementsService,
+    OutflowsService,
   ],
-  exports: [DisbursementRouter],
+  exports: [DisbursementRouter, DisbursementsService, OutflowsService],
 })
 export class DisbursementsModule {}

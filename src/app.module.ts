@@ -14,6 +14,8 @@ import { PriceFeedModule } from './modules/price-feed/price-feed.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { DisbursementAccountsModule } from './modules/disbursement-accounts/disbursement-accounts.module';
+import { LoansModule } from './modules/loans/loans.module';
+import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { DisbursementAccountsModule } from './modules/disbursement-accounts/disb
     AuthModule,
     KycModule,
     DisbursementAccountsModule,
+    LoansModule,
+    WebhooksModule,
   ],
   providers: [
     {

@@ -76,6 +76,17 @@ export class LoanAmountTooHighException extends BitmonieException {
   }
 }
 
+export class LoanDurationInvalidException extends BitmonieException {
+  constructor(context: { min: number; max: number }) {
+    super(
+      'LOAN_DURATION_INVALID',
+      `Loan duration must be between ${context.min} and ${context.max} days.`,
+      HttpStatus.BAD_REQUEST,
+      [{ field: 'duration_days', issue: `Must be ${context.min}–${context.max} days` }],
+    );
+  }
+}
+
 export class LoanInvalidTransitionException extends BitmonieException {
   constructor(context: { from_status: string; to_status: string }) {
     super(

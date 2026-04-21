@@ -15,7 +15,10 @@ export interface QuidaxConfig {
 export interface BlinkConfig {
   api_key: string;
   base_url: string;
-  webhook_secret: string;
+  wallet_id: string;        // BTC wallet ID — found at app.blink.sv → API Keys
+  usd_wallet_id: string;    // USD (stable-sats) wallet ID — target for BTC→USD swaps on liquidation
+  account_id: string;       // Account ID — validates webhook accountId field matches our account
+  webhook_secret: string;   // Svix signing secret — starts with 'whsec_'
 }
 
 export interface PalmpayConfig {
@@ -92,6 +95,9 @@ export default registerAs('providers', (): ProvidersConfig => ({
   blink: {
     api_key:        process.env.BLINK_API_KEY        ?? '',
     base_url:       process.env.BLINK_BASE_URL        ?? 'https://api.blink.sv',
+    wallet_id:      process.env.BLINK_WALLET_ID       ?? '',
+    usd_wallet_id:  process.env.BLINK_USD_WALLET_ID   ?? '',
+    account_id:     process.env.BLINK_ACCOUNT_ID      ?? '',
     webhook_secret: process.env.BLINK_WEBHOOK_SECRET  ?? '',
   },
   palmpay: {

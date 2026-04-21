@@ -123,13 +123,6 @@ describe('DisbursementAccountsService', () => {
       );
     });
 
-    it('throws KYC_UPGRADE_REQUIRED for BANK account without tier-1', async () => {
-      prisma.user.findUniqueOrThrow.mockResolvedValue(UNVERIFIED_USER);
-
-      await expect(service.addAccount('user-uuid', BANK_DTO))
-        .rejects.toMatchObject({ code: 'KYC_UPGRADE_REQUIRED' });
-    });
-
     it('throws DISBURSEMENT_ACCOUNT_NAME_MISMATCH when score is too low', async () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(KYC_USER);
       prisma.disbursementAccount.count.mockResolvedValue(0);

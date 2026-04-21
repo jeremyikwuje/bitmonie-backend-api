@@ -260,8 +260,9 @@ src/
 - Each provider module exports its concrete class.
 - Feature modules import the provider module and bind via DI token.
 - Never call a provider SDK directly from a service — always inject through the interface.
-- Webhook controllers named by **role** (`collateral.webhook.controller.ts`), not provider.
+- **Webhook controllers are named by provider** (`blink.webhook.controller.ts`, `palmpay.webhook.controller.ts`), not by business role. Reason: signature verification and payload parsing are provider-specific; the business purpose is encoded in `payment_request.source_type` and resolved after ingestion. A single provider endpoint can serve multiple business flows (loan collateral, offramp deposit, etc.) by branching on `source_type`.
 - Any disbursement provider is only called from `OutflowsService` — never from anywhere else.
+- **HTTP endpoint paths for webhooks use the provider name** (`/webhooks/blink`, `/webhooks/palmpay`). The "no provider names" rule in §5.2 applies to DB columns, Prisma fields, and TypeScript variables — not to URL paths, where the provider identity is the correct discriminator for routing inbound HTTP calls.
 
 ```typescript
 // src/providers/<name>/<name>.module.ts — one per external service

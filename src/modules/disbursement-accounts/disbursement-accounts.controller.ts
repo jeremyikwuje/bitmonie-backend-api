@@ -22,6 +22,8 @@ import {
 import type { Request } from 'express';
 import type { User } from '@prisma/client';
 import { SessionGuard } from '@/common/guards/session.guard';
+import { KycTierGuard } from '@/common/guards/kyc-tier.guard';
+import { RequiresKyc } from '@/common/decorators/requires-kyc.decorator';
 import { DisbursementAccountsService } from './disbursement-accounts.service';
 import { AddDisbursementAccountDto } from './dto/add-disbursement-account.dto';
 import { SetDefaultDisbursementAccountDto } from './dto/set-default-disbursement-account.dto';
@@ -30,7 +32,8 @@ type AuthRequest = Request & { user: User };
 
 @ApiTags('Disbursement Accounts')
 @ApiBearerAuth()
-@UseGuards(SessionGuard)
+@UseGuards(SessionGuard, KycTierGuard)
+@RequiresKyc(1)
 @Controller('v1/disbursement-accounts')
 export class DisbursementAccountsController {
   constructor(private readonly service: DisbursementAccountsService) {}

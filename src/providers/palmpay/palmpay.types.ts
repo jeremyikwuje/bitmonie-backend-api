@@ -86,16 +86,54 @@ export type PalmpayQueryBalanceResponse = z.infer<
 
 // ── Webhook payload ──────────────────────────────────────────────────────────
 
-export const PalmpayWebhookPayloadSchema = z.object({
-  orderId: z.string(),                     // our reference (outOrderNo sent in payout)
-  orderNo: z.string().optional(),          // PalmPay internal ID
-  appId: z.string().optional(),
-  currency: z.string().optional(),
-  amount: z.number().optional(),
-  orderStatus: z.number(),                 // 1=processing, 2=success, 3=failed
-  sessionId: z.string().optional(),
-  completeTime: z.number().optional(),
-  sign: z.string(),
+// ── Payout notification (outbound transfer status update) ────────────────────
+// Sent by PalmPay when a payout (disbursement) status changes.
+// orderId = our provider_reference ("{disbursement_id}:outflow:{attempt_number}")
+export const PalmpayPayoutNotificationSchema = z.object({
+  orderId:      z.string(),              // our reference echoed back
+  orderNo:      z.string().optional(),   // PalmPay internal transaction ID
+  appId:        z.string().optional(),
+  currency:     z.string().optional(),
+  amount:       z.number().optional(),
+  orderStatus:  z.number(),             // 1=processing, 2=success, 3=failed
+  sessionId:    z.string().optional(),
+  completeTime: z.number().optional(),  // Unix ms timestamp
+  message:      z.string().optional(),  // failure reason when orderStatus=3
+  sign:         z.string(),
 });
 
-export type PalmpayWebhookPayload = z.infer<typeof PalmpayWebhookPayloadSchema>;
+export type PalmpayPayoutNotification = z.infer<typeof PalmpayPayoutNotificationSchema>;
+
+// ── Collection notification (inbound virtual account payment) ────────────────
+// Sent by PalmPay when a customer pays INTO our virtual account
+// (e.g. loan repayment, offramp deposit).
+//
+// Key fields:
+//   orderAmount  — amount in CENTS (100 = 1 NGN); divide by 100 to get NGN
+//   accountReference — the reference we set on the virtual account; used to
+//                      match the inbound payment to a loan or offramp order
+//   sign         — optional; verify with platform public key when present
+export const PalmpayCollectionNotificationSchema = z.object({
+  orderNo:           z.string(),              // PalmPay platform order number
+  orderStatus:       z.number(),             // Virtual account order status
+  createdTime:       z.number(),             // Order create time (Unix ms)
+  updateTime:        z.number(),             // Order update time (Unix ms)
+  currency:          z.string(),             // NGN
+  orderAmount:       z.number(),             // Amount in CENTS — divide by 100 for NGN
+  reference:         z.string().optional(),  // Payer reference
+  payerAccountNo:    z.string(),             // Payer account number
+  payerAccountName:  z.string(),             // Payer account name
+  payerBankName:     z.string(),             // Payer bank name
+  virtualAccountNo:  z.string().optional(),  // Our virtual account number (if applicable)
+  virtualAccountName: z.string().optional(), // Our virtual account name (if applicable)
+  accountReference:  z.string().optional(),  // Our reference set on the virtual account
+  sessionId:         z.string().optional(),  // Channel response params (not always present)
+  sign:              z.string().optional(),  // RSA signature — verify when present
+});
+
+export type PalmpayCollectionNotification = z.infer<typeof PalmpayCollectionNotificationSchema>;
+
+// Legacy alias — kept so existing imports don't break
+/** @deprecated Use PalmpayPayoutNotificationSchema */
+export const PalmpayWebhookPayloadSchema = PalmpayPayoutNotificationSchema;
+export type PalmpayWebhookPayload = PalmpayPayoutNotification;

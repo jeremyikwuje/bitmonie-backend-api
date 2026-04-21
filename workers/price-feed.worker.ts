@@ -40,7 +40,7 @@ function log(level: string, event: string, extra: Record<string, unknown> = {}):
 let consecutive_failures = 0;
 let stale_since: number | null = null;
 
-async function run_cycle(): Promise<void> {
+async function runCycle(): Promise<void> {
   try {
     const rates = await provider.fetchRates();
 
@@ -107,10 +107,10 @@ async function run_cycle(): Promise<void> {
 async function main(): Promise<void> {
   log('info', 'started', { interval_ms: WORKER_INTERVAL_MS });
   await redis.ping();
-  await run_cycle();
+  await runCycle();
 
   setInterval(() => {
-    run_cycle().catch((err) => log('error', 'unhandled_error', { error: String(err) }));
+    runCycle().catch((err) => log('error', 'unhandled_error', { error: String(err) }));
   }, WORKER_INTERVAL_MS);
 }
 
