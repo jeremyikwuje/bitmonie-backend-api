@@ -12,6 +12,8 @@ build/
 .env.staging
 .env.production
 .env.local
+.pem
+.pub
 
 # Prisma
 prisma/migrations/*.sql.bak
