@@ -18,18 +18,15 @@ RUN pnpm build
 # ── runner: production image ─────────────────────────────────────────────────
 FROM node:24-alpine AS runner
 RUN apk add --no-cache openssl
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY package.json pnpm-lock.yaml .npmrc ./
-RUN pnpm install --frozen-lockfile --prod
-
+# Reuse the fully-built node_modules (includes generated Prisma client)
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY package.json ./
 COPY prisma ./prisma
 COPY prisma.config.ts ./
-RUN pnpm prisma generate
-
-COPY --from=builder /app/dist ./dist
 
 EXPOSE 3000
-CMD ["sh", "-c", "pnpm prisma migrate deploy && node dist/main"]
+CMD ["sh", "-c", "node_modules/.bin/prisma migrate deploy && node dist/main"]
