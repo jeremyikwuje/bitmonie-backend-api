@@ -133,6 +133,26 @@ export const PalmpayCollectionNotificationSchema = z.object({
 
 export type PalmpayCollectionNotification = z.infer<typeof PalmpayCollectionNotificationSchema>;
 
+// ── Create virtual account ────────────────────────────────────────────────────
+// Used for loan repayments: creates a PalmPay-assigned NGN virtual bank account
+// tied to the customer's BVN. accountReference links inbound payments to the loan.
+
+export const PalmpayCreateVirtualAccountResponseSchema = z.object({
+  respCode: z.string(),
+  respMsg:  z.string(),
+  data: z
+    .object({
+      virtualAccountNo:   z.string().optional(),
+      virtualAccountName: z.string().optional(),
+      accountReference:   z.string().optional(),
+    })
+    .optional(),
+});
+
+export type PalmpayCreateVirtualAccountResponse = z.infer<
+  typeof PalmpayCreateVirtualAccountResponseSchema
+>;
+
 // Legacy alias — kept so existing imports don't break
 /** @deprecated Use PalmpayPayoutNotificationSchema */
 export const PalmpayWebhookPayloadSchema = PalmpayPayoutNotificationSchema;

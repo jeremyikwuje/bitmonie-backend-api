@@ -9,6 +9,7 @@ import {
   PalmpayPayoutResponseSchema,
   PalmpayQueryPayStatusResponseSchema,
   PalmpayQueryBalanceResponseSchema,
+  PalmpayCreateVirtualAccountResponseSchema,
   PALMPAY_RESP_CODE_SUCCESS,
   PALMPAY_ORDER_STATUS_SUCCESS,
   PALMPAY_ORDER_STATUS_FAILED,
@@ -200,6 +201,39 @@ export class PalmpayProvider implements DisbursementProvider {
       };
     }
     return { status: 'processing' };
+  }
+
+  // ── createVirtualAccount ──────────────────────────────────────────────────
+  // Creates a PalmPay-assigned NGN virtual bank account linked to the customer's
+  // BVN. accountReference is stored by us (e.g. loan_id) to match inbound payments.
+
+  async createVirtualAccount(params: {
+    virtual_account_name: string;
+    identity_type: string;     // 'BVN' | 'NIN'
+    license_number: string;    // BVN or NIN value — never logged
+    customer_name: string;
+    account_reference: string;
+  }): Promise<{ virtual_account_no: string; virtual_account_name: string }> {
+    const data = await this.post(
+      '/api/v2/virtual/account/label/create',
+      {
+        virtualAccountName: params.virtual_account_name,
+        identityType:       params.identity_type,
+        licenseNumber:      params.license_number,
+        customerName:       params.customer_name,
+        accountReference:   params.account_reference,
+      },
+      PalmpayCreateVirtualAccountResponseSchema,
+    );
+
+    if (data.respCode !== PALMPAY_RESP_CODE_SUCCESS) {
+      throw new Error(`PalmPay createVirtualAccount failed: ${data.respCode} ${data.respMsg}`);
+    }
+
+    return {
+      virtual_account_no:   data.data?.virtualAccountNo   ?? '',
+      virtual_account_name: data.data?.virtualAccountName ?? params.virtual_account_name,
+    };
   }
 
   // ── verifyWebhookSignature ─────────────────────────────────────────────────

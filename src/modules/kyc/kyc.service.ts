@@ -1,9 +1,10 @@
-import { Injectable, Inject, HttpStatus } from '@nestjs/common';
+import { Injectable, Inject, HttpStatus, Logger } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
 import { KycIdType, KycStatus } from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { CryptoService } from '@/common/crypto/crypto.service';
 import { NameMatchService } from '@/common/name-match/name-match.service';
+import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
 import { KYC_PROVIDER_T1, KYC_PROVIDER_T2, KYC_PROVIDER_T3, type KycProvider, type KycVerifyResult } from './kyc.provider.interface';
 import type { SubmitKycDto } from './dto/submit-kyc.dto';
 import type { RevokeKycDto } from './dto/revoke-kyc.dto';
@@ -30,10 +31,13 @@ function normalize_dob(raw: string): string | null {
 
 @Injectable()
 export class KycService {
+  private readonly logger = new Logger(KycService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto_service: CryptoService,
     private readonly name_match: NameMatchService,
+    private readonly user_repayment_accounts: UserRepaymentAccountsService,
     @Inject(KYC_PROVIDER_T1) private readonly kyc_provider_t1: KycProvider,
     @Inject(KYC_PROVIDER_T2) private readonly kyc_provider_t2: KycProvider,
     @Inject(KYC_PROVIDER_T3) private readonly kyc_provider_t3: KycProvider,
@@ -124,6 +128,17 @@ export class KycService {
         },
       });
     });
+
+    // Provision the customer's permanent NGN repayment VA. Wrapped — a provider
+    // failure here must not fail the KYC verification itself; ops will retry.
+    try {
+      await this.user_repayment_accounts.ensureForUser(user_id);
+    } catch (err) {
+      this.logger.error(
+        { user_id, error: err instanceof Error ? err.message : String(err) },
+        'Post-KYC repayment VA provisioning failed — ops must retry',
+      );
+    }
 
     return { message: 'Identity verified successfully.' };
   }

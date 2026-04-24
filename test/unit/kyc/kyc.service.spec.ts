@@ -6,6 +6,7 @@ import { KYC_PROVIDER_T1, KYC_PROVIDER_T2, KYC_PROVIDER_T3 } from '@/modules/kyc
 import type { KycProvider } from '@/modules/kyc/kyc.provider.interface';
 import { CryptoService } from '@/common/crypto/crypto.service';
 import { NameMatchService } from '@/common/name-match/name-match.service';
+import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
 import { PrismaService } from '@/database/prisma.service';
 
 type FakeTx = {
@@ -48,12 +49,15 @@ describe('KycService', () => {
   let prisma: ReturnType<typeof make_prisma>;
   let kyc_provider: MockProxy<KycProvider>;
   let crypto_service: MockProxy<CryptoService>;
+  let user_repayment_accounts: MockProxy<UserRepaymentAccountsService>;
 
   beforeEach(async () => {
     prisma = make_prisma();
     kyc_provider = mock<KycProvider>();
     crypto_service = mock<CryptoService>();
+    user_repayment_accounts = mock<UserRepaymentAccountsService>();
     crypto_service.encrypt.mockReturnValue('encrypted-id');
+    user_repayment_accounts.ensureForUser.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -61,6 +65,7 @@ describe('KycService', () => {
         NameMatchService,
         { provide: PrismaService, useValue: prisma },
         { provide: CryptoService, useValue: crypto_service },
+        { provide: UserRepaymentAccountsService, useValue: user_repayment_accounts },
         { provide: KYC_PROVIDER_T1, useValue: kyc_provider },
         { provide: KYC_PROVIDER_T2, useValue: kyc_provider },
         { provide: KYC_PROVIDER_T3, useValue: kyc_provider },

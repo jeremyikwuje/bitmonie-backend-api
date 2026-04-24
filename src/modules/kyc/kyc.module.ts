@@ -12,6 +12,7 @@ import { DojahModule } from '@/providers/dojah/dojah.module';
 import { DojahProvider } from '@/providers/dojah/dojah.provider';
 import { KYC_TIER_CONFIG, KycProviderName } from '@/config/kyc.config';
 import { StubKycProvider } from '@/providers/stub/stub-kyc.provider';
+import { UserRepaymentAccountsModule } from '@/modules/user-repayment-accounts/user-repayment-accounts.module';
 
 const stub_kyc_provider = new StubKycProvider();
 
@@ -28,7 +29,7 @@ function resolveKycProvider(
 }
 
 @Module({
-  imports: [DatabaseModule, CryptoModule, ConfigModule, NameMatchModule, QoreidModule, DojahModule],
+  imports: [DatabaseModule, CryptoModule, ConfigModule, NameMatchModule, QoreidModule, DojahModule, UserRepaymentAccountsModule],
   controllers: [KycController],
   providers: [
     KycService,

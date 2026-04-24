@@ -1,4 +1,8 @@
-import type { EmailProvider, OtpEmailParams } from '@/modules/auth/email.provider.interface';
+import type {
+  EmailProvider,
+  OtpEmailParams,
+  TransactionalEmailParams,
+} from '@/modules/auth/email.provider.interface';
 import type { ResendConfig } from '@/config/providers.config';
 
 export class ResendProvider implements EmailProvider {
@@ -8,7 +12,19 @@ export class ResendProvider implements EmailProvider {
 
   async sendOtp(params: OtpEmailParams): Promise<void> {
     const { subject, text, html } = buildOtpEmail(params);
+    return this._send({ to: params.to, subject, text, html });
+  }
 
+  async sendTransactional(params: TransactionalEmailParams): Promise<void> {
+    return this._send({
+      to:      params.to,
+      subject: params.subject,
+      text:    params.text_body,
+      html:    params.html_body,
+    });
+  }
+
+  private async _send(params: { to: string; subject: string; text: string; html: string }): Promise<void> {
     const response = await fetch(`${ResendProvider.BASE_URL}/emails`, {
       method: 'POST',
       headers: {
@@ -18,9 +34,9 @@ export class ResendProvider implements EmailProvider {
       body: JSON.stringify({
         from: `${this.config.from_name} <${this.config.from_address}>`,
         to: [params.to],
-        subject,
-        text,
-        html,
+        subject: params.subject,
+        text:    params.text,
+        html:    params.html,
       }),
     });
 

@@ -1,4 +1,8 @@
-import type { EmailProvider, OtpEmailParams } from '@/modules/auth/email.provider.interface';
+import type {
+  EmailProvider,
+  OtpEmailParams,
+  TransactionalEmailParams,
+} from '@/modules/auth/email.provider.interface';
 import type { PostmarkConfig } from '@/config/providers.config';
 
 export class PostmarkProvider implements EmailProvider {
@@ -8,7 +12,14 @@ export class PostmarkProvider implements EmailProvider {
 
   async sendOtp(params: OtpEmailParams): Promise<void> {
     const { subject, text_body, html_body } = buildOtpEmail(params);
+    return this._send({ to: params.to, subject, text_body, html_body });
+  }
 
+  async sendTransactional(params: TransactionalEmailParams): Promise<void> {
+    return this._send(params);
+  }
+
+  private async _send(params: TransactionalEmailParams): Promise<void> {
     const response = await fetch(`${PostmarkProvider.BASE_URL}/email`, {
       method: 'POST',
       headers: {
@@ -19,9 +30,9 @@ export class PostmarkProvider implements EmailProvider {
       body: JSON.stringify({
         From: `${this.config.from_name} <${this.config.from_address}>`,
         To: params.to,
-        Subject: subject,
-        TextBody: text_body,
-        HtmlBody: html_body,
+        Subject: params.subject,
+        TextBody: params.text_body,
+        HtmlBody: params.html_body,
         MessageStream: this.config.message_stream ?? 'outbound',
       }),
     });
