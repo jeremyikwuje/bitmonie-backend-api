@@ -33,14 +33,15 @@ model User {
   created_at      DateTime      @default(now()) @db.Timestamptz
   updated_at      DateTime      @updatedAt @db.Timestamptz
 
-  kyc_verifications    KycVerification[]
-  disbursement_accounts DisbursementAccount[]
-  loans                Loan[]
-  payment_requests PaymentRequest[]
-  inflows          Inflow[]
-  disbursements    Disbursement[]
-  audit_logs       AuditLog[]
-  sessions         Session[]
+  kyc_verifications         KycVerification[]
+  disbursement_accounts     DisbursementAccount[]
+  loans                     Loan[]
+  payment_requests          PaymentRequest[]
+  inflows                   Inflow[]
+  disbursements             Disbursement[]
+  repayment_account         UserRepaymentAccount?
+  audit_logs                AuditLog[]
+  sessions                  Session[]
 
   @@map("users")
 }
@@ -191,6 +192,7 @@ enum PaymentNetwork {
   BTC_ONCHAIN
   TRC20
   ERC20
+  BANK_TRANSFER   // NGN virtual account inflows (PalmPay PayIn)
 
   @@map("payment_network")
 }
@@ -279,6 +281,7 @@ model Inflow {
 
   user                   User?          @relation(fields: [user_id], references: [id])
   payment_request        PaymentRequest?
+  loan_repayment         LoanRepayment?
 
   @@index([receiving_address])
   @@index([provider_reference])
@@ -465,14 +468,14 @@ model Loan {
 
   principal_ngn               Decimal          @db.Decimal(20, 2)
   origination_fee_ngn         Decimal          @db.Decimal(20, 2)
-  daily_fee_ngn               Decimal          @db.Decimal(20, 2)
   duration_days               Int
-  total_fees_ngn              Decimal          @db.Decimal(20, 2)
-  total_amount_ngn            Decimal          @db.Decimal(20, 2)
+
+  // Accrual-based fee inputs (v1.1) — see docs/repayment-matching-redesign.md §3
+  daily_interest_rate_bps     Int              @default(30)                 // 30 bps = 0.3% daily on outstanding principal
+  daily_custody_fee_ngn       Decimal          @db.Decimal(20, 2)           // fixed at origination; ceil(collateral_usd / 100) × 100
+  initial_collateral_usd      Decimal          @db.Decimal(20, 2)           // BTC/USD at origination (sourced from Blink)
 
   sat_ngn_rate_at_creation    Decimal          @db.Decimal(20, 6)
-  liquidation_rate_ngn        Decimal          @db.Decimal(20, 6)
-  alert_rate_ngn              Decimal          @db.Decimal(20, 6)
 
   status                      LoanStatus       @default(PENDING_COLLATERAL)
 
@@ -502,10 +505,97 @@ model Loan {
   updated_at                  DateTime         @updatedAt @db.Timestamptz
 
   status_logs                 LoanStatusLog[]
+  repayments                  LoanRepayment[]
+  collateral_topups           CollateralTopUp[]
 
   @@index([user_id, created_at(sort: Desc)])
   @@index([status])
   @@map("loans")
+}
+
+// ─────────────────────────────────────────
+// USER REPAYMENT ACCOUNTS — one permanent PalmPay VA per user (tied to BVN)
+// Provisioned after tier-1 KYC; reused across every loan that user takes.
+// See docs/repayment-matching-redesign.md §9.
+// ─────────────────────────────────────────
+
+model UserRepaymentAccount {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id              String   @unique @db.Uuid
+  virtual_account_no   String   @unique @db.VarChar(50)
+  virtual_account_name String   @db.VarChar(255)
+  provider             String   @db.VarChar(50)          // 'palmpay'
+  provider_reference   String?  @db.VarChar(255)
+  created_at           DateTime @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Restrict)
+
+  @@map("user_repayment_accounts")
+}
+
+// ─────────────────────────────────────────
+// LOAN REPAYMENTS — append-only ledger of credited inflows
+// One row per credited Inflow; never updated once inserted.
+// See docs/repayment-matching-redesign.md §2.3 + §5.2.
+// ─────────────────────────────────────────
+
+model LoanRepayment {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loan_id              String   @db.Uuid
+  inflow_id            String   @unique @db.Uuid
+  amount_ngn           Decimal  @db.Decimal(20, 2)
+  applied_to_principal Decimal  @db.Decimal(20, 2)
+  applied_to_interest  Decimal  @db.Decimal(20, 2)
+  applied_to_custody   Decimal  @db.Decimal(20, 2)
+  overpay_ngn          Decimal  @default(0) @db.Decimal(20, 2)
+  match_method         String   @db.VarChar(20)           // AUTO_AMOUNT | CUSTOMER_CLAIM | OPS_MANUAL
+  created_at           DateTime @default(now()) @db.Timestamptz
+
+  loan   Loan   @relation(fields: [loan_id], references: [id])
+  inflow Inflow @relation(fields: [inflow_id], references: [id])
+
+  @@index([loan_id, created_at])
+  @@map("loan_repayments")
+}
+
+// ─────────────────────────────────────────
+// COLLATERAL TOP-UPS — customer-initiated BTC top-ups on ACTIVE loans
+// Partial unique index (loan_id WHERE status = PENDING_COLLATERAL) in the migration
+// enforces "at most one open top-up per loan".
+// See docs/repayment-matching-redesign.md §6.
+// ─────────────────────────────────────────
+
+enum TopUpStatus {
+  PENDING_COLLATERAL
+  RECEIVED
+  EXPIRED
+  CANCELLED
+
+  @@map("topup_status")
+}
+
+model CollateralTopUp {
+  id                       String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loan_id                  String      @db.Uuid
+
+  collateral_provider      String      @db.VarChar(50)     // 'blink'
+  collateral_provider_ref  String      @unique @db.VarChar(255)
+  payment_request          String      @db.VarChar(2000)    // BOLT11
+  receiving_address        String      @db.VarChar(512)
+  expected_amount_sat      BigInt
+  expires_at               DateTime    @db.Timestamptz
+
+  received_amount_sat      BigInt?
+  received_at              DateTime?   @db.Timestamptz
+
+  status                   TopUpStatus @default(PENDING_COLLATERAL)
+  created_at               DateTime    @default(now()) @db.Timestamptz
+  updated_at               DateTime    @updatedAt @db.Timestamptz
+
+  loan Loan @relation(fields: [loan_id], references: [id])
+
+  @@index([loan_id, status])
+  @@map("collateral_topups")
 }
 
 // ─────────────────────────────────────────
