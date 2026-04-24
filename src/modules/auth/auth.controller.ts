@@ -35,7 +35,7 @@ export class AuthController {
   @Post('signup')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a new account' })
-  @ApiResponse({ status: 201, description: 'Account created — OTP sent to email' })
+  @ApiResponse({ status: 201, description: 'If the email is new, an account is created; a verification OTP is sent either way' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   async signup(
     @Body() dto: SignupDto,
@@ -47,7 +47,7 @@ export class AuthController {
       req.ip,
       req.headers['user-agent'],
     );
-    return { message: 'Account created. Check your email for a verification code.' };
+    return { message: 'If this email is new, your account has been created. Check your inbox for a verification code.' };
   }
 
   @Post('verify-email')

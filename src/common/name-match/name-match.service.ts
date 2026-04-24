@@ -57,6 +57,14 @@ function tokenize(name: string): string[] {
     .filter(Boolean);
 }
 
+function scoreTokens(source: string[], target: string[]): number {
+  if (source.length === 0 || target.length === 0) return 0;
+  const scores = source.map(token =>
+    Math.max(...target.map(t => jaro_winkler(token, t))),
+  );
+  return scores.reduce((sum, s) => sum + s, 0) / scores.length;
+}
+
 @Injectable()
 export class NameMatchService {
   /**
@@ -65,6 +73,10 @@ export class NameMatchService {
    *   - different name orderings (surname-first vs first-surname)
    *   - providers returning fewer tokens than were submitted (middle name absent)
    *   - providers returning extra tokens (e.g. title, suffix)
+   *
+   * Also runs a "no middles" comparison (first + last only) on both sides and
+   * returns the max score. This catches the common case where one side has a
+   * full legal name (first+middle+last) and the other side has only first+last.
    */
   compare(a: string, b: string): number {
     const tokens_a = tokenize(a);
@@ -72,14 +84,19 @@ export class NameMatchService {
 
     if (tokens_a.length === 0 || tokens_b.length === 0) return 0;
 
-    const [source, target] = tokens_a.length <= tokens_b.length
+    const [source_full, target_full] = tokens_a.length <= tokens_b.length
       ? [tokens_a, tokens_b]
       : [tokens_b, tokens_a];
 
-    const scores = source.map(token =>
-      Math.max(...target.map(t => jaro_winkler(token, t))),
-    );
+    const full_score = scoreTokens(source_full, target_full);
 
-    return scores.reduce((sum, s) => sum + s, 0) / scores.length;
+    // "No middles" — compare first + last tokens only. Skipped when a side has
+    // fewer than 2 tokens (already fully consumed by the full comparison).
+    if (tokens_a.length < 2 || tokens_b.length < 2) return full_score;
+    const no_middles_a = [tokens_a[0]!, tokens_a[tokens_a.length - 1]!];
+    const no_middles_b = [tokens_b[0]!, tokens_b[tokens_b.length - 1]!];
+    const no_middles_score = scoreTokens(no_middles_a, no_middles_b);
+
+    return Math.max(full_score, no_middles_score);
   }
 }

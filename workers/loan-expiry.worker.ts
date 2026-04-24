@@ -6,6 +6,7 @@
 
 import { PrismaClient, LoanStatus, PaymentRequestStatus, StatusTrigger } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import Redis from 'ioredis';
 import { REDIS_KEYS, LoanReasonCodes } from '@/common/constants';
 
@@ -116,7 +117,7 @@ async function main(): Promise<void> {
   if (!DATABASE_URL) { console.error('DATABASE_URL is required'); process.exit(1); }
   if (!REDIS_URL)    { console.error('REDIS_URL is required');    process.exit(1); }
 
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: DATABASE_URL }) });
   const redis = new Redis(REDIS_URL);
   redis.on('error', (err) => defaultLog('error', 'redis_error', { error: err.message }));
 

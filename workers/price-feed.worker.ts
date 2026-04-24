@@ -6,6 +6,7 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import Redis from 'ioredis';
 import Decimal from 'decimal.js';
 import { QuidaxProvider } from '@/providers/quidax/quidax.provider';
@@ -22,7 +23,7 @@ const REDIS_URL = process.env.REDIS_URL;
 if (!DATABASE_URL) { console.error('DATABASE_URL is required'); process.exit(1); }
 if (!REDIS_URL) { console.error('REDIS_URL is required'); process.exit(1); }
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: DATABASE_URL }) });
 const redis = new Redis(REDIS_URL);
 const provider = new QuidaxProvider({
   api_key: process.env.QUIDAX_API_KEY ?? '',

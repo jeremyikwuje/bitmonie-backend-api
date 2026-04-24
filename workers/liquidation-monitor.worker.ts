@@ -7,6 +7,7 @@
 
 import { PrismaClient, LoanStatus, StatusTrigger } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import Redis from 'ioredis';
 import Decimal from 'decimal.js';
 import {
@@ -186,15 +187,15 @@ async function main(): Promise<void> {
   if (!DATABASE_URL) { console.error('DATABASE_URL is required'); process.exit(1); }
   if (!REDIS_URL)    { console.error('REDIS_URL is required');    process.exit(1); }
 
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: DATABASE_URL }) });
   const redis  = new Redis(REDIS_URL);
   redis.on('error', (err) => defaultLog('error', 'redis_error', { error: err.message }));
 
   const blink = new BlinkProvider({
     api_key:        process.env.BLINK_API_KEY        ?? '',
     base_url:       process.env.BLINK_BASE_URL        ?? 'https://api.blink.sv',
-    wallet_id:      process.env.BLINK_WALLET_ID       ?? '',
-    usd_wallet_id:  process.env.BLINK_USD_WALLET_ID   ?? '',
+    wallet_btc_id:  process.env.BLINK_WALLET_BTC_ID   ?? '',
+    wallet_usd_id:  process.env.BLINK_WALLET_USD_ID   ?? '',
     account_id:     process.env.BLINK_ACCOUNT_ID      ?? '',
     webhook_secret: process.env.BLINK_WEBHOOK_SECRET  ?? '',
   });

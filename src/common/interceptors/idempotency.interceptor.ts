@@ -68,7 +68,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
                 };
                 void this.redis.set(
                   redis_key,
-                  JSON.stringify(cached),
+                  JSON.stringify(cached, (_k, v) =>
+                    typeof v === 'bigint' ? v.toString() : v,
+                  ),
                   'EX',
                   IDEMPOTENCY_TTL_SEC,
                 );

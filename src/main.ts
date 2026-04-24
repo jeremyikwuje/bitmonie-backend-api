@@ -1,4 +1,12 @@
 import 'reflect-metadata';
+
+// Serialize BigInt as a JSON string everywhere. sats and other satoshi-denominated
+// values are bigint at the domain layer; without this, Express res.json() throws
+// "Do not know how to serialize a BigInt" on any response carrying one.
+(BigInt.prototype as unknown as { toJSON: () => string }).toJSON = function (): string {
+  return this.toString();
+};
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -39,8 +47,8 @@ async function bootstrap(): Promise<void> {
 
   const swagger_config = new DocumentBuilder()
     .setTitle('Bitmonie API')
-    .setDescription('Crypto-backed instant Naira credit (Lightning MVP)')
-    .setVersion('1.0')
+    .setDescription('Crypto-backed instant Naira credit — v1.1 (accrual-based pricing, partial repayments, add-collateral, permanent per-user PalmPay VA)')
+    .setVersion('1.1')
     .addCookieAuth('session')
     .build();
   SwaggerModule.setup('v1/docs', app, SwaggerModule.createDocument(app, swagger_config));

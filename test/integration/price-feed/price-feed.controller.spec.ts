@@ -4,7 +4,7 @@ import request from 'supertest';
 import { PriceFeedController } from '@/modules/price-feed/price-feed.controller';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
 import { GlobalExceptionFilter } from '@/common/filters/global-exception.filter';
-import { LoanPriceStaleException } from '@/common/errors/bitmonie.errors';
+import { PriceFeedStaleException } from '@/common/errors/bitmonie.errors';
 import { RatesResponseDto } from '@/modules/price-feed/dto/rates-response.dto';
 import { RateItemDto } from '@/modules/price-feed/dto/rate-item.dto';
 import { AssetPair } from '@prisma/client';
@@ -67,14 +67,14 @@ describe('PriceFeedController (integration)', () => {
       expect(response.body.rates[0]).toHaveProperty('fetched_at');
     });
 
-    it('returns 422 with LOAN_PRICE_STALE code when feed is stale', async () => {
+    it('returns 422 with PRICE_FEED_STALE code when feed is stale', async () => {
       price_feed_service.getRates.mockRejectedValue(
-        new LoanPriceStaleException({ last_updated_ms: 180_000 }),
+        new PriceFeedStaleException({ last_updated_ms: 180_000 }),
       );
 
       const response = await request(app.getHttpServer()).get('/rates').expect(422);
 
-      expect(response.body.error.code).toBe('LOAN_PRICE_STALE');
+      expect(response.body.error.code).toBe('PRICE_FEED_STALE');
       expect(response.body.error).toHaveProperty('message');
       expect(response.body.error).toHaveProperty('details');
     });

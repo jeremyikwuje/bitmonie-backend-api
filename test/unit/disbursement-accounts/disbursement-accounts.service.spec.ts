@@ -34,6 +34,9 @@ const CRYPTO_DTO = {
 function make_prisma() {
   return {
     user: { findUniqueOrThrow: jest.fn() },
+    kycVerification: {
+      findUnique: jest.fn().mockResolvedValue({ legal_name: 'Ada Obi' }),
+    },
     disbursementAccount: {
       count: jest.fn(),
       create: jest.fn(),

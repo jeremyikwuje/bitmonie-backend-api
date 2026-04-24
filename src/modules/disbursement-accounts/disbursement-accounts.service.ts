@@ -49,7 +49,24 @@ export class DisbursementAccountsService {
     let status = DisbursementAccountStatus.VERIFIED;
 
     if (NAME_MATCHED_KINDS.includes(dto.kind)) {
+      // Canonical name preference order:
+      //   1. User row (first_name + middle_name + last_name) — set during tier-1 KYC.
+      //   2. kyc_verifications.legal_name — fallback for users whose User row is
+      //      missing name fields (legacy / migration / partial-write recovery).
       const user = await this.prisma.user.findUniqueOrThrow({ where: { id: user_id } });
+      const user_name = [user.first_name, user.middle_name, user.last_name]
+        .filter((p): p is string => Boolean(p && p.trim()))
+        .join(' ')
+        .trim();
+
+      let canonical_name = user_name;
+      if (!canonical_name) {
+        const verification = await this.prisma.kycVerification.findUnique({
+          where: { user_id_tier: { user_id, tier: 1 } },
+        });
+        canonical_name = verification?.legal_name ?? '';
+      }
+
       const rail = KIND_TO_RAIL[dto.kind]!;
       const provider = this.disbursement_router.forRoute('NGN', rail);
       const fetched_name = await provider.lookupAccountName({
@@ -58,10 +75,7 @@ export class DisbursementAccountsService {
       });
 
       if (fetched_name) {
-        const kyc_name = [user.first_name, user.middle_name, user.last_name]
-          .filter(Boolean)
-          .join(' ');
-        const score = this.name_match.compare(kyc_name, fetched_name);
+        const score = this.name_match.compare(canonical_name, fetched_name);
 
         if (score < DISBURSEMENT_NAME_MATCH_THRESHOLD) {
           throw new DisbursementAccountNameMismatchException({ score });

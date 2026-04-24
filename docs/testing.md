@@ -35,13 +35,13 @@ describe('CalculatorService', () => {
     service = new CalculatorService();  // pure math — no deps
   });
 
-  it('applies 80% LTV correctly', () => {
+  it('applies 60% LTV correctly', () => {
     const result = service.calculateCollateral({
       principal_ngn: new Decimal('300000'),
       sat_ngn_rate: new Decimal('1410'),
     });
-    // collateral = (300000 / 1410) / 0.80 = 265.957... → ceil
-    expect(result.collateral_amount_sat).toBe(BigInt(266));
+    // collateral = (300000 / 1410) / 0.60 = 354.609... → ceil
+    expect(result.collateral_amount_sat).toBe(BigInt(355));
   });
 });
 
@@ -68,10 +68,10 @@ describe('LoansService', () => {
 
   it('rejects checkout when price feed is stale', async () => {
     price_feed.getCurrentRate.mockRejectedValue(
-      new LoanPriceStaleException({ last_updated_ms: 200000 }),
+      new PriceFeedStaleException({ last_updated_ms: 200000 }),
     );
     await expect(service.checkoutLoan(user_id, dto))
-      .rejects.toBeInstanceOf(LoanPriceStaleException);
+      .rejects.toBeInstanceOf(PriceFeedStaleException);
   });
 });
 ```
@@ -115,7 +115,7 @@ describe('POST /v1/loans/checkout', () => {
 
 ```
 calculator.test.ts:
-  ✓ 80% LTV applied correctly
+  ✓ 60% LTV applied correctly
   ✓ Fee is N500 per $100 USD equivalent per day
   ✓ Origination fee N500 added to total
   ✓ Liquidation rate calculated at 110% of principal

@@ -33,26 +33,30 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 
 ## 2. SCOPE
 
-**In v1.0 (Lightning MVP):**
+**In v1.1 (current — Lightning MVP + accrual-based pricing):**
 
 | Module | Purpose |
 |---|---|
 | `auth` | Sessions, email OTP, 2FA (TOTP), password reset |
-| `kyc` | BVN/NIN verification — required before first loan |
-| `disbursement-accounts` | Add/remove/default payout destinations (BANK / MOBILE_MONEY / CRYPTO_ADDRESS) — max 5 per kind; name-matched against BVN for BANK + MOBILE_MONEY |
+| `kyc` | BVN/NIN verification — required before first loan; provisions the user's permanent NGN repayment VA on tier-1 success |
+| `user-repayment-accounts` | One permanent PalmPay virtual account per user (tied to BVN), reused across every loan |
+| `disbursement-accounts` | Add/remove/default payout destinations (BANK / MOBILE_MONEY / CRYPTO_ADDRESS) — max 5 per kind; name-matched against User row first, KYC legal_name fallback |
 | `price-feed` | SAT/NGN, BTC/NGN, USDT/NGN — polled every 30s |
-| `loans` | Full loan lifecycle: checkout → collateral → disbursement → repayment → release |
-| `payment-requests` | Customer-facing payment instructions (collateral receipt) |
+| `loans` | Full loan lifecycle: checkout → collateral → disbursement → accrual → partial / full repayment → release. Includes `add-collateral` (top-up) and `claim-inflow` (customer disambiguation) endpoints |
+| `payment-requests` | Customer-facing collateral payment instructions (initial loan collateral) |
 | `inflows` | Every incoming payment, matched or not |
 | `disbursements` + `outflows` | Two-layer outbound payment system |
-| `webhooks` | Inbound provider events (collateral, disbursement) |
-| `workers` | Price feed, liquidation monitor, payment-request expiry |
-| `calculator` | Public bidirectional loan quote engine — no auth |
+| `webhooks` | Inbound provider events (collateral, disbursement, collection) |
+| `ops-alerts` | Internal ops-paging emails (unmatched inflows, credit failures); uses the same `EmailProvider` interface as auth OTP |
+| `workers` | Price feed, liquidation monitor, payment-request expiry, loan-maturity expiry, **loan-reminder** (T−7d / T−1d / T / daily through 7-day grace / final) |
+| `calculator` | Public bidirectional loan quote engine — projections only (actual fees accrue) — no auth |
 | `get-quote` | Large-loan enquiry form (> N10M) — human follow-up |
 
-**Deferred — do NOT scaffold:** USDT/USDC collateral, on-chain BTC, hardware/car collateral, yield/savings, loan extensions, partial repayments, admin dashboard, referrals, mobile apps, wallet balances of any kind.
+**Deferred — do NOT scaffold:** USDT/USDC collateral, on-chain BTC, hardware/car collateral, yield/savings, naira wallet, admin dashboard, referrals, mobile apps, wallet balances of any kind, SAT-rail repayments, narration-based webhook matching, provider-native email templating (v1.2).
 
-If a task pulls toward a deferred feature, stub it and move on.
+> `partial repayments`, `add-collateral`, and a 7-day `maturity grace period` are **in scope** in v1.1 (formerly deferred in v1.0). Loan extensions beyond grace remain deferred — past T+7d we liquidate.
+
+If a task pulls toward a still-deferred feature, stub it and move on.
 
 ---
 
@@ -122,8 +126,21 @@ Provider name lives in `processing_provider`, `triggered_by_id`, etc. — as dat
 
 - All status changes inside a Prisma transaction.
 - Same transaction writes a row to `loan_status_logs`. No exceptions.
-- Forward-only — no backward transitions, ever. Invalid → throw `LoanInvalidTransitionException`.
-- A loan status change without a corresponding log row is a bug.
+- Forward-only between distinct statuses — no backward transitions, ever. Invalid → throw `LoanInvalidTransitionException`.
+- ACTIVE → ACTIVE self-transitions are permitted **only** for partial repayment (`REPAYMENT_PARTIAL_NGN`) and collateral top-up (`COLLATERAL_TOPPED_UP`). Same `loan_status_logs` rule applies — no log row, it didn't happen.
+- A loan status change (or self-transition log) without a corresponding `loan_status_logs` row is a bug.
+
+### 5.4a Outstanding & liquidation math (accrual-based)
+
+- Outstanding is **never stored** as a column. Always computed live by `AccrualService.compute({ loan, repayments, as_of })`. Source of truth.
+- `outstanding = principal_remaining + accrued_interest_unpaid + accrued_custody_unpaid`, where:
+  - `principal_remaining = principal_ngn − sum(repayments.applied_to_principal)`
+  - Interest is piecewise-linear in time: `0.3% × current_principal × days_in_segment` between repayments.
+  - Custody is flat: `daily_custody_fee_ngn × days_elapsed − sum(repayments.applied_to_custody)` (custody is fixed at origination).
+  - Day boundary: `ceil((as_of − collateral_received_at) / 24h)` — partial days count as full.
+- Liquidation: `collateral_ngn < 1.10 × outstanding` (LIQUIDATION_THRESHOLD against TOTAL outstanding, not principal alone). Recomputed on every monitor tick.
+- Repayment waterfall: **custody → interest → principal → overpay**. Apply in this order so principal-based interest accrual the next day uses the correctly-reduced principal.
+- Collateral release is **all-or-nothing on REPAID**. Partial repayments never release collateral — releasing partial collateral creates an attack surface (repay N1 of N1M, demand N0.99 back).
 
 ### 5.5 Webhook signature verification
 
@@ -144,8 +161,27 @@ Verify signature on the **raw request body** before any parsing. Mismatch → 40
 - `Loan` never stores `payment_request`, `provider_reference`, or `expires_at` directly. Query `payment_requests` by `source_type + source_id`.
 - `PaymentRequest.inflow_id @unique` — set atomically on match.
 - Cache `payment_request:pending:{receiving_address}` in Redis to avoid DB on every webhook.
+- Cache `collateral_topup:pending:{receiving_address}` in Redis for add-collateral invoices (separate key prefix; same eviction TTL).
 - Every inbound payment creates an `Inflow` row regardless of match. `provider_reference @unique` blocks dupes at DB level.
-- Unmatched inflows alert ops after 48h — never silently dropped.
+- Unmatched inflows page ops **immediately** via `OpsAlertsService.alertUnmatchedInflow(...)` (no 48h delay). The Inflow row also persists `bitmonie_unmatched_reason` in `provider_response` for triage.
+
+### 5.7a NGN repayment matching (PalmPay collection webhook)
+
+PalmPay's dedicated VA endpoint issues **permanent** virtual accounts tied to BVN, and **does not forward bank-transfer narration** on the deposit notification. Matching flow:
+
+1. Resolve user from `virtualAccountNo` → `UserRepaymentAccount.user_id`. No match → unmatched (`no_user_for_va`).
+2. Floor check: `amount < MIN_PARTIAL_REPAYMENT_NGN` → unmatched (`below_floor`).
+3. Find user's ACTIVE loans. Zero → unmatched (`no_active_loans`). Multiple → unmatched (`multiple_active_loans`) — customer disambiguates via `POST /v1/loans/:id/claim-inflow`.
+4. Exactly one ACTIVE loan → upsert Inflow (idempotent on `provider_reference`), then `LoansService.creditInflow({ match_method: 'AUTO_AMOUNT' })`. Skip if Inflow was already matched (duplicate webhook).
+
+**No narration parsing**, **no amount-equals-total matching** — waterfall handles partial / full / overpay automatically.
+
+### 5.7b Add-collateral
+
+- One open `CollateralTopUp` per loan at a time — enforced by partial unique index `WHERE status = 'PENDING_COLLATERAL'`. Second open → translate Prisma P2002 to `AddCollateralAlreadyPendingException` (409).
+- Top-up uses `CollateralProvider.createNoAmountInvoice(...)` (variable-amount BOLT11). Customer chooses how much SAT to send.
+- 30-min expiry (`COLLATERAL_TOPUP_EXPIRY_SEC`).
+- On match: increment `loans.collateral_amount_sat` atomically + log `COLLATERAL_TOPPED_UP`. Status stays ACTIVE.
 
 ### 5.8 Security
 
@@ -165,7 +201,7 @@ Verify signature on the **raw request body** before any parsing. Mismatch → 40
 ```json
 {
   "error": {
-    "code": "LOAN_PRICE_STALE",
+    "code": "PRICE_FEED_STALE",
     "message": "Human-readable message.",
     "details": [{ "field": "...", "issue": "..." }],
     "request_id": "req_..."
@@ -190,7 +226,7 @@ Cursor-based only. No offset pagination.
 ## 6. LOAN STATE MACHINE
 
 ```
-PENDING_COLLATERAL → ACTIVE → REPAID
+PENDING_COLLATERAL → ACTIVE ⟲ → REPAID
         │                 ↘
         │             LIQUIDATED
         ↓
@@ -198,21 +234,28 @@ PENDING_COLLATERAL → ACTIVE → REPAID
       CANCELLED
 ```
 
+`ACTIVE ⟲` denotes self-transitions for partial repayment and collateral top-up — same status, but a `loan_status_logs` row is still required (§5.4).
+
 Terminal: `REPAID`, `LIQUIDATED`, `EXPIRED`, `CANCELLED`. No further transitions.
 
-| From | To | Triggered by |
-|---|---|---|
-| *(new)* | `PENDING_COLLATERAL` | Customer checkout |
-| `PENDING_COLLATERAL` | `ACTIVE` | Collateral webhook — confirmed |
-| `PENDING_COLLATERAL` | `EXPIRED` | Loan expiry worker — payment window passed |
-| `PENDING_COLLATERAL` | `CANCELLED` | Customer cancels before sending SAT |
-| `ACTIVE` | `REPAID` | Customer repays in full (NGN or SAT) |
-| `ACTIVE` | `LIQUIDATED` | Liquidation monitor — collateral < 110% of principal |
+| From | To | Triggered by | reason_code |
+|---|---|---|---|
+| *(new)* | `PENDING_COLLATERAL` | Customer checkout | `LOAN_CREATED` |
+| `PENDING_COLLATERAL` | `ACTIVE` | Collateral webhook — confirmed | `COLLATERAL_CONFIRMED` |
+| `PENDING_COLLATERAL` | `EXPIRED` | Loan-expiry worker — payment window passed | `INVOICE_EXPIRED` |
+| `PENDING_COLLATERAL` | `CANCELLED` | Customer cancels before sending SAT | `CUSTOMER_CANCELLED` |
+| `ACTIVE` | `ACTIVE` | Partial repayment credited (waterfall did not clear outstanding) | `REPAYMENT_PARTIAL_NGN` |
+| `ACTIVE` | `ACTIVE` | Collateral top-up inflow matched | `COLLATERAL_TOPPED_UP` |
+| `ACTIVE` | `REPAID` | Final repayment closes outstanding to 0 | `REPAYMENT_COMPLETED` |
+| `ACTIVE` | `LIQUIDATED` | Liquidation monitor — `collateral_ngn < 1.10 × outstanding` | `LIQUIDATION_TRIGGERED` |
+| `ACTIVE` | `LIQUIDATED` | Loan-maturity worker — past `due_at + LOAN_GRACE_PERIOD_DAYS` | `MATURITY_GRACE_EXPIRED` |
+
+**Grace period:** loans that reach `due_at` enter a 7-day grace (`LOAN_GRACE_PERIOD_DAYS`). Interest + custody continue to accrue normally. Reminders fire daily through grace via `workers/loan-reminder.worker.ts`. Past T+7d, loan-expiry worker forces liquidation.
 
 `StatusTrigger` enum: `CUSTOMER | SYSTEM | COLLATERAL_WEBHOOK | DISBURSEMENT_WEBHOOK` (role, not provider).
 
 `reason_code` values are standardized — add new ones to `LoanReasonCodes` before using:
-`LOAN_CREATED, COLLATERAL_CONFIRMED, DISBURSEMENT_CONFIRMED, REPAYMENT_RECEIVED_NGN, REPAYMENT_RECEIVED_SAT, COLLATERAL_RELEASED, LIQUIDATION_TRIGGERED, LIQUIDATION_COMPLETED, INVOICE_EXPIRED, CUSTOMER_CANCELLED.`
+`LOAN_CREATED, COLLATERAL_CONFIRMED, DISBURSEMENT_CONFIRMED, REPAYMENT_PARTIAL_NGN, REPAYMENT_COMPLETED, COLLATERAL_TOPPED_UP, COLLATERAL_RELEASED, LIQUIDATION_TRIGGERED, LIQUIDATION_COMPLETED, MATURITY_GRACE_STARTED, MATURITY_GRACE_EXPIRED, INVOICE_EXPIRED, CUSTOMER_CANCELLED.`
 
 ---
 
@@ -400,39 +443,73 @@ Code examples + ESLint/Prettier: `docs/conventions.md`.
 
 ```typescript
 // src/common/constants/index.ts
-LOAN_LTV_PERCENT          = 0.80
-LIQUIDATION_THRESHOLD     = 1.10            // 110% of principal
-ALERT_THRESHOLD           = 1.20            // 120% of principal
-ORIGINATION_FEE_NGN       = 500
-DAILY_FEE_PER_100_NGN     = 500             // N500 per $100/day
-MIN_LOAN_NGN              = 50_000
-MAX_SELFSERVE_LOAN_NGN    = 10_000_000
-MIN_LOAN_DURATION_DAYS    = 1
-MAX_LOAN_DURATION_DAYS    = 30
-MAX_DISBURSEMENT_ACCOUNTS_PER_KIND = 5      // per (user, kind)
+LOAN_LTV_PERCENT             = 0.60
+LIQUIDATION_THRESHOLD        = 1.10            // 110% of TOTAL outstanding (principal + accrued)
+ALERT_THRESHOLD              = 1.20            // 120% of TOTAL outstanding
+
+// v1.1 accrual-based pricing
+ORIGINATION_FEE_PER_100K_NGN = 500             // ceil(principal / 100k) × 500 — one-time, upfront
+DAILY_INTEREST_RATE_BPS      = 30              // 0.3% daily on outstanding principal (simple, non-compounding)
+CUSTODY_FEE_PER_100_USD_NGN  = 100             // ceil(initial_collateral_usd / 100) × 100 — fixed per day at origination
+
+MIN_LOAN_NGN                 = 50_000
+MAX_SELFSERVE_LOAN_NGN       = 10_000_000
+MIN_PARTIAL_REPAYMENT_NGN    = 10_000          // floor; below → unmatched, ops-paged
+MIN_LOAN_DURATION_DAYS       = 1
+MAX_LOAN_DURATION_DAYS       = 90
+LOAN_GRACE_PERIOD_DAYS       = 7
+
+MAX_DISBURSEMENT_ACCOUNTS_PER_KIND = 5         // per (user, kind)
 DISBURSEMENT_NAME_MATCH_THRESHOLD  = 0.85
-PRICE_FEED_STALE_MS       = 120_000         // 2 minutes
-PRICE_CACHE_TTL_SEC       = 90
-BLINK_INVOICE_EXPIRY_SEC  = 1800            // 30 minutes
-ALERT_COOLDOWN_SEC        = 86_400          // 24 hours
-SATS_PER_BTC              = 100_000_000
+PRICE_FEED_STALE_MS          = 120_000         // 2 minutes
+PRICE_CACHE_TTL_SEC          = 90
+COLLATERAL_INVOICE_EXPIRY_SEC = 1800           // 30 minutes (initial loan collateral invoice)
+COLLATERAL_TOPUP_EXPIRY_SEC   = 1800           // 30 minutes (add-collateral invoice)
+ALERT_COOLDOWN_SEC           = 86_400          // 24 hours (liquidation alert dedupe)
+SATS_PER_BTC                 = 100_000_000
 ```
 
 ---
 
-## 10. FEE CALCULATION
+## 10. FEE CALCULATION (v1.1 — accrual-based)
 
-Fee model: **N500 per $100 USD equivalent per day**, plus N500 origination.
+Three components, all `Decimal`:
+
+| Fee | Rule | When |
+|---|---|---|
+| **Origination** | `ceil(principal_ngn / 100_000) × 500` | One-time, upfront at disbursement |
+| **Interest** | `0.3% daily × current outstanding principal` (simple, non-compounding) | Accrues daily |
+| **Custody** | `ceil(initial_collateral_usd / 100) × 100` NGN per day | Fixed at origination (does not float with BTC) |
+
+`initial_collateral_usd` is sourced from **Blink** at origination via `PriceQuoteProvider.getBtcUsdRate()` (one-off direct quote, not the 30s SAT/NGN feed).
+
+Day boundary: `ceil((as_of − collateral_received_at) / 24h)`. Partial days count as full — a repayment 2 hours after origination still incurs 1 day of interest + custody.
+
+The calculator returns **projections** for a chosen term (not fixed totals — actual values accrue). Outstanding is always computed live by `AccrualService.compute(...)`.
+
+**Worked example.** N500,000 principal, $625 USD-equivalent collateral at origination, 60-day term:
 
 ```
-Example: N300,000 / 7 days @ N1,410/USDT
-  usd_equivalent = 300_000 / 1_410       = $212.77
-  fee_units      = ceil(212.77 / 100)    = 3
-  daily_fee_ngn  = 3 * 500               = N1,500
-  total_fees_ngn = (1_500 * 7) + 500     = N11,000
-```
+origination          = ceil(500_000 / 100_000) × 500     = N2,500
+daily_custody_fee    = ceil(625 / 100) × 100             = N700/day  (fixed for life of loan)
+daily_interest (day 1) = 500_000 × 0.003                  = N1,500/day
 
-All arithmetic uses `Decimal`. Partial $100 unit is billed as a full unit (`ceil`).
+Day 30 (no repayments yet):
+  accrued_interest   = 500_000 × 0.003 × 30              = N45,000
+  accrued_custody    = 700 × 30                          = N21,000
+  outstanding_total  = 500_000 + 45_000 + 21_000         = N566,000
+
+Day 30 customer pays N100,000 — waterfall: custody → interest → principal:
+  applied_to_custody    = 21,000
+  applied_to_interest   = 45,000
+  applied_to_principal  = 34,000
+  → outstanding_principal becomes 466,000
+
+Day 31-60 interest at the new principal:
+  interest_segment    = 466_000 × 0.003 × 30             = N41,940
+  custody_segment     = 700 × 30                         = N21,000
+  outstanding_total at day 60 = 466_000 + 41,940 + 21,000 = N528,940
+```
 
 ---
 
@@ -454,6 +531,16 @@ Each phase must have passing tests before the next begins.
 | 9 | `loans` + `LoansController` + `LoanStatusService` | `POST /v1/loans/checkout` → PaymentRequest; `GET /v1/loans/:id` shows timeline |
 | 10 | `webhooks` — collateral + disbursement controllers | Mismatch → 401; duplicate → idempotent; valid → loan advances |
 | 11 | Workers — liquidation monitor + payment-request expiry | Liquidation at 110%, no double-alert in 24h, expired → loan EXPIRED |
+
+**v1.1 follow-on phases (already shipped):**
+
+| Phase | Build | Acceptance |
+|---|---|---|
+| 12 | Schema migration: drop fixed-fee cols on `loans`, add accrual inputs; new `LoanRepayment`, `CollateralTopUp`, `UserRepaymentAccount` | `prisma migrate reset` clean; partial unique index on `collateral_topups (loan_id) WHERE status='PENDING_COLLATERAL'` |
+| 13 | `AccrualService` (pure) + `CalculatorService` rewrite (projections, BTC/USD via Blink) | All accrual property tests pass; calculator returns projections not fixed totals |
+| 14 | `LoansService.creditInflow` (waterfall + atomic credit) + `add-collateral` + `claim-inflow` endpoints | Webhook → credit; partial repayment keeps loan ACTIVE; full repayment closes; top-up increments collateral |
+| 15 | `user-repayment-accounts` (rename from per-loan); PalmPay collection rewrite (no narration, amount + claim path); ops alerts via `OpsAlertsService` | Auto-credit on single ACTIVE; unmatched paths page ops; idempotent on duplicate webhook |
+| 16 | `loan-reminder` worker (T−7d / T−1d / T / daily through grace / final) | Each (loan, slot) fires once via Redis dedup; missed slots are not backfilled |
 
 ---
 

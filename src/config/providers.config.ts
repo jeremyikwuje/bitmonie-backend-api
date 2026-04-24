@@ -2,8 +2,9 @@ import { registerAs } from '@nestjs/config';
 
 // ── Selector — which concrete provider is active for each role ────────────────
 export interface ActiveProviders {
-  price_feed: string;   // 'quidax'
-  collateral: string;   // 'blink'
+  price_feed:  string;   // 'quidax'
+  collateral:  string;   // 'blink'
+  collection:  string;   // 'palmpay' — virtual account provider for NGN loan repayments
 }
 
 // ── Per-provider credential shapes ───────────────────────────────────────────
@@ -15,8 +16,8 @@ export interface QuidaxConfig {
 export interface BlinkConfig {
   api_key: string;
   base_url: string;
-  wallet_id: string;        // BTC wallet ID — found at app.blink.sv → API Keys
-  usd_wallet_id: string;    // USD (stable-sats) wallet ID — target for BTC→USD swaps on liquidation
+  wallet_btc_id: string;    // BTC wallet ID — found at app.blink.sv → API Keys
+  wallet_usd_id: string;    // USD (stable-sats) wallet ID — target for BTC→USD swaps on liquidation
   account_id: string;       // Account ID — validates webhook accountId field matches our account
   webhook_secret: string;   // Svix signing secret — starts with 'whsec_'
 }
@@ -85,8 +86,9 @@ const splitCsv = (raw?: string): string[] =>
 
 export default registerAs('providers', (): ProvidersConfig => ({
   active: {
-    price_feed:   process.env.PRICE_FEED_PROVIDER   ?? 'quidax',
-    collateral:   process.env.COLLATERAL_PROVIDER   ?? 'blink',
+    price_feed:  process.env.PRICE_FEED_PROVIDER  ?? 'quidax',
+    collateral:  process.env.COLLATERAL_PROVIDER  ?? 'blink',
+    collection:  process.env.COLLECTION_PROVIDER  ?? 'palmpay',
   },
   quidax: {
     api_key:  process.env.QUIDAX_API_KEY  ?? '',
@@ -95,8 +97,8 @@ export default registerAs('providers', (): ProvidersConfig => ({
   blink: {
     api_key:        process.env.BLINK_API_KEY        ?? '',
     base_url:       process.env.BLINK_BASE_URL        ?? 'https://api.blink.sv',
-    wallet_id:      process.env.BLINK_WALLET_ID       ?? '',
-    usd_wallet_id:  process.env.BLINK_USD_WALLET_ID   ?? '',
+    wallet_btc_id:  process.env.BLINK_WALLET_BTC_ID   ?? '',
+    wallet_usd_id:  process.env.BLINK_WALLET_USD_ID   ?? '',
     account_id:     process.env.BLINK_ACCOUNT_ID      ?? '',
     webhook_secret: process.env.BLINK_WEBHOOK_SECRET  ?? '',
   },

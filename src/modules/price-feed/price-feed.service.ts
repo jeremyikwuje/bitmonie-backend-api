@@ -1,4 +1,4 @@
-import { LoanPriceStaleException } from '@/common/errors/bitmonie.errors';
+import { PriceFeedStaleException } from '@/common/errors/bitmonie.errors';
 import { PRICE_FEED_STALE_MS, REDIS_KEYS } from '@/common/constants';
 import { REDIS_CLIENT } from '@/database/redis.module';
 import { Inject, Injectable } from '@nestjs/common';
@@ -27,8 +27,9 @@ export class PriceFeedService {
   async getCurrentRate(pair: AssetPair): Promise<{ rate_buy: Decimal; rate_sell: Decimal }> {
     const stale_flag = await this.redis.get(REDIS_KEYS.PRICE_STALE);
     if (stale_flag) {
-      throw new LoanPriceStaleException({
+      throw new PriceFeedStaleException({
         last_updated_ms: Date.now() - parseInt(stale_flag, 10),
+        pair,
       });
     }
 
@@ -40,12 +41,13 @@ export class PriceFeedService {
 
     const db_rate = await this.price_feed_repository.getLatestRate(pair);
     if (!db_rate) {
-      throw new LoanPriceStaleException({ last_updated_ms: PRICE_FEED_STALE_MS });
+      throw new PriceFeedStaleException({ last_updated_ms: PRICE_FEED_STALE_MS, pair });
     }
 
     if (this.isPastStaleness(db_rate.fetched_at)) {
-      throw new LoanPriceStaleException({
+      throw new PriceFeedStaleException({
         last_updated_ms: Date.now() - db_rate.fetched_at.getTime(),
+        pair,
       });
     }
 

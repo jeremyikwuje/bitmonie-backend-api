@@ -31,6 +31,60 @@ services:
       timeout: 3s
       retries: 10
 
+  # ── production services (profile: prod) ───────────────────────────────────
+  # Single image, one service per process. Run with: docker compose --profile prod up
+  api:
+    profiles: ["prod"]
+    build: .
+    image: bitmonie
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    ports:
+      - "3000:3000"
+
+  worker-price-feed:
+    profiles: ["prod"]
+    image: bitmonie
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    command: ["node", "dist/workers/price-feed.worker.js"]
+
+  worker-liquidation:
+    profiles: ["prod"]
+    image: bitmonie
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    command: ["node", "dist/workers/liquidation-monitor.worker.js"]
+
+  worker-loan-expiry:
+    profiles: ["prod"]
+    image: bitmonie
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    command: ["node", "dist/workers/loan-expiry.worker.js"]
+
+  worker-loan-reminder:
+    profiles: ["prod"]
+    image: bitmonie
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    command: ["node", "dist/workers/loan-reminder.worker.js"]
+
 volumes:
   bitmonie_postgres_data:
   bitmonie_redis_data:

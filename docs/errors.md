@@ -21,19 +21,19 @@ export class BitmonieException extends HttpException {
   }
 }
 
-export class LoanPriceStaleException extends BitmonieException {
-  constructor(context: { last_updated_ms: number }) {
+export class PriceFeedStaleException extends BitmonieException {
+  constructor(context: { last_updated_ms: number; pair?: string }) {
     super(
-      'LOAN_PRICE_STALE',
-      'Price feed is too stale to safely create a loan. Please try again.',
+      'PRICE_FEED_STALE',
+      'Price feed is too stale. Please try again.',
       HttpStatus.UNPROCESSABLE_ENTITY,
-      [{ field: 'sat_ngn_rate', issue: `Last updated ${context.last_updated_ms}ms ago` }],
+      [{ field: context.pair ?? 'rate', issue: `Last updated ${context.last_updated_ms}ms ago` }],
     );
   }
 }
 
 // ✅ Correct
-throw new LoanPriceStaleException({ last_updated_ms: staleness_ms });
+throw new PriceFeedStaleException({ last_updated_ms: staleness_ms, pair: 'SAT_NGN' });
 
 // ❌ Wrong
 throw new Error('Price is stale');
@@ -76,10 +76,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 ```json
 {
   "error": {
-    "code": "LOAN_PRICE_STALE",
-    "message": "Price feed is too stale to safely create a loan. Please try again.",
+    "code": "PRICE_FEED_STALE",
+    "message": "Price feed is too stale. Please try again.",
     "details": [
-      { "field": "sat_ngn_rate", "issue": "Last updated 4 minutes ago — threshold is 2 minutes" }
+      { "field": "SAT_NGN", "issue": "Last updated 4 minutes ago — threshold is 2 minutes" }
     ],
     "request_id": "req_01HX..."
   }
@@ -101,7 +101,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
 | Code | HTTP | Meaning |
 |---|---|---|
-| `LOAN_PRICE_STALE` | 422 | Price feed > 2 min old |
+| `PRICE_FEED_STALE` | 422 | Price feed > 2 min old (rate-consuming flows: loans, offramp/onramp quotes) |
 | `LOAN_KYC_REQUIRED` | 422 | BVN/NIN verification required first |
 | `LOAN_DISBURSEMENT_ACCOUNT_REQUIRED` | 422 | Default disbursement account required first |
 | `LOAN_AMOUNT_TOO_LOW` | 400 | Below N50,000 minimum |

@@ -966,7 +966,7 @@ async function checkoutLoan(
 ): Promise<CheckoutLoanResponseDto> {
   // 1. Assert user KYC verified (or KycVerifiedGuard handles this at controller level)
   // 2. Assert user has a default bank account
-  // 3. Fetch live SAT/NGN rate from Redis — throw LoanPriceStaleException if stale
+  // 3. Fetch live SAT/NGN rate from Redis — throw PriceFeedStaleException if stale
   // 4. CalculatorService.calculateFees() — pure math, Decimal throughout
   // 5. Prisma.$transaction():
   //    a. INSERT loan (status: PENDING_COLLATERAL)
@@ -1185,7 +1185,7 @@ E2E              test/e2e/**/*.e2e-spec.ts
 ```typescript
 // calculator.service.spec.ts
 describe('CalculatorService', () => {
-  it('applies 80% LTV correctly')
+  it('applies 60% LTV correctly')
   it('calculates daily fee as N500 per $100 USD equivalent')
   it('adds origination fee to total')
   it('computes liquidation threshold at 110% of principal')
@@ -1194,7 +1194,7 @@ describe('CalculatorService', () => {
 
 // loans.service.spec.ts
 describe('LoansService', () => {
-  it('throws LoanPriceStaleException when rate is stale')
+  it('throws PriceFeedStaleException when rate is stale')
   it('throws LoanKycRequiredException when user not verified')
   it('throws LoanDisbursementAccountRequiredException when no default disbursement account')
   it('creates loan with PENDING_COLLATERAL status')

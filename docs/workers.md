@@ -6,6 +6,31 @@ All workers are standalone Node.js processes (not NestJS apps). Each is idempote
 
 All worker DB queries use `FOR UPDATE SKIP LOCKED` to allow safe concurrent execution.
 
+## Running workers
+
+**Dev (two terminals — API and workers stay separate so one restart doesn't kill the other):**
+
+```bash
+# terminal 1
+pnpm start:dev
+
+# terminal 2
+pnpm worker:all           # all four workers via concurrently
+```
+
+Or run individual workers when iterating on one:
+
+```bash
+pnpm worker:price-feed
+pnpm worker:liquidation
+pnpm worker:loan-expiry
+pnpm worker:loan-reminder
+```
+
+The API never bundles workers in-process — if the API restarts, workers keep running, and vice versa.
+
+**Prod (Docker Compose):** `docker compose --profile prod up` builds one image and runs five services from it (`api`, `worker-price-feed`, `worker-liquidation`, `worker-loan-expiry`, `worker-loan-reminder`) — each overriding `CMD` to a different `dist/workers/*.worker.js` entry. Same pattern on any orchestrator: one image, N services, one process per service.
+
 ---
 
 ## price-feed
@@ -28,7 +53,7 @@ On fetch failure:
   → Do NOT crash — retry on next cycle
 ```
 
-**Failure handling:** Two consecutive fetch failures set `price:stale`. This flag causes loan checkout to reject new loans with `LOAN_PRICE_STALE`. Intentional — creating a loan at a stale rate is more dangerous than blocking new loans temporarily.
+**Failure handling:** Two consecutive fetch failures set `price:stale`. This flag causes any rate-consuming flow (loan checkout, offramp/onramp quotes, `GET /v1/rates`) to reject with `PRICE_FEED_STALE`. Intentional — acting on a stale rate is more dangerous than blocking new requests temporarily.
 
 ---
 

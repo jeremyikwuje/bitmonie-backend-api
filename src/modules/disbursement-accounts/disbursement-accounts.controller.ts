@@ -34,7 +34,7 @@ type AuthRequest = Request & { user: User };
 @ApiBearerAuth()
 @UseGuards(SessionGuard, KycTierGuard)
 @RequiresKyc(1)
-@Controller('v1/disbursement-accounts')
+@Controller('disbursement-accounts')
 export class DisbursementAccountsController {
   constructor(private readonly service: DisbursementAccountsService) {}
 

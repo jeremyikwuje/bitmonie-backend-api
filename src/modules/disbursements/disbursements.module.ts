@@ -9,15 +9,14 @@ import { DisbursementRouter, DISBURSEMENT_PROVIDERS_MAP } from './disbursement-r
 import { DisbursementsService } from './disbursements.service';
 import { OutflowsService } from './outflows.service';
 
-const stub_disbursement_provider = new StubDisbursementProvider();
-
 function resolveDisbursementProvider(
   name: DisbursementProviderName,
   palmpay: PalmpayProvider,
+  stub: StubDisbursementProvider,
 ): DisbursementProvider {
   switch (name) {
     case DisbursementProviderName.Palmpay: return palmpay;
-    case DisbursementProviderName.Stub:    return stub_disbursement_provider;
+    case DisbursementProviderName.Stub:    return stub;
   }
 }
 
@@ -28,14 +27,15 @@ const ALL_PROVIDER_MODULES = [PalmpayModule];
   imports: [...ALL_PROVIDER_MODULES],
   providers: [
     PrismaService,
+    StubDisbursementProvider,
     {
       provide: DISBURSEMENT_PROVIDERS_MAP,
-      inject: [PalmpayProvider],
-      useFactory: (palmpay: PalmpayProvider): Map<string, DisbursementProvider> =>
+      inject: [PalmpayProvider, StubDisbursementProvider],
+      useFactory: (palmpay: PalmpayProvider, stub: StubDisbursementProvider): Map<string, DisbursementProvider> =>
         new Map(
           Object.values(DisbursementProviderName).map((name) => [
             name,
-            resolveDisbursementProvider(name, palmpay),
+            resolveDisbursementProvider(name, palmpay, stub),
           ]),
         ),
     },

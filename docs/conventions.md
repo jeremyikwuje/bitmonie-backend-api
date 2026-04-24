@@ -95,7 +95,7 @@ export class LoansController {}
 const collateral_sat = principal_ngn.div(sat_ngn_rate).div(LOAN_LTV_PERCENT).ceil();
 
 // ❌ Wrong — float will betray you
-const collateral_sat = principalNgn / satNgnRate / 0.80;
+const collateral_sat = principalNgn / satNgnRate / 0.60;
 ```
 
 Prisma — every monetary field followed by its currency (or named with the unit):

@@ -29,4 +29,6 @@ COPY prisma ./prisma
 COPY prisma.config.ts ./
 
 EXPOSE 3000
-CMD ["sh", "-c", "node_modules/.bin/prisma migrate deploy && node dist/main"]
+# Default CMD runs the API. Worker services override CMD in compose / orchestrator
+# to point at dist/workers/<name>.worker.js. Migrations run only on the API boot.
+CMD ["sh", "-c", "node_modules/.bin/prisma migrate deploy && node dist/src/main"]

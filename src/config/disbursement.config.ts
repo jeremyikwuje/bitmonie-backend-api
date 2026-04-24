@@ -19,3 +19,17 @@ export const DISBURSEMENT_ROUTES_CONFIG: DisbursementRoutesConfig = {
     [DisbursementRail.MOBILE_MONEY]:  { provider: DisbursementProviderName.Stub },
   },
 };
+
+// ── Collection (inbound NGN via virtual accounts) ─────────────────────────────
+
+export enum CollectionProviderName {
+  Palmpay = 'palmpay',
+}
+
+export interface CollectionConfig {
+  provider: CollectionProviderName;
+}
+
+export const COLLECTION_CONFIG: CollectionConfig = {
+  provider: CollectionProviderName.Palmpay,
+};

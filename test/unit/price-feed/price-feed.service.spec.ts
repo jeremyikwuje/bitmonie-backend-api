@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
 import { PriceFeedRepository } from '@/modules/price-feed/price-feed-repository';
 import { REDIS_CLIENT } from '@/database/redis.module';
-import { LoanPriceStaleException } from '@/common/errors/bitmonie.errors';
+import { PriceFeedStaleException } from '@/common/errors/bitmonie.errors';
 import { PRICE_FEED_STALE_MS } from '@/common/constants';
 import { AssetPair } from '@prisma/client';
 import Decimal from 'decimal.js';
@@ -68,13 +68,13 @@ describe('PriceFeedService', () => {
       expect(repository.getLatestRate).toHaveBeenCalledWith(AssetPair.SAT_NGN);
     });
 
-    it('throws LoanPriceStaleException when price:stale flag is set in Redis', async () => {
+    it('throws PriceFeedStaleException when price:stale flag is set in Redis', async () => {
       redis.get.mockImplementation((key: string) => {
         if (key === 'price:stale') return Promise.resolve(String(Date.now() - 60_000));
         return Promise.resolve(null);
       });
 
-      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(LoanPriceStaleException);
+      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(PriceFeedStaleException);
     });
 
     it('skips DB lookup entirely when price:stale flag is set (fast-path)', async () => {
@@ -83,22 +83,22 @@ describe('PriceFeedService', () => {
         return Promise.resolve(null);
       });
 
-      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(LoanPriceStaleException);
+      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(PriceFeedStaleException);
       expect(repository.getLatestRate).not.toHaveBeenCalled();
     });
 
-    it('throws LoanPriceStaleException when DB rate is beyond PRICE_FEED_STALE_MS', async () => {
+    it('throws PriceFeedStaleException when DB rate is beyond PRICE_FEED_STALE_MS', async () => {
       redis.get.mockResolvedValue(null);
       repository.getLatestRate.mockResolvedValue(stale_rate);
 
-      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(LoanPriceStaleException);
+      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(PriceFeedStaleException);
     });
 
-    it('throws LoanPriceStaleException when no rate exists in DB at all', async () => {
+    it('throws PriceFeedStaleException when no rate exists in DB at all', async () => {
       redis.get.mockResolvedValue(null);
       repository.getLatestRate.mockResolvedValue(null);
 
-      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(LoanPriceStaleException);
+      await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(PriceFeedStaleException);
     });
 
     it('returns Decimal values (not JS numbers) from cache', async () => {
@@ -142,13 +142,13 @@ describe('PriceFeedService', () => {
       expect(sat_item?.rate_sell).toMatch(/^\d+\.\d{6}$/);
     });
 
-    it('propagates LoanPriceStaleException from getCurrentRate', async () => {
+    it('propagates PriceFeedStaleException from getCurrentRate', async () => {
       redis.get.mockImplementation((key: string) => {
         if (key === 'price:stale') return Promise.resolve(String(Date.now() - 60_000));
         return Promise.resolve(null);
       });
 
-      await expect(service.getRates()).rejects.toThrow(LoanPriceStaleException);
+      await expect(service.getRates()).rejects.toThrow(PriceFeedStaleException);
     });
   });
 

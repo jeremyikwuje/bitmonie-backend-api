@@ -146,7 +146,7 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 | Minimum loan | N50,000 |
 | Maximum loan (self-serve) | N10,000,000 |
 | Maximum loan (manual) | Unlimited |
-| LTV | 80% |
+| LTV | 60% |
 | Liquidation trigger | Collateral value = 110% of outstanding loan |
 | Alert threshold | Collateral value = 120% of outstanding loan |
 | Minimum duration | 1 day |
