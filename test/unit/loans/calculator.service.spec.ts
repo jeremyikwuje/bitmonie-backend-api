@@ -1,106 +1,150 @@
 import Decimal from 'decimal.js';
 import { CalculatorService } from '@/modules/loans/calculator.service';
 import {
-  LOAN_LTV_PERCENT,
-  ORIGINATION_FEE_NGN,
-  DAILY_FEE_PER_100_NGN,
-  LIQUIDATION_THRESHOLD,
   ALERT_THRESHOLD,
+  CUSTODY_FEE_PER_100_USD_NGN,
+  DAILY_INTEREST_RATE_BPS,
+  LIQUIDATION_THRESHOLD,
+  LOAN_LTV_PERCENT,
+  MAX_LOAN_DURATION_DAYS,
+  MIN_LOAN_DURATION_DAYS,
+  ORIGINATION_FEE_PER_100K_NGN,
+  SATS_PER_BTC,
 } from '@/common/constants';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
-// Concrete numbers derived from the TDD example, plus a SAT rate.
+//   principal      = N500,000
+//   duration       = 30 days
+//   sat_ngn_rate   = N0.97            (≈ N97M / BTC — round for easy math)
+//   btc_usd_rate   = $65,000          (Blink — BTC/USD direct quote)
 //
-//   principal     = N300,000
-//   duration      = 7 days
-//   usdt_ngn_rate = N1,410
-//   sat_ngn_rate  = N0.97   (≈ N97,000,000 / BTC — round number for easy maths)
+// Derivations:
+//   collateral_ngn         = 500_000 / 0.60 ≈ 833_333.33
+//   collateral_sat         = ceil(833_333.33 / 0.97) = 859_107
+//   initial_collateral_usd = (859_107 / 100_000_000) × 65_000 ≈ $558.4226
+//   origination            = ceil(500_000 / 100_000) × 500 = 2,500
+//   custody_units          = ceil(558.4226 / 100) = 6
+//   daily_custody_fee_ngn  = 6 × 100 = 600
+//   projected_interest     = 500_000 × 0.003 × 30 = 45,000
+//   projected_custody      = 600 × 30 = 18,000
+//   projected_total        = 500_000 + 2,500 + 45,000 + 18,000 = 565,500
 
-const PRINCIPAL    = new Decimal('300000');
-const DURATION     = 7;
-const USDT_RATE    = new Decimal('1410');
+const PRINCIPAL    = new Decimal('500000');
+const DURATION     = 30;
 const SAT_RATE     = new Decimal('0.97');
+const BTC_USD_RATE = new Decimal('65000');
 
 function calculate(overrides: Partial<{
   principal_ngn: Decimal;
   duration_days: number;
-  sat_ngn_rate: Decimal;
-  usdt_ngn_rate: Decimal;
+  sat_ngn_rate:  Decimal;
+  btc_usd_rate:  Decimal;
 }> = {}) {
   return new CalculatorService().calculate({
-    principal_ngn:  overrides.principal_ngn  ?? PRINCIPAL,
-    duration_days:  overrides.duration_days  ?? DURATION,
-    sat_ngn_rate:   overrides.sat_ngn_rate   ?? SAT_RATE,
-    usdt_ngn_rate:  overrides.usdt_ngn_rate  ?? USDT_RATE,
+    principal_ngn: overrides.principal_ngn ?? PRINCIPAL,
+    duration_days: overrides.duration_days ?? DURATION,
+    sat_ngn_rate:  overrides.sat_ngn_rate  ?? SAT_RATE,
+    btc_usd_rate:  overrides.btc_usd_rate  ?? BTC_USD_RATE,
   });
 }
 
-// ── Fee arithmetic ────────────────────────────────────────────────────────────
+// ── Origination fee (ceil per N100k) ──────────────────────────────────────────
 
-describe('CalculatorService — fee arithmetic', () => {
-  it('matches the TDD worked example: N300k / 7d @ N1,410/USDT → total fees N11,000', () => {
-    const result = calculate();
-    //   usd_equivalent = 300000 / 1410 ≈ 212.77
-    //   fee_units      = ceil(212.77 / 100) = 3
-    //   daily_fee_ngn  = 3 * 500 = 1500
-    //   total_fees     = (1500 * 7) + 500 = 11000
-    expect(result.total_fees_ngn).toEqual(new Decimal('11000'));
+describe('CalculatorService — origination fee', () => {
+  it('at principal = N500,000 → N2,500 (5 × 500)', () => {
+    expect(calculate().origination_fee_ngn).toEqual(new Decimal('2500'));
   });
 
-  it('daily_fee_ngn equals fee_units * DAILY_FEE_PER_100_NGN', () => {
-    const result = calculate();
-    // 3 units × N500
-    expect(result.daily_fee_ngn).toEqual(DAILY_FEE_PER_100_NGN.mul(3));
+  it('ceils per N100,000 block — N150,000 → N1,000 (2 × 500)', () => {
+    const result = calculate({ principal_ngn: new Decimal('150000') });
+    expect(result.origination_fee_ngn).toEqual(new Decimal('1000'));
   });
 
-  it('origination fee is always ORIGINATION_FEE_NGN (N500) regardless of loan size', () => {
-    const small = calculate({ principal_ngn: new Decimal('50000') });
-    const large = calculate({ principal_ngn: new Decimal('5000000') });
-    expect(small.origination_fee_ngn).toEqual(ORIGINATION_FEE_NGN);
-    expect(large.origination_fee_ngn).toEqual(ORIGINATION_FEE_NGN);
-  });
-
-  it('total_amount_ngn = principal + total_fees_ngn', () => {
-    const result = calculate();
-    expect(result.total_amount_ngn).toEqual(PRINCIPAL.plus(result.total_fees_ngn));
-  });
-
-  it('uses ceil for partial $100 USD units — N50,000 / N1,410 ≈ $35.46 → 1 unit', () => {
+  it('minimum loan (N50,000) pays N500 (1 × 500, floor of ceil rule)', () => {
     const result = calculate({ principal_ngn: new Decimal('50000') });
-    // usd = 50000 / 1410 ≈ 35.46 → ceil(0.35) = 1 unit
-    expect(result.daily_fee_ngn).toEqual(DAILY_FEE_PER_100_NGN.mul(1));
+    expect(result.origination_fee_ngn).toEqual(new Decimal('500'));
   });
 
-  it('fee scales correctly with duration', () => {
-    const one_day  = calculate({ duration_days: 1 });
-    const ten_days = calculate({ duration_days: 10 });
-    const diff = ten_days.total_fees_ngn.minus(one_day.total_fees_ngn);
-    // both have the same daily_fee, so difference should be 9 × daily_fee
-    expect(diff).toEqual(one_day.daily_fee_ngn.mul(9));
+  it('maximum self-serve (N10,000,000) pays N50,000 (100 × 500)', () => {
+    const result = calculate({ principal_ngn: new Decimal('10000000') });
+    expect(result.origination_fee_ngn).toEqual(new Decimal('50000'));
   });
 
-  it('produces no floating-point rounding errors', () => {
-    // Deliberately awkward USDT rate
-    const result = calculate({ usdt_ngn_rate: new Decimal('1399.99') });
-    // Verify the result is a valid Decimal with no rounding artifacts
-    expect(() => result.total_fees_ngn.toFixed(2)).not.toThrow();
-    expect(result.total_fees_ngn.decimalPlaces()).toBeLessThanOrEqual(2);
+  it('scales as ORIGINATION_FEE_PER_100K_NGN × ceil(principal / 100k)', () => {
+    const result = calculate({ principal_ngn: new Decimal('333000') });
+    // ceil(3.33) = 4 → 4 × 500 = 2000
+    expect(result.origination_fee_ngn).toEqual(ORIGINATION_FEE_PER_100K_NGN.mul(4));
   });
 });
 
-// ── LTV and collateral ────────────────────────────────────────────────────────
+// ── Daily custody fee (fixed at origination, ceil per $100) ───────────────────
 
-describe('CalculatorService — LTV and collateral', () => {
-  it('ltv_percent equals LOAN_LTV_PERCENT (80%)', () => {
-    expect(calculate().ltv_percent).toEqual(LOAN_LTV_PERCENT);
+describe('CalculatorService — daily custody fee', () => {
+  it('at $558.42 collateral → N600/day (6 × 100)', () => {
+    expect(calculate().daily_custody_fee_ngn).toEqual(new Decimal('600'));
   });
 
-  it('collateral_amount_sat covers the loan at 80% LTV (ceiled to whole SATs)', () => {
+  it('sub-$100 collateral still pays N100/day (ceil rule, no floor needed)', () => {
+    // Tiny principal + high sat rate → tiny collateral in USD
+    const result = calculate({
+      principal_ngn: new Decimal('50000'),
+      sat_ngn_rate:  new Decimal('100'),       // N100/sat → massive BTC price → tiny sat count
+      btc_usd_rate:  new Decimal('1'),         // and tiny USD value
+    });
+    // collateral_ngn ≈ 83333.33, sat = ceil(833.33) = 834 sats, usd = (834 / 1e8) × 1 = 0.00000834
+    // ceil(0.00000834 / 100) = 1 → N100
+    expect(result.daily_custody_fee_ngn).toEqual(CUSTODY_FEE_PER_100_USD_NGN);
+  });
+
+  it('scales with initial_collateral_usd — double the USD rate → double the units (roughly)', () => {
+    const low  = calculate({ btc_usd_rate: new Decimal('32500') });  // halves USD → $279.2
+    const high = calculate({ btc_usd_rate: new Decimal('65000') });  // $558.4
+    // low: ceil(279.2/100) = 3 → N300;  high: ceil(558.4/100) = 6 → N600
+    expect(low.daily_custody_fee_ngn).toEqual(new Decimal('300'));
+    expect(high.daily_custody_fee_ngn).toEqual(new Decimal('600'));
+  });
+});
+
+// ── Projections ───────────────────────────────────────────────────────────────
+
+describe('CalculatorService — projections', () => {
+  it('projected_interest = principal × 0.003 × duration', () => {
     const result = calculate();
-    // collateral_ngn = 300000 / 0.80 = 375000
-    // collateral_sat = ceil(375000 / 0.97) = ceil(386597.938...) = 386598
-    const collateral_ngn = PRINCIPAL.div(LOAN_LTV_PERCENT);
-    const expected_sat = BigInt(collateral_ngn.div(SAT_RATE).ceil().toFixed(0));
+    // 500_000 × 0.003 × 30 = 45,000
+    expect(result.projected_interest_ngn).toEqual(new Decimal('45000'));
+  });
+
+  it('projected_custody = daily_custody_fee × duration', () => {
+    const result = calculate();
+    // 600 × 30 = 18,000
+    expect(result.projected_custody_ngn).toEqual(new Decimal('18000'));
+  });
+
+  it('projected_total = principal + origination + projected_interest + projected_custody', () => {
+    const result = calculate();
+    // 500_000 + 2,500 + 45,000 + 18,000 = 565,500
+    expect(result.projected_total_ngn).toEqual(new Decimal('565500'));
+  });
+
+  it('daily_interest_rate_bps is the constant (30 = 0.3%)', () => {
+    expect(calculate().daily_interest_rate_bps).toBe(DAILY_INTEREST_RATE_BPS);
+  });
+
+  it('scales linearly with duration', () => {
+    const r30 = calculate({ duration_days: 30 });
+    const r60 = calculate({ duration_days: 60 });
+    expect(r60.projected_interest_ngn).toEqual(r30.projected_interest_ngn.mul(2));
+    expect(r60.projected_custody_ngn).toEqual(r30.projected_custody_ngn.mul(2));
+  });
+});
+
+// ── Collateral sizing + initial USD ───────────────────────────────────────────
+
+describe('CalculatorService — collateral sizing', () => {
+  it('collateral_amount_sat covers principal at 60% LTV (ceiled to whole SATs)', () => {
+    const result = calculate();
+    const expected_ngn = PRINCIPAL.div(LOAN_LTV_PERCENT);
+    const expected_sat = BigInt(expected_ngn.div(SAT_RATE).ceil().toFixed(0));
     expect(result.collateral_amount_sat).toBe(expected_sat);
   });
 
@@ -109,43 +153,45 @@ describe('CalculatorService — LTV and collateral', () => {
     expect(typeof result.collateral_amount_sat).toBe('bigint');
   });
 
+  it('initial_collateral_usd = (sat / SATS_PER_BTC) × btc_usd_rate', () => {
+    const result = calculate();
+    const expected = new Decimal(result.collateral_amount_sat.toString())
+      .div(SATS_PER_BTC)
+      .mul(BTC_USD_RATE);
+    expect(result.initial_collateral_usd.toFixed(6)).toBe(expected.toFixed(6));
+  });
+
+  it('ltv_percent equals LOAN_LTV_PERCENT (60%)', () => {
+    expect(calculate().ltv_percent).toEqual(LOAN_LTV_PERCENT);
+  });
+
   it('sat_ngn_rate_at_creation equals the rate passed in', () => {
     expect(calculate().sat_ngn_rate_at_creation).toEqual(SAT_RATE);
   });
 });
 
-// ── Liquidation and alert rates ───────────────────────────────────────────────
+// ── Initial threshold rates (UI display only) ─────────────────────────────────
 
-describe('CalculatorService — liquidation and alert rates', () => {
-  it('liquidation_rate_ngn = principal × 1.10 / collateral_sat', () => {
+describe('CalculatorService — initial threshold rates', () => {
+  it('initial_liquidation_rate_ngn = principal × 1.10 / collateral_sat', () => {
     const result = calculate();
     const expected = PRINCIPAL.mul(LIQUIDATION_THRESHOLD).div(
       new Decimal(result.collateral_amount_sat.toString()),
     );
-    expect(result.liquidation_rate_ngn.toFixed(6)).toBe(expected.toFixed(6));
+    expect(result.initial_liquidation_rate_ngn.toFixed(6)).toBe(expected.toFixed(6));
   });
 
-  it('alert_rate_ngn = principal × 1.20 / collateral_sat', () => {
+  it('initial_alert_rate_ngn = principal × 1.20 / collateral_sat', () => {
     const result = calculate();
     const expected = PRINCIPAL.mul(ALERT_THRESHOLD).div(
       new Decimal(result.collateral_amount_sat.toString()),
     );
-    expect(result.alert_rate_ngn.toFixed(6)).toBe(expected.toFixed(6));
+    expect(result.initial_alert_rate_ngn.toFixed(6)).toBe(expected.toFixed(6));
   });
 
-  it('alert_rate_ngn > liquidation_rate_ngn', () => {
+  it('initial_alert_rate_ngn > initial_liquidation_rate_ngn', () => {
     const result = calculate();
-    expect(result.alert_rate_ngn.greaterThan(result.liquidation_rate_ngn)).toBe(true);
-  });
-
-  it('at the liquidation rate, collateral value is exactly 110% of principal', () => {
-    const result = calculate();
-    const collateral_value = result.liquidation_rate_ngn.mul(
-      new Decimal(result.collateral_amount_sat.toString()),
-    );
-    // collateral_value / principal should equal 1.10
-    const ratio = collateral_value.div(PRINCIPAL);
-    expect(ratio.toFixed(4)).toBe(LIQUIDATION_THRESHOLD.toFixed(4));
+    expect(result.initial_alert_rate_ngn.gt(result.initial_liquidation_rate_ngn)).toBe(true);
   });
 });
 
@@ -172,35 +218,35 @@ describe('CalculatorService — input validation', () => {
     expect(() => calculate({ principal_ngn: new Decimal('10000000') })).not.toThrow();
   });
 
-  it('throws LOAN_DURATION_INVALID when duration_days < 1', () => {
+  it('throws LOAN_DURATION_INVALID when duration < 1 day', () => {
     expect(() => calculate({ duration_days: 0 })).toThrow(
       expect.objectContaining({ code: 'LOAN_DURATION_INVALID' }),
     );
   });
 
-  it('throws LOAN_DURATION_INVALID when duration_days > 30', () => {
-    expect(() => calculate({ duration_days: 31 })).toThrow(
+  it('throws LOAN_DURATION_INVALID when duration > 90 days (v1.1 max)', () => {
+    expect(() => calculate({ duration_days: MAX_LOAN_DURATION_DAYS + 1 })).toThrow(
       expect.objectContaining({ code: 'LOAN_DURATION_INVALID' }),
     );
   });
 
   it('accepts duration exactly at MIN (1 day)', () => {
-    expect(() => calculate({ duration_days: 1 })).not.toThrow();
+    expect(() => calculate({ duration_days: MIN_LOAN_DURATION_DAYS })).not.toThrow();
   });
 
-  it('accepts duration exactly at MAX (30 days)', () => {
-    expect(() => calculate({ duration_days: 30 })).not.toThrow();
+  it('accepts duration exactly at MAX (90 days)', () => {
+    expect(() => calculate({ duration_days: MAX_LOAN_DURATION_DAYS })).not.toThrow();
   });
 
-  it('throws LOAN_PRICE_STALE when sat_ngn_rate is zero', () => {
+  it('throws PRICE_FEED_STALE when sat_ngn_rate is zero', () => {
     expect(() => calculate({ sat_ngn_rate: new Decimal('0') })).toThrow(
-      expect.objectContaining({ code: 'LOAN_PRICE_STALE' }),
+      expect.objectContaining({ code: 'PRICE_FEED_STALE' }),
     );
   });
 
-  it('throws LOAN_PRICE_STALE when usdt_ngn_rate is zero', () => {
-    expect(() => calculate({ usdt_ngn_rate: new Decimal('0') })).toThrow(
-      expect.objectContaining({ code: 'LOAN_PRICE_STALE' }),
+  it('throws PRICE_FEED_STALE when btc_usd_rate is zero', () => {
+    expect(() => calculate({ btc_usd_rate: new Decimal('0') })).toThrow(
+      expect.objectContaining({ code: 'PRICE_FEED_STALE' }),
     );
   });
 });
