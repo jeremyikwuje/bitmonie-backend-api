@@ -23,13 +23,13 @@ export class BitmonieException extends HttpException {
 
 // ── LOAN ────────────────────────────────────────────────────────
 
-export class LoanPriceStaleException extends BitmonieException {
-  constructor(context: { last_updated_ms: number }) {
+export class PriceFeedStaleException extends BitmonieException {
+  constructor(context: { last_updated_ms: number; pair?: string }) {
     super(
-      'LOAN_PRICE_STALE',
-      'Price feed is too stale to safely create a loan. Please try again.',
+      'PRICE_FEED_STALE',
+      'Price feed is too stale. Please try again.',
       HttpStatus.UNPROCESSABLE_ENTITY,
-      [{ field: 'sat_ngn_rate', issue: `Last updated ${context.last_updated_ms}ms ago` }],
+      [{ field: context.pair ?? 'rate', issue: `Last updated ${context.last_updated_ms}ms ago` }],
     );
   }
 }
@@ -100,6 +100,48 @@ export class LoanInvalidTransitionException extends BitmonieException {
 export class LoanNotFoundException extends BitmonieException {
   constructor() {
     super('LOAN_NOT_FOUND', 'Loan not found.', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class LoanNotActiveException extends BitmonieException {
+  constructor(context: { status: string }) {
+    super(
+      'LOAN_NOT_ACTIVE',
+      'Loan is not active.',
+      HttpStatus.CONFLICT,
+      [{ field: 'status', issue: `Loan is ${context.status}; repayments only credit to ACTIVE loans` }],
+    );
+  }
+}
+
+export class InflowBelowFloorException extends BitmonieException {
+  constructor(context: { received_ngn: string; floor_ngn: string }) {
+    super(
+      'INFLOW_BELOW_FLOOR',
+      'Repayment amount is below the minimum partial repayment floor.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      [{ field: 'amount_ngn', issue: `Received ${context.received_ngn} but minimum is ${context.floor_ngn}` }],
+    );
+  }
+}
+
+export class AddCollateralAlreadyPendingException extends BitmonieException {
+  constructor() {
+    super(
+      'ADD_COLLATERAL_ALREADY_PENDING',
+      'A collateral top-up is already pending for this loan. Wait for it to expire or be received.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
+export class NoUnmatchedInflowException extends BitmonieException {
+  constructor() {
+    super(
+      'NO_UNMATCHED_INFLOW',
+      'No unmatched repayment inflow found for this user in the last 24 hours.',
+      HttpStatus.NOT_FOUND,
+    );
   }
 }
 

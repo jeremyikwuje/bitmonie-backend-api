@@ -4,25 +4,34 @@ import { mock, MockProxy } from 'jest-mock-extended';
 import {
   DisbursementAccountKind,
   DisbursementAccountStatus,
-  DisbursementRail,
   LoanStatus,
-  PaymentNetwork,
   PaymentRequestStatus,
 } from '@prisma/client';
 import type { User } from '@prisma/client';
 import { LoansService } from '@/modules/loans/loans.service';
 import { LoanStatusService } from '@/modules/loans/loan-status.service';
 import { CalculatorService } from '@/modules/loans/calculator.service';
+import { AccrualService } from '@/modules/loans/accrual.service';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
 import { PaymentRequestsService } from '@/modules/payment-requests/payment-requests.service';
-import { PrismaService } from '@/database/prisma.service';
+import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from '@/modules/loans/price-quote.provider.interface';
 import {
-  LoanDisbursementAccountRequiredException,
-  LoanDisabledException,
-  LoanNotFoundException,
-  DisbursementDisabledException,
+  COLLATERAL_PROVIDER,
+  type CollateralProvider,
+} from '@/modules/payment-requests/collateral.provider.interface';
+import { PrismaService } from '@/database/prisma.service';
+import { REDIS_CLIENT } from '@/database/redis.module';
+import {
+  AddCollateralAlreadyPendingException,
   CollateralInvoiceFailedException,
+  DisbursementDisabledException,
+  InflowBelowFloorException,
+  LoanDisabledException,
+  LoanDisbursementAccountRequiredException,
   LoanInvalidTransitionException,
+  LoanNotActiveException,
+  LoanNotFoundException,
+  NoUnmatchedInflowException,
 } from '@/common/errors/bitmonie.errors';
 
 const USER_ID   = 'user-uuid-001';
@@ -74,9 +83,20 @@ const DB_LOAN = {
   user_id:                  USER_ID,
   disbursement_account_id:  ACCT_ID,
   status:                   LoanStatus.PENDING_COLLATERAL,
-  collateral_amount_sat:    BigInt(386598),
+  collateral_asset:         'SAT',
+  collateral_amount_sat:    BigInt(515464),
   collateral_received_at:   null,
   disbursement_id:          null,
+  principal_ngn:            new Decimal('300000'),
+  origination_fee_ngn:      new Decimal('1500'),
+  daily_interest_rate_bps:  30,
+  daily_custody_fee_ngn:    new Decimal('300'),
+  initial_collateral_usd:   new Decimal('250'),
+  duration_days:            7,
+  sat_ngn_rate_at_creation: new Decimal('0.97'),
+  ltv_percent:              new Decimal('0.60'),
+  collateral_release_address: null,
+  repayments:               [],
   status_logs:              [],
   due_at:                   new Date(Date.now() + 7 * 86400_000),
   created_at:               new Date(),
@@ -106,12 +126,31 @@ function make_prisma() {
       findFirst:         jest.fn().mockResolvedValue(DB_LOAN),
       findUniqueOrThrow: jest.fn().mockResolvedValue(DB_LOAN),
       update:            jest.fn().mockResolvedValue(DB_LOAN),
+      findMany:          jest.fn().mockResolvedValue([]),
     },
+    loanRepayment: {
+      create: jest.fn().mockResolvedValue({}),
+    },
+    collateralTopUp: {
+      create: jest.fn().mockResolvedValue({ id: 'topup-uuid-001' }),
+    },
+    inflow: {
+      update:    jest.fn().mockResolvedValue({}),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    $queryRaw: jest.fn().mockResolvedValue([{ id: LOAN_ID }]),
     $transaction: jest.fn().mockImplementation(
       async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
-          loan:          { create: jest.fn().mockResolvedValue(DB_LOAN), update: jest.fn().mockResolvedValue({}) },
+          loan: {
+            create:            jest.fn().mockResolvedValue(DB_LOAN),
+            update:            jest.fn().mockResolvedValue({}),
+            findUniqueOrThrow: jest.fn().mockResolvedValue(DB_LOAN),
+          },
+          loanRepayment: { create: jest.fn().mockResolvedValue({}) },
           loanStatusLog: { create: jest.fn().mockResolvedValue({}) },
+          inflow:        { update: jest.fn().mockResolvedValue({}) },
+          $queryRaw:     jest.fn().mockResolvedValue([{ id: LOAN_ID }]),
         }),
     ),
   };
@@ -123,9 +162,12 @@ describe('LoansService', () => {
   let price_feed: MockProxy<PriceFeedService>;
   let loan_status: MockProxy<LoanStatusService>;
   let payment_requests: MockProxy<PaymentRequestsService>;
+  let price_quote: MockProxy<PriceQuoteProvider>;
+  let collateral_provider: MockProxy<CollateralProvider>;
+  let redis: { set: jest.Mock; get: jest.Mock; del: jest.Mock };
 
-  const SAT_RATE  = new Decimal('0.97');
-  const USDT_RATE = new Decimal('1410');
+  const SAT_RATE     = new Decimal('0.97');
+  const BTC_USD_RATE = new Decimal('65000');
 
   const CHECKOUT_DTO = {
     principal_ngn:  300_000,
@@ -135,21 +177,35 @@ describe('LoansService', () => {
 
   beforeEach(async () => {
     prisma = make_prisma();
-    price_feed       = mock<PriceFeedService>();
-    loan_status      = mock<LoanStatusService>();
-    payment_requests = mock<PaymentRequestsService>();
+    price_feed          = mock<PriceFeedService>();
+    loan_status         = mock<LoanStatusService>();
+    payment_requests    = mock<PaymentRequestsService>();
+    price_quote         = mock<PriceQuoteProvider>();
+    collateral_provider = mock<CollateralProvider>();
+    redis               = { set: jest.fn().mockResolvedValue('OK'), get: jest.fn(), del: jest.fn() };
 
     price_feed.getCurrentRate.mockResolvedValue({ rate_buy: SAT_RATE, rate_sell: SAT_RATE });
+    price_quote.getBtcUsdRate.mockResolvedValue(BTC_USD_RATE);
     payment_requests.create.mockResolvedValue(DB_PAYMENT_REQUEST);
+    collateral_provider.createNoAmountInvoice.mockResolvedValue({
+      provider_reference: 'stub_topup_hash_001',
+      payment_request:    'lnbcrt_noamount_stub',
+      receiving_address:  'stub_topup_hash_001',
+      expires_at:         new Date(Date.now() + 1800_000),
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         LoansService,
         CalculatorService,
+        AccrualService,
         { provide: PrismaService,          useValue: prisma },
         { provide: PriceFeedService,       useValue: price_feed },
         { provide: LoanStatusService,      useValue: loan_status },
         { provide: PaymentRequestsService, useValue: payment_requests },
+        { provide: PRICE_QUOTE_PROVIDER,   useValue: price_quote },
+        { provide: COLLATERAL_PROVIDER,    useValue: collateral_provider },
+        { provide: REDIS_CLIENT,           useValue: redis },
       ],
     }).compile();
 
@@ -178,11 +234,11 @@ describe('LoansService', () => {
       );
     });
 
-    it('throws LoanPriceStaleException when price feed is stale', async () => {
-      const { LoanPriceStaleException } = await import('@/common/errors/bitmonie.errors');
-      price_feed.getCurrentRate.mockRejectedValue(new LoanPriceStaleException({ last_updated_ms: 200_000 }));
+    it('throws PriceFeedStaleException when price feed is stale', async () => {
+      const { PriceFeedStaleException } = await import('@/common/errors/bitmonie.errors');
+      price_feed.getCurrentRate.mockRejectedValue(new PriceFeedStaleException({ last_updated_ms: 200_000 }));
       await expect(service.checkoutLoan(ACTIVE_USER, CHECKOUT_DTO)).rejects.toThrow(
-        LoanPriceStaleException,
+        PriceFeedStaleException,
       );
     });
 
@@ -244,9 +300,13 @@ describe('LoansService', () => {
       expect(result.receiving_address).toBe('pay_hash_001');
       expect(result.expires_at).toBeInstanceOf(Date);
       expect(result.fee_breakdown).toMatchObject({
-        origination_fee_ngn: expect.any(String),
-        total_fees_ngn:      expect.any(String),
-        duration_days:       7,
+        origination_fee_ngn:     expect.any(String),
+        daily_custody_fee_ngn:   expect.any(String),
+        daily_interest_rate_bps: 30,
+        projected_interest_ngn:  expect.any(String),
+        projected_custody_ngn:   expect.any(String),
+        projected_total_ngn:     expect.any(String),
+        duration_days:           7,
       });
     });
 
@@ -264,8 +324,8 @@ describe('LoansService', () => {
       };
       await tx_fn(tx);
       const { data } = tx.loan.create.mock.calls[0][0];
-      // At rate 1.00, collateral_sat = ceil(300000 / 0.80 / 1.00) = 375000
-      expect(data.collateral_amount_sat).toBe(BigInt(375000));
+      // At rate 1.00, collateral_sat = ceil(300000 / 0.60 / 1.00) = 500000
+      expect(data.collateral_amount_sat).toBe(BigInt(500000));
     });
   });
 
@@ -364,6 +424,392 @@ describe('LoansService', () => {
       expect(tx.loan.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ collateral_received_at: now }) }),
       );
+    });
+  });
+
+  // ── creditInflow ──────────────────────────────────────────────────────────────
+
+  describe('creditInflow', () => {
+    const INFLOW_ID = 'inflow-uuid-001';
+
+    // Helper: build a loan in a given status, with given collateral_received_at.
+    function makeActiveLoan(opts: {
+      status?: LoanStatus;
+      collateral_received_at?: Date | null;
+      principal_ngn?: Decimal;
+      daily_custody_fee_ngn?: Decimal;
+    } = {}) {
+      const base = DB_LOAN as Record<string, unknown>;
+      return {
+        ...base,
+        status:                  opts.status                ?? LoanStatus.ACTIVE,
+        collateral_received_at:  opts.collateral_received_at ?? new Date(Date.now() - 29.5 * 86400_000),
+        principal_ngn:           opts.principal_ngn         ?? new Decimal('500000'),
+        daily_interest_rate_bps: 30,
+        daily_custody_fee_ngn:   opts.daily_custody_fee_ngn ?? new Decimal('700'),
+        repayments:              [],
+      };
+    }
+
+    function setupTx(loan_in_tx: object) {
+      // The transaction body uses tx.loan.findUniqueOrThrow + tx.loanRepayment.create + tx.inflow.update.
+      const tx_loan_create        = jest.fn().mockResolvedValue(loan_in_tx);
+      const tx_loan_update        = jest.fn().mockResolvedValue({});
+      const tx_loan_findUnique    = jest.fn().mockResolvedValue(loan_in_tx);
+      const tx_repayment_create   = jest.fn().mockResolvedValue({});
+      const tx_inflow_update      = jest.fn().mockResolvedValue({});
+      const tx_status_log_create  = jest.fn().mockResolvedValue({});
+      const tx_query_raw          = jest.fn().mockResolvedValue([{ id: LOAN_ID }]);
+
+      prisma.$transaction.mockImplementationOnce(
+        async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn({
+            loan:          { create: tx_loan_create, update: tx_loan_update, findUniqueOrThrow: tx_loan_findUnique },
+            loanRepayment: { create: tx_repayment_create },
+            inflow:        { update: tx_inflow_update },
+            loanStatusLog: { create: tx_status_log_create },
+            $queryRaw:     tx_query_raw,
+          }),
+      );
+
+      return { tx_loan_update, tx_repayment_create, tx_inflow_update };
+    }
+
+    it('rejects amounts below the partial-repayment floor (N10,000)', async () => {
+      await expect(
+        service.creditInflow({
+          inflow_id:    INFLOW_ID,
+          loan_id:      LOAN_ID,
+          amount_ngn:   new Decimal('5000'),
+          match_method: 'AUTO_AMOUNT',
+        }),
+      ).rejects.toThrow(InflowBelowFloorException);
+    });
+
+    it('credits a partial repayment to an ACTIVE loan and stays ACTIVE', async () => {
+      // Loan: 500k principal, day 30, custody 700/day → outstanding ≈ 566k
+      setupTx(makeActiveLoan());
+
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('100000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      expect(result.new_status).toBe(LoanStatus.ACTIVE);
+      // Waterfall on N100k against custody 21k + interest 45k + principal 500k:
+      // → custody 21,000 / interest 45,000 / principal 34,000 / overpay 0
+      expect(result.applied_to_custody).toBe('21000.00');
+      expect(result.applied_to_interest).toBe('45000.00');
+      expect(result.applied_to_principal).toBe('34000.00');
+      expect(result.overpay_ngn).toBe('0.00');
+
+      expect(loan_status.transition).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          to_status:    LoanStatus.ACTIVE,
+          reason_code:  'REPAYMENT_PARTIAL_NGN',
+        }),
+      );
+    });
+
+    it('full repayment closes the loan to REPAID', async () => {
+      setupTx(makeActiveLoan());
+
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('566000'),
+        match_method: 'CUSTOMER_CLAIM',
+      });
+
+      expect(result.new_status).toBe(LoanStatus.REPAID);
+      expect(result.applied_to_principal).toBe('500000.00');
+      expect(result.overpay_ngn).toBe('0.00');
+
+      expect(loan_status.transition).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          to_status:   LoanStatus.REPAID,
+          reason_code: 'REPAYMENT_COMPLETED',
+        }),
+      );
+    });
+
+    it('overpayment closes the loan and records overpay_ngn', async () => {
+      setupTx(makeActiveLoan());
+
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('600000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      expect(result.new_status).toBe(LoanStatus.REPAID);
+      expect(result.overpay_ngn).toBe('34000.00');
+    });
+
+    it('inserts a LoanRepayment row in the same transaction', async () => {
+      const handles = setupTx(makeActiveLoan());
+
+      await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('50000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      expect(handles.tx_repayment_create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            loan_id:      LOAN_ID,
+            inflow_id:    INFLOW_ID,
+            match_method: 'AUTO_AMOUNT',
+          }),
+        }),
+      );
+    });
+
+    it('marks the Inflow matched in the same transaction', async () => {
+      const handles = setupTx(makeActiveLoan());
+
+      await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('50000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      expect(handles.tx_inflow_update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: INFLOW_ID },
+          data:  expect.objectContaining({
+            is_matched:  true,
+            source_type: 'LOAN_REPAYMENT',
+            source_id:   LOAN_ID,
+          }),
+        }),
+      );
+    });
+
+    it('is idempotent against an already-REPAID loan (no-op return)', async () => {
+      setupTx({ ...makeActiveLoan(), status: LoanStatus.REPAID });
+
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('50000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      expect(result.new_status).toBe(LoanStatus.REPAID);
+      expect(result.applied_to_principal).toBe('0.00');
+      expect(loan_status.transition).not.toHaveBeenCalled();
+    });
+
+    it('rejects credits to non-ACTIVE non-REPAID loans (LIQUIDATED, EXPIRED, etc.)', async () => {
+      setupTx({ ...makeActiveLoan(), status: LoanStatus.LIQUIDATED });
+
+      await expect(
+        service.creditInflow({
+          inflow_id:    INFLOW_ID,
+          loan_id:      LOAN_ID,
+          amount_ngn:   new Decimal('50000'),
+          match_method: 'AUTO_AMOUNT',
+        }),
+      ).rejects.toThrow(LoanNotActiveException);
+    });
+
+    it('throws LoanNotFoundException when the loan FOR UPDATE lock returns no rows', async () => {
+      prisma.$transaction.mockImplementationOnce(
+        async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn({
+            loan:          { findUniqueOrThrow: jest.fn() },
+            loanRepayment: { create: jest.fn() },
+            inflow:        { update: jest.fn() },
+            loanStatusLog: { create: jest.fn() },
+            $queryRaw:     jest.fn().mockResolvedValue([]),
+          }),
+      );
+
+      await expect(
+        service.creditInflow({
+          inflow_id:    INFLOW_ID,
+          loan_id:      LOAN_ID,
+          amount_ngn:   new Decimal('50000'),
+          match_method: 'AUTO_AMOUNT',
+        }),
+      ).rejects.toThrow(LoanNotFoundException);
+    });
+  });
+
+  // ── createCollateralTopUp ─────────────────────────────────────────────────────
+
+  describe('createCollateralTopUp', () => {
+    function activeLoan() {
+      const base = DB_LOAN as Record<string, unknown>;
+      return { ...base, status: LoanStatus.ACTIVE };
+    }
+
+    it('throws LoanNotFoundException when loan does not belong to user', async () => {
+      prisma.loan.findFirst.mockResolvedValue(null);
+      await expect(service.createCollateralTopUp(USER_ID, LOAN_ID)).rejects.toThrow(LoanNotFoundException);
+    });
+
+    it('throws LoanNotActiveException when loan is not ACTIVE', async () => {
+      prisma.loan.findFirst.mockResolvedValue({ ...(DB_LOAN as Record<string, unknown>), status: LoanStatus.PENDING_COLLATERAL } as never);
+      await expect(service.createCollateralTopUp(USER_ID, LOAN_ID)).rejects.toThrow(LoanNotActiveException);
+    });
+
+    it('translates Prisma unique-violation (P2002) to AddCollateralAlreadyPendingException', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.collateralTopUp.create.mockRejectedValue({ code: 'P2002', message: 'Unique constraint' });
+
+      await expect(service.createCollateralTopUp(USER_ID, LOAN_ID)).rejects.toThrow(
+        AddCollateralAlreadyPendingException,
+      );
+    });
+
+    it('throws CollateralInvoiceFailedException when provider invoice creation fails', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      collateral_provider.createNoAmountInvoice.mockRejectedValue(new Error('Blink down'));
+
+      await expect(service.createCollateralTopUp(USER_ID, LOAN_ID)).rejects.toThrow(
+        CollateralInvoiceFailedException,
+      );
+    });
+
+    it('happy path: returns invoice details and sets Redis cache key', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+
+      const result = await service.createCollateralTopUp(USER_ID, LOAN_ID);
+
+      expect(result.topup_id).toBe('topup-uuid-001');
+      expect(result.payment_request).toBe('lnbcrt_noamount_stub');
+      expect(result.receiving_address).toBe('stub_topup_hash_001');
+      expect(result.expires_at).toBeInstanceOf(Date);
+
+      expect(prisma.collateralTopUp.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            loan_id:                 LOAN_ID,
+            collateral_provider:     'blink',
+            collateral_provider_ref: 'stub_topup_hash_001',
+            status:                  'PENDING_COLLATERAL',
+          }),
+        } as never),
+      );
+
+      expect(redis.set).toHaveBeenCalledWith(
+        'collateral_topup:pending:stub_topup_hash_001',
+        'topup-uuid-001',
+        'EX',
+        expect.any(Number),
+      );
+    });
+  });
+
+  // ── claimInflow ───────────────────────────────────────────────────────────────
+
+  describe('claimInflow', () => {
+    function activeLoan() {
+      const base = DB_LOAN as Record<string, unknown>;
+      return {
+        ...base,
+        status:                 LoanStatus.ACTIVE,
+        collateral_received_at: new Date(Date.now() - 29.5 * 86400_000),
+        principal_ngn:          new Decimal('500000'),
+        daily_custody_fee_ngn:  new Decimal('700'),
+        repayments:             [],
+      };
+    }
+
+    it('throws LoanNotFoundException when loan does not belong to user', async () => {
+      prisma.loan.findFirst.mockResolvedValue(null);
+      await expect(service.claimInflow(USER_ID, LOAN_ID)).rejects.toThrow(LoanNotFoundException);
+    });
+
+    it('throws LoanNotActiveException when loan is not ACTIVE', async () => {
+      prisma.loan.findFirst.mockResolvedValue({ ...(DB_LOAN as Record<string, unknown>), status: LoanStatus.LIQUIDATED } as never);
+      await expect(service.claimInflow(USER_ID, LOAN_ID)).rejects.toThrow(LoanNotActiveException);
+    });
+
+    it('throws NoUnmatchedInflowException when no candidate inflow is found', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue(null);
+      await expect(service.claimInflow(USER_ID, LOAN_ID)).rejects.toThrow(NoUnmatchedInflowException);
+    });
+
+    it('queries inflows scoped to user, unmatched, NGN, within 24h, above floor', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue({
+        id:         'inflow-claim-001',
+        amount:     new Decimal('50000'),
+        user_id:    USER_ID,
+        currency:   'NGN',
+        is_matched: false,
+        source_type: null,
+        created_at: new Date(),
+      } as never);
+
+      // For credit transaction inside creditInflow, use the default $transaction mock.
+      // Suppress the actual credit logic — just verify the candidate search params.
+
+      try { await service.claimInflow(USER_ID, LOAN_ID); } catch { /* credit path isn't under test here */ }
+
+      expect(prisma.inflow.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            user_id:     USER_ID,
+            is_matched:  false,
+            source_type: null,
+            currency:    'NGN',
+            created_at:  { gte: expect.any(Date) },
+            amount:      { gte: '10000.00' },
+          }),
+          orderBy: { created_at: 'desc' },
+        } as never),
+      );
+    });
+
+    it('credits the matched inflow with match_method=CUSTOMER_CLAIM', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue({
+        id:          'inflow-claim-001',
+        amount:      new Decimal('50000'),
+        user_id:     USER_ID,
+        currency:    'NGN',
+        is_matched:  false,
+        source_type: null,
+        created_at:  new Date(),
+      } as never);
+
+      // Make the inner $transaction return a stable shape so we can assert the match_method.
+      let captured_match_method: string | undefined;
+      prisma.$transaction.mockImplementationOnce(
+        async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn({
+            loan: {
+              findUniqueOrThrow: jest.fn().mockResolvedValue(activeLoan()),
+              update:            jest.fn().mockResolvedValue({}),
+            },
+            loanRepayment: {
+              create: jest.fn().mockImplementation((args: { data: { match_method: string } }) => {
+                captured_match_method = args.data.match_method;
+                return Promise.resolve({});
+              }),
+            },
+            inflow:        { update: jest.fn().mockResolvedValue({}) },
+            loanStatusLog: { create: jest.fn().mockResolvedValue({}) },
+            $queryRaw:     jest.fn().mockResolvedValue([{ id: LOAN_ID }]),
+          }),
+      );
+
+      await service.claimInflow(USER_ID, LOAN_ID);
+
+      expect(captured_match_method).toBe('CUSTOMER_CLAIM');
     });
   });
 });

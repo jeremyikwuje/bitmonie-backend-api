@@ -117,3 +117,42 @@ export interface BlinkWebhookHeaders {
   'svix-timestamp': string;
   'svix-signature': string;
 }
+
+// ── realtimePrice — used to fetch BTC/USD at loan origination ────────────────
+// Blink encodes BTC price in scaled-integer form: btcSatPrice gives "USDCENT per sat"
+// when queried with currency='USD'. To get USD/BTC:
+//   usdcent_per_sat = base / 10^offset
+//   usd_per_btc     = usdcent_per_sat / 100 × SATS_PER_BTC
+export const BlinkRealtimePriceResponseSchema = z.object({
+  data: z.object({
+    realtimePrice: z.object({
+      btcSatPrice: z.object({
+        base:         z.number(),
+        offset:       z.number(),
+        currencyUnit: z.string(),
+      }),
+    }),
+  }),
+});
+
+export type BlinkRealtimePriceResponse = z.infer<typeof BlinkRealtimePriceResponseSchema>;
+
+// ── lnNoAmountInvoiceCreate ──────────────────────────────────────────────────
+// Variable-amount Lightning invoice. The payer chooses the amount.
+// Used for collateral top-ups, where the customer decides how much extra SAT
+// to send to defend their loan against liquidation.
+export const BlinkLnNoAmountInvoiceCreateResponseSchema = z.object({
+  data: z.object({
+    lnNoAmountInvoiceCreate: z.object({
+      invoice: z
+        .object({
+          paymentRequest: z.string(),
+          paymentHash:    z.string(),
+        })
+        .nullable(),
+      errors: z.array(z.object({ message: z.string() })),
+    }),
+  }),
+});
+
+export type BlinkLnNoAmountInvoiceCreateResponse = z.infer<typeof BlinkLnNoAmountInvoiceCreateResponseSchema>;

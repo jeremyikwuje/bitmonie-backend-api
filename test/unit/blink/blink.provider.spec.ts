@@ -14,8 +14,8 @@ function make_config(overrides: Partial<BlinkConfig> = {}): BlinkConfig {
   return {
     api_key:        'test_api_key',
     base_url:       'https://api.blink.sv',
-    wallet_id:      WALLET_ID,
-    usd_wallet_id:  'wallet-uuid-usd',
+    wallet_btc_id:  WALLET_ID,
+    wallet_usd_id:  'wallet-uuid-usd',
     account_id:     'account-uuid-001',
     webhook_secret: WEBHOOK_SECRET,
     ...overrides,
@@ -336,7 +336,6 @@ describe('BlinkProvider.sendToLightningAddress', () => {
 });
 
 // ── sendToOnchainAddress ──────────────────────────────────────────────────────
-
 describe('BlinkProvider.sendToOnchainAddress', () => {
   afterEach(() => jest.resetAllMocks());
 

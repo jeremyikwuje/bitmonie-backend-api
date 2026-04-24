@@ -12,6 +12,20 @@ export interface CollateralProvider {
     expires_at: Date;
   }>;
 
+  // Variable-amount Lightning invoice — payer chooses how much SAT to send.
+  // Used for collateral top-ups on existing loans (the customer decides how much
+  // extra collateral to add). Same return shape as createPaymentRequest minus the
+  // pre-set amount.
+  createNoAmountInvoice(params: {
+    memo: string;
+    expiry_seconds: number;
+  }): Promise<{
+    provider_reference: string;
+    payment_request: string;
+    receiving_address: string;
+    expires_at: Date;
+  }>;
+
   // Creates a fresh BTC on-chain receiving address (used for onchain collateral — v2).
   createOnchainAddress(): Promise<string>;
 

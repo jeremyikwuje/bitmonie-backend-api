@@ -27,6 +27,8 @@ import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { LoansService } from './loans.service';
 import { CalculatorService } from './calculator.service';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
+import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from './price-quote.provider.interface';
+import { Inject } from '@nestjs/common';
 import { CheckoutLoanDto } from './dto/checkout-loan.dto';
 import { SetReleaseAddressDto } from './dto/set-release-address.dto';
 import { CalculateLoanDto } from './dto/calculate-loan.dto';
@@ -38,6 +40,8 @@ export class LoansController {
     private readonly loans: LoansService,
     private readonly calculator: CalculatorService,
     private readonly price_feed: PriceFeedService,
+    @Inject(PRICE_QUOTE_PROVIDER)
+    private readonly price_quote: PriceQuoteProvider,
   ) {}
 
   @Post('checkout')
@@ -56,31 +60,42 @@ export class LoansController {
   }
 
   @Get('calculate')
-  @ApiOperation({ summary: 'Public loan fee quote calculator' })
-  @ApiResponse({ status: 200, description: 'Fee breakdown returned' })
+  @ApiOperation({ summary: 'Public loan fee quote calculator (projections; actual fees accrue daily)' })
+  @ApiResponse({ status: 200, description: 'Projections + locked-at-origination fees returned' })
   async calculateLoan(@Query() dto: CalculateLoanDto) {
-    const [sat_rates, usdt_rates] = await Promise.all([
+    const [sat_rates, btc_usd_rate] = await Promise.all([
       this.price_feed.getCurrentRate(AssetPair.SAT_NGN),
-      this.price_feed.getCurrentRate(AssetPair.USDT_NGN),
+      this.price_quote.getBtcUsdRate(),
     ]);
     const principal = new Decimal(dto.principal_ngn);
     const result = this.calculator.calculate({
-      principal_ngn:  principal,
-      duration_days:  dto.duration_days,
-      sat_ngn_rate:   sat_rates.rate_sell,
-      usdt_ngn_rate:  usdt_rates.rate_sell,
+      principal_ngn: principal,
+      duration_days: dto.duration_days,
+      sat_ngn_rate:  sat_rates.rate_sell,
+      btc_usd_rate,
     });
     return {
-      collateral_amount_sat:   result.collateral_amount_sat.toString(),
-      sat_ngn_rate_at_creation: result.sat_ngn_rate_at_creation.toFixed(6),
-      ltv_percent:             result.ltv_percent.toFixed(2),
-      origination_fee_ngn:     result.origination_fee_ngn.toFixed(2),
-      daily_fee_ngn:           result.daily_fee_ngn.toFixed(2),
-      total_fees_ngn:          result.total_fees_ngn.toFixed(2),
-      total_amount_ngn:        result.total_amount_ngn.toFixed(2),
-      liquidation_rate_ngn:    result.liquidation_rate_ngn.toFixed(6),
-      alert_rate_ngn:          result.alert_rate_ngn.toFixed(6),
-      duration_days:           dto.duration_days,
+      principal_ngn:                principal.toFixed(2),
+      duration_days:                dto.duration_days,
+      ltv_percent:                  result.ltv_percent.toFixed(2),
+
+      collateral_amount_sat:        result.collateral_amount_sat.toString(),
+      initial_collateral_usd:       result.initial_collateral_usd.toFixed(2),
+      sat_ngn_rate_at_creation:     result.sat_ngn_rate_at_creation.toFixed(6),
+
+      // Locked at origination
+      origination_fee_ngn:          result.origination_fee_ngn.toFixed(2),
+      daily_custody_fee_ngn:        result.daily_custody_fee_ngn.toFixed(2),
+      daily_interest_rate_bps:      result.daily_interest_rate_bps,
+
+      // Estimates for the chosen duration
+      projected_interest_ngn:       result.projected_interest_ngn.toFixed(2),
+      projected_custody_ngn:        result.projected_custody_ngn.toFixed(2),
+      projected_total_ngn:          result.projected_total_ngn.toFixed(2),
+
+      // UI display (these move daily once accrual starts)
+      initial_liquidation_rate_ngn: result.initial_liquidation_rate_ngn.toFixed(6),
+      initial_alert_rate_ngn:       result.initial_alert_rate_ngn.toFixed(6),
     };
   }
 
@@ -132,5 +147,46 @@ export class LoansController {
     @Body() dto: SetReleaseAddressDto,
   ): Promise<void> {
     await this.loans.setReleaseAddress(user.id, id, dto.collateral_release_address);
+  }
+
+  @Post(':id/add-collateral')
+  @UseGuards(SessionGuard)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Create a fresh Lightning invoice for adding collateral to an ACTIVE loan',
+    description:
+      'Variable-amount BOLT11 invoice. Customer chooses how much SAT to send. ' +
+      'At most one PENDING top-up per loan at a time. Idempotency-Key header required.',
+  })
+  @ApiResponse({ status: 201, description: 'Top-up invoice created' })
+  @ApiResponse({ status: 404, description: 'Loan not found for user' })
+  @ApiResponse({ status: 409, description: 'Loan not ACTIVE, or pending top-up already exists' })
+  async addCollateral(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.loans.createCollateralTopUp(user.id, id);
+  }
+
+  @Post(':id/claim-inflow')
+  @UseGuards(SessionGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Credit a recent unmatched repayment inflow to this loan',
+    description:
+      'For when the customer has multiple ACTIVE loans and the webhook could not auto-match. ' +
+      'Searches the most recent unmatched NGN inflow for this user (≥ N10,000, within 24h) ' +
+      'and credits it via the waterfall. Idempotency-Key header required.',
+  })
+  @ApiResponse({ status: 200, description: 'Inflow claimed and credited' })
+  @ApiResponse({ status: 404, description: 'Loan not found, or no unmatched inflow in window' })
+  @ApiResponse({ status: 409, description: 'Loan not ACTIVE' })
+  async claimInflow(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.loans.claimInflow(user.id, id);
   }
 }

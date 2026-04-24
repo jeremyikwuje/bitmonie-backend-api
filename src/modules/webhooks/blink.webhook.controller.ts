@@ -145,5 +145,12 @@ export class BlinkWebhookController {
     await this.outflows.dispatch(disbursement.id);
 
     this.logger.log({ loan_id, disbursement_id: disbursement.id }, 'Loan activated and disbursement dispatched');
+
+    // Repayment accounts are NOT provisioned here. PalmPay's dedicated
+    // virtual-account endpoint issues permanent accounts, which don't match
+    // the per-attempt repayment flow we want. Instead, a future
+    // POST /v1/loans/:id/pay endpoint will call PalmPay's "pay with transfer"
+    // (dynamic VA, ~2h TTL) or checkout-link API on demand when the customer
+    // elects to repay.
   }
 }

@@ -1,14 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
+import Decimal from 'decimal.js';
 import type { BlinkConfig } from '@/config/providers.config';
 import type { CollateralProvider } from '@/modules/payment-requests/collateral.provider.interface';
+import type { PriceQuoteProvider } from '@/modules/loans/price-quote.provider.interface';
+import { SATS_PER_BTC } from '@/common/constants';
 import { CollateralInvoiceFailedException } from '@/common/errors/bitmonie.errors';
 import {
   BlinkLnInvoiceCreateResponseSchema,
+  BlinkLnNoAmountInvoiceCreateResponseSchema,
   BlinkLnAddressPaymentSendResponseSchema,
   BlinkOnchainAddressCreateResponseSchema,
   BlinkOnchainPaymentSendResponseSchema,
   BlinkIntraLedgerPaymentSendResponseSchema,
+  BlinkRealtimePriceResponseSchema,
   type BlinkWebhookHeaders,
 } from './blink.types';
 
@@ -16,7 +21,7 @@ import {
 const SVIX_TOLERANCE_SECONDS = 300;
 
 @Injectable()
-export class BlinkProvider implements CollateralProvider {
+export class BlinkProvider implements CollateralProvider, PriceQuoteProvider {
   private readonly logger = new Logger(BlinkProvider.name);
 
   constructor(private readonly config: BlinkConfig) {}
@@ -76,7 +81,7 @@ export class BlinkProvider implements CollateralProvider {
       mutation,
       {
         input: {
-          walletId: this.config.wallet_id,
+          walletId: this.config.wallet_btc_id,
           amount: Number(params.amount_sat),
           memo: params.memo,
           expiresIn: expiry_minutes,
@@ -103,6 +108,61 @@ export class BlinkProvider implements CollateralProvider {
     };
   }
 
+  // ── createNoAmountInvoice ─────────────────────────────────────────────────
+  // Variable-amount Lightning invoice. Used for collateral top-ups on ACTIVE loans.
+
+  async createNoAmountInvoice(params: {
+    memo: string;
+    expiry_seconds: number;
+  }): Promise<{
+    provider_reference: string;
+    payment_request: string;
+    receiving_address: string;
+    expires_at: Date;
+  }> {
+    const expiry_minutes = Math.ceil(params.expiry_seconds / 60);
+
+    const mutation = `
+      mutation LnNoAmountInvoiceCreate($input: LnNoAmountInvoiceCreateInput!) {
+        lnNoAmountInvoiceCreate(input: $input) {
+          invoice {
+            paymentRequest
+            paymentHash
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+
+    const data = await this.graphql(
+      mutation,
+      {
+        input: {
+          walletId:  this.config.wallet_btc_id,
+          memo:      params.memo,
+          expiresIn: expiry_minutes,
+        },
+      },
+      BlinkLnNoAmountInvoiceCreateResponseSchema,
+    );
+
+    const result = data.data.lnNoAmountInvoiceCreate;
+
+    if (result.errors.length > 0 || !result.invoice) {
+      this.logger.error('lnNoAmountInvoiceCreate failed', { errors: result.errors });
+      throw new CollateralInvoiceFailedException();
+    }
+
+    return {
+      provider_reference: result.invoice.paymentHash,
+      payment_request:    result.invoice.paymentRequest,
+      receiving_address:  result.invoice.paymentHash,
+      expires_at:         new Date(Date.now() + params.expiry_seconds * 1000),
+    };
+  }
+
   // ── createOnchainAddress ──────────────────────────────────────────────────
 
   async createOnchainAddress(): Promise<string> {
@@ -119,7 +179,7 @@ export class BlinkProvider implements CollateralProvider {
 
     const data = await this.graphql(
       mutation,
-      { input: { walletId: this.config.wallet_id } },
+      { input: { walletId: this.config.wallet_btc_id } },
       BlinkOnchainAddressCreateResponseSchema,
     );
 
@@ -156,7 +216,7 @@ export class BlinkProvider implements CollateralProvider {
       mutation,
       {
         input: {
-          walletId: this.config.wallet_id,
+          walletId: this.config.wallet_btc_id,
           lnAddress: params.address,
           amount: Number(params.amount_sat),
         },
@@ -198,7 +258,7 @@ export class BlinkProvider implements CollateralProvider {
       mutation,
       {
         input: {
-          walletId: this.config.wallet_id,
+          walletId: this.config.wallet_btc_id,
           address: params.address,
           amount: Number(params.amount_sat),
         },
@@ -215,6 +275,43 @@ export class BlinkProvider implements CollateralProvider {
     }
 
     return `blink:onchain:${params.address}:${params.amount_sat}:${Date.now()}`;
+  }
+
+  // ── getBtcUsdRate ─────────────────────────────────────────────────────────
+  // Used at loan origination to pin `initial_collateral_usd` on the Loan row.
+  // Blink's realtimePrice with currency='USD' returns btcSatPrice in USDCENT
+  // per sat (scaled-integer encoding):  usdcent_per_sat = base / 10^offset
+  // → usd_per_btc = usdcent_per_sat / 100 × SATS_PER_BTC.
+
+  async getBtcUsdRate(): Promise<Decimal> {
+    const query = `
+      query RealtimePrice($currency: DisplayCurrency!) {
+        realtimePrice(currency: $currency) {
+          btcSatPrice {
+            base
+            offset
+            currencyUnit
+          }
+        }
+      }
+    `;
+
+    const data = await this.graphql(
+      query,
+      { currency: 'USD' },
+      BlinkRealtimePriceResponseSchema,
+    );
+
+    const { base, offset, currencyUnit } = data.data.realtimePrice.btcSatPrice;
+
+    console.log(data.data)
+
+    if (currencyUnit !== 'MINOR') {
+      throw new Error(`Blink getBtcUsdRate: unexpected currencyUnit ${currencyUnit} (expected USDCENT)`);
+    }
+
+    const usdcent_per_sat = new Decimal(base).div(new Decimal(10).pow(offset));
+    return usdcent_per_sat.div(100).mul(SATS_PER_BTC);
   }
 
   // ── isOwnAccount ──────────────────────────────────────────────────────────
@@ -246,8 +343,8 @@ export class BlinkProvider implements CollateralProvider {
       mutation,
       {
         input: {
-          walletId:            this.config.wallet_id,
-          recipientWalletId:   this.config.usd_wallet_id,
+          walletId:            this.config.wallet_btc_id,
+          recipientWalletId:   this.config.wallet_usd_id,
           amount:              Number(amount_sat),
         },
       },

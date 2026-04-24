@@ -20,6 +20,24 @@ export class StubCollateralProvider implements CollateralProvider {
     };
   }
 
+  async createNoAmountInvoice(params: {
+    memo: string;
+    expiry_seconds: number;
+  }): Promise<{
+    provider_reference: string;
+    payment_request: string;
+    receiving_address: string;
+    expires_at: Date;
+  }> {
+    const payment_hash = `stub_topup_hash_${Date.now()}`;
+    return {
+      provider_reference: payment_hash,
+      payment_request: `lnbcrt_noamount_${Date.now()}_${params.memo.slice(0, 8)}`,
+      receiving_address: payment_hash,
+      expires_at: new Date(Date.now() + params.expiry_seconds * 1000),
+    };
+  }
+
   async createOnchainAddress(): Promise<string> {
     return `stub_btc_address_${Date.now()}`;
   }
