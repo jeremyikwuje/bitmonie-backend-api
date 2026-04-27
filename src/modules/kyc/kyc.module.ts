@@ -10,6 +10,8 @@ import { QoreidModule } from '@/providers/qoreid/qoreid.module';
 import { QoreidProvider } from '@/providers/qoreid/qoreid.provider';
 import { DojahModule } from '@/providers/dojah/dojah.module';
 import { DojahProvider } from '@/providers/dojah/dojah.provider';
+import { EaseidModule } from '@/providers/easeid/easeid.module';
+import { EaseidProvider } from '@/providers/easeid/easeid.provider';
 import { KYC_TIER_CONFIG, KycProviderName } from '@/config/kyc.config';
 import { StubKycProvider } from '@/providers/stub/stub-kyc.provider';
 import { UserRepaymentAccountsModule } from '@/modules/user-repayment-accounts/user-repayment-accounts.module';
@@ -20,36 +22,38 @@ function resolveKycProvider(
   name: KycProviderName,
   qoreid: QoreidProvider,
   dojah: DojahProvider,
+  easeid: EaseidProvider,
 ): KycProvider {
   switch (name) {
     case KycProviderName.Qoreid: return qoreid;
     case KycProviderName.Dojah:  return dojah;
+    case KycProviderName.Easeid: return easeid;
     case KycProviderName.Stub:   return stub_kyc_provider;
   }
 }
 
 @Module({
-  imports: [DatabaseModule, CryptoModule, ConfigModule, NameMatchModule, QoreidModule, DojahModule, UserRepaymentAccountsModule],
+  imports: [DatabaseModule, CryptoModule, ConfigModule, NameMatchModule, QoreidModule, DojahModule, EaseidModule, UserRepaymentAccountsModule],
   controllers: [KycController],
   providers: [
     KycService,
     {
       provide: KYC_PROVIDER_T1,
-      inject: [QoreidProvider, DojahProvider],
-      useFactory: (qoreid: QoreidProvider, dojah: DojahProvider): KycProvider =>
-        resolveKycProvider(KYC_TIER_CONFIG.tier1, qoreid, dojah),
+      inject: [QoreidProvider, DojahProvider, EaseidProvider],
+      useFactory: (qoreid: QoreidProvider, dojah: DojahProvider, easeid: EaseidProvider): KycProvider =>
+        resolveKycProvider(KYC_TIER_CONFIG.tier1, qoreid, dojah, easeid),
     },
     {
       provide: KYC_PROVIDER_T2,
-      inject: [QoreidProvider, DojahProvider],
-      useFactory: (qoreid: QoreidProvider, dojah: DojahProvider): KycProvider =>
-        resolveKycProvider(KYC_TIER_CONFIG.tier2, qoreid, dojah),
+      inject: [QoreidProvider, DojahProvider, EaseidProvider],
+      useFactory: (qoreid: QoreidProvider, dojah: DojahProvider, easeid: EaseidProvider): KycProvider =>
+        resolveKycProvider(KYC_TIER_CONFIG.tier2, qoreid, dojah, easeid),
     },
     {
       provide: KYC_PROVIDER_T3,
-      inject: [QoreidProvider, DojahProvider],
-      useFactory: (qoreid: QoreidProvider, dojah: DojahProvider): KycProvider =>
-        resolveKycProvider(KYC_TIER_CONFIG.tier3, qoreid, dojah),
+      inject: [QoreidProvider, DojahProvider, EaseidProvider],
+      useFactory: (qoreid: QoreidProvider, dojah: DojahProvider, easeid: EaseidProvider): KycProvider =>
+        resolveKycProvider(KYC_TIER_CONFIG.tier3, qoreid, dojah, easeid),
     },
   ],
   exports: [KycService],

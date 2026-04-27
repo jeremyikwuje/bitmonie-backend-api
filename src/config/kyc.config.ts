@@ -1,6 +1,7 @@
 export enum KycProviderName {
   Qoreid = 'qoreid',
   Dojah = 'dojah',
+  Easeid = 'easeid',
   Stub = 'stub',   // local dev only — always returns success
 }
 
@@ -11,7 +12,7 @@ export interface KycTierConfig {
 }
 
 export const KYC_TIER_CONFIG: KycTierConfig = {
-  tier1: KycProviderName.Dojah,    // ← swap to Dojah / Qoreid / others in production
+  tier1: KycProviderName.Easeid,    // ← swap to Dojah / Qoreid / others in production
   tier2: KycProviderName.Qoreid,
   tier3: KycProviderName.Qoreid,
 };

@@ -80,6 +80,10 @@ export class KycService {
       }
     } catch (err) {
       if (err instanceof KycBiodataMismatchException) throw err;
+      this.logger.error(
+        { user_id, id_type: dto.id_type, error: err instanceof Error ? err.message : String(err) },
+        'KYC tier-1 provider verification failed',
+      );
       throw new BitmonieException(
         'KYC_PROVIDER_ERROR',
         'Identity verification could not be completed. Please check your details and try again.',

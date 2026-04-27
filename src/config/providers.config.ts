@@ -44,6 +44,12 @@ export interface DojahConfig {
   api_key: string;
 }
 
+export interface EaseidConfig {
+  app_id: string;
+  private_key: string;
+  public_key: string;
+}
+
 export interface MailgunConfig {
   api_key: string;
   domain: string;
@@ -72,6 +78,7 @@ export interface ProvidersConfig {
   blink: BlinkConfig;
   palmpay: PalmpayConfig;
   qoreid: QoreidConfig;
+  easeid: EaseidConfig;
   dojah: DojahConfig;
   mailgun: MailgunConfig;
   resend: ResendConfig;
@@ -120,6 +127,11 @@ export default registerAs('providers', (): ProvidersConfig => ({
   dojah: {
     app_id:  process.env.DOJAH_APP_ID  ?? '',
     api_key: process.env.DOJAH_API_KEY ?? '',
+  },
+  easeid: {
+    app_id: process.env.EASEID_APP_ID ?? '',
+    private_key: process.env.EASEID_PRIVATE_KEY ?? '',
+    public_key: process.env.EASEID_PUBLIC_KEY ?? '',
   },
   mailgun: {
     api_key:      process.env.MAILGUN_API_KEY      ?? '',
