@@ -1134,6 +1134,12 @@ PATCH  /v1/disbursement-accounts/:id/set-default
 # RATES (public)
 GET    /v1/rates
 
+# CONFIG (public)
+GET    /v1/config                              # platform config — fees, limits, durations
+                                               # namespaced by product: { loans: {...}, offramp: {...} }
+                                               # cacheable; internal thresholds (alert, cache TTLs,
+                                               # rate markup, idempotency/session TTL) are NOT exposed
+
 # LOANS (SessionGuard + KycVerifiedGuard unless noted)
 POST   /v1/loans/checkout
 GET    /v1/loans

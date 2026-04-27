@@ -16,6 +16,7 @@ import { UsersModule } from './modules/users/users.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { DisbursementAccountsModule } from './modules/disbursement-accounts/disbursement-accounts.module';
 import { LoansModule } from './modules/loans/loans.module';
+import { PlatformConfigModule } from './modules/platform-config/platform-config.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
 @Module({
@@ -36,6 +37,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     KycModule,
     DisbursementAccountsModule,
     LoansModule,
+    PlatformConfigModule,
     WebhooksModule,
   ],
   providers: [
