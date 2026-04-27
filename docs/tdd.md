@@ -951,6 +951,16 @@ POST /v1/webhooks/disbursement (raw body, no auth guard — signature + IP verif
 ```
 
 **Terminal states:** `REPAID`, `LIQUIDATED`, `EXPIRED`, `CANCELLED` — no further transitions.
+
+**One PENDING_COLLATERAL per user.** A user may hold at most one loan in
+`PENDING_COLLATERAL` at a time. To start a new loan they must either pay the
+existing collateral invoice (advancing it to `ACTIVE`), cancel it, or wait for
+it to `EXPIRE`. Enforced two ways: a service-layer count pre-check in
+`LoansService.checkoutLoan` for a clean 409, and a partial unique index
+`loans_user_id_pending_unique ON loans(user_id) WHERE status = 'PENDING_COLLATERAL'`
+as the race-proof DB guarantee. Either failure path surfaces as
+`LOAN_PENDING_ALREADY_EXISTS` (409). Mirrors the §5.7b partial-unique pattern
+used for `collateral_topups`.
 Every transition writes to `loan_status_logs` atomically in the same Prisma transaction.
 
 ---

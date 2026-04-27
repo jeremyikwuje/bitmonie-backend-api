@@ -238,6 +238,8 @@ PENDING_COLLATERAL → ACTIVE ⟲ → REPAID
 
 Terminal: `REPAID`, `LIQUIDATED`, `EXPIRED`, `CANCELLED`. No further transitions.
 
+**One `PENDING_COLLATERAL` per user.** A user may hold at most one loan in `PENDING_COLLATERAL` at a time — they must pay, cancel, or wait for expiry before checking out another. Enforced by partial unique index `loans_user_id_pending_unique` + service-layer pre-check; violations surface as `LOAN_PENDING_ALREADY_EXISTS` (409). Same pattern as §5.7b's one-pending-top-up-per-loan.
+
 | From | To | Triggered by | reason_code |
 |---|---|---|---|
 | *(new)* | `PENDING_COLLATERAL` | Customer checkout | `LOAN_CREATED` |

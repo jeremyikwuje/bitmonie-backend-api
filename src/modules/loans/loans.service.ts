@@ -39,6 +39,7 @@ import {
   LoanNotActiveException,
   LoanNotFoundException,
   NoUnmatchedInflowException,
+  PendingLoanAlreadyExistsException,
 } from '@/common/errors/bitmonie.errors';
 import type { CheckoutLoanDto } from './dto/checkout-loan.dto';
 
@@ -104,6 +105,14 @@ export class LoansService {
     if (!user.loan_enabled) throw new LoanDisabledException();
     if (!user.disbursement_enabled) throw new DisbursementDisabledException();
 
+    // At most ONE PENDING_COLLATERAL loan per user. Race-proofed at the DB layer
+    // by the partial unique index `loans_user_id_pending_unique`; pre-check gives
+    // a clean 409 before we waste a Lightning invoice on the rejected attempt.
+    const existing_pending = await this.prisma.loan.count({
+      where: { user_id: user.id, status: LoanStatus.PENDING_COLLATERAL },
+    });
+    if (existing_pending > 0) throw new PendingLoanAlreadyExistsException();
+
     const disburse_account = await this._resolveDefaultAccount(user.id, dto.disbursement_account_id);
 
     const [sat_rates, btc_usd_rate] = await Promise.all([
@@ -120,37 +129,50 @@ export class LoansService {
 
     const due_at = new Date(Date.now() + dto.duration_days * 24 * 60 * 60 * 1000);
 
-    const loan = await this.prisma.$transaction(async (tx) => {
-      const new_loan = await tx.loan.create({
-        data: {
-          user_id:                    user.id,
-          disbursement_account_id:    disburse_account.id,
-          collateral_amount_sat:      calc.collateral_amount_sat,
-          ltv_percent:                calc.ltv_percent,
-          principal_ngn:              dto.principal_decimal,
-          origination_fee_ngn:        calc.origination_fee_ngn,
-          daily_interest_rate_bps:    calc.daily_interest_rate_bps,
-          daily_custody_fee_ngn:      calc.daily_custody_fee_ngn,
-          initial_collateral_usd:    calc.initial_collateral_usd,
-          duration_days:              dto.duration_days,
-          sat_ngn_rate_at_creation:   calc.sat_ngn_rate_at_creation,
-          collateral_release_address: dto.collateral_release_address,
-          status:                     LoanStatus.PENDING_COLLATERAL,
-          due_at,
-        },
-      });
+    let loan;
+    try {
+      loan = await this.prisma.$transaction(async (tx) => {
+        const new_loan = await tx.loan.create({
+          data: {
+            user_id:                    user.id,
+            disbursement_account_id:    disburse_account.id,
+            collateral_amount_sat:      calc.collateral_amount_sat,
+            ltv_percent:                calc.ltv_percent,
+            principal_ngn:              dto.principal_decimal,
+            origination_fee_ngn:        calc.origination_fee_ngn,
+            daily_interest_rate_bps:    calc.daily_interest_rate_bps,
+            daily_custody_fee_ngn:      calc.daily_custody_fee_ngn,
+            initial_collateral_usd:    calc.initial_collateral_usd,
+            duration_days:              dto.duration_days,
+            sat_ngn_rate_at_creation:   calc.sat_ngn_rate_at_creation,
+            collateral_release_address: dto.collateral_release_address,
+            status:                     LoanStatus.PENDING_COLLATERAL,
+            due_at,
+          },
+        });
 
-      await this.loan_status.transition(tx, {
-        loan_id:      new_loan.id,
-        user_id:      user.id,
-        from_status:  null,
-        to_status:    LoanStatus.PENDING_COLLATERAL,
-        triggered_by: StatusTrigger.CUSTOMER,
-        reason_code:  LoanReasonCodes.LOAN_CREATED,
-      });
+        await this.loan_status.transition(tx, {
+          loan_id:      new_loan.id,
+          user_id:      user.id,
+          from_status:  null,
+          to_status:    LoanStatus.PENDING_COLLATERAL,
+          triggered_by: StatusTrigger.CUSTOMER,
+          reason_code:  LoanReasonCodes.LOAN_CREATED,
+        });
 
-      return new_loan;
-    });
+        return new_loan;
+      });
+    } catch (err) {
+      // Race against the partial unique `loans_user_id_pending_unique`: a second
+      // concurrent checkout slipped past the count pre-check above.
+      if (
+        err && typeof err === 'object' && 'code' in err &&
+        (err as { code: string }).code === PRISMA_UNIQUE_VIOLATION
+      ) {
+        throw new PendingLoanAlreadyExistsException();
+      }
+      throw err;
+    }
 
     let payment_request_record;
     try {

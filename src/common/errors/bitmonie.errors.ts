@@ -125,6 +125,16 @@ export class InflowBelowFloorException extends BitmonieException {
   }
 }
 
+export class PendingLoanAlreadyExistsException extends BitmonieException {
+  constructor() {
+    super(
+      'LOAN_PENDING_ALREADY_EXISTS',
+      'You already have a loan awaiting collateral. Pay its invoice or cancel it before starting a new loan.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class AddCollateralAlreadyPendingException extends BitmonieException {
   constructor() {
     super(
