@@ -898,7 +898,9 @@ POST /v1/loans/checkout (SessionGuard + KycVerifiedGuard)
      → PaymentRequest saved to DB
      → receiving_address cached in Redis
   → Loan created, LoanStatusLog written [same transaction]
-  → Response: { loan_id, payment_request, receiving_address, expires_at, fee_breakdown }
+  → Response: { loan_id, payment_request, payment_uri, receiving_address, expires_at, fee_breakdown }
+  // payment_uri = `lightning:${payment_request}` — frontend renders directly into a QR
+  // component or wallet deep-link <a href>. Empty string when payment_request is empty.
 
 POST /v1/webhooks/collateral (raw body, no auth guard — signature verified first)
   → CollateralWebhookController
@@ -985,7 +987,11 @@ async function checkoutLoan(
   //    a. CollateralProvider.createPaymentRequest()
   //    b. INSERT payment_request with provider_reference + expires_at
   //    c. Cache receiving_address in Redis (35min TTL)
-  // 7. Return { loan_id, payment_request, receiving_address, expires_at, fee_breakdown }
+  // 7. Return { loan_id, payment_request, payment_uri, receiving_address, expires_at, fee_breakdown }
+  //    payment_uri is the BIP-21-style `lightning:<bolt11>` deep-link string —
+  //    same data as payment_request, prefixed so it doubles as a wallet handoff URI
+  //    and is QR-ready without further client-side massaging. Same convention is
+  //    used for the add-collateral top-up response (CollateralTopUpResult).
 }
 
 // All monetary calculations use Decimal — never number.

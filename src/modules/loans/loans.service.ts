@@ -53,6 +53,7 @@ export interface CheckoutLoanResult {
   loan_id:                string;
   collateral_amount_sat:  bigint;
   payment_request:        string;
+  payment_uri:            string;
   receiving_address:      string;
   expires_at:             Date;
   fee_breakdown: {
@@ -80,6 +81,7 @@ export interface CollateralTopUpResult {
   topup_id:           string;
   loan_id:            string;
   payment_request:    string;
+  payment_uri:        string;
   receiving_address:  string;
   expires_at:         Date;
 }
@@ -187,10 +189,12 @@ export class LoansService {
       throw new CollateralInvoiceFailedException();
     }
 
+    const bolt11 = payment_request_record.payment_request ?? '';
     return {
       loan_id:               loan.id,
       collateral_amount_sat: calc.collateral_amount_sat,
-      payment_request:       payment_request_record.payment_request ?? '',
+      payment_request:       bolt11,
+      payment_uri:           bolt11 ? `lightning:${bolt11}` : '',
       receiving_address:     payment_request_record.receiving_address,
       expires_at:            payment_request_record.expires_at,
       fee_breakdown: {
@@ -518,6 +522,7 @@ export class LoansService {
       topup_id:          topup.id,
       loan_id,
       payment_request:   invoice.payment_request,
+      payment_uri:       invoice.payment_request ? `lightning:${invoice.payment_request}` : '',
       receiving_address: invoice.receiving_address,
       expires_at:        invoice.expires_at,
     };
