@@ -5,6 +5,7 @@ import { NameMatchService } from '@/common/name-match/name-match.service';
 import { DisbursementRouter } from '@/modules/disbursements/disbursement-router.service';
 import {
   DisbursementAccountNameMismatchException,
+  DisbursementAccountLookupFailedException,
   DisbursementAccountMaxPerKindException,
   DisbursementAccountDefaultDeleteException,
 } from '@/common/errors/bitmonie.errors';
@@ -74,16 +75,18 @@ export class DisbursementAccountsService {
         account_number: dto.account_unique,
       });
 
-      if (fetched_name) {
-        const score = this.name_match.compare(canonical_name, fetched_name);
-
-        if (score < DISBURSEMENT_NAME_MATCH_THRESHOLD) {
-          throw new DisbursementAccountNameMismatchException({ score });
-        }
-
-        account_holder_name = fetched_name;
-        name_match_score = score;
+      if (!fetched_name) {
+        throw new DisbursementAccountLookupFailedException();
       }
+
+      const score = this.name_match.compare(canonical_name, fetched_name);
+
+      if (score < DISBURSEMENT_NAME_MATCH_THRESHOLD) {
+        throw new DisbursementAccountNameMismatchException({ score });
+      }
+
+      account_holder_name = fetched_name;
+      name_match_score = score;
     }
 
     const is_first = existing_count === 0;

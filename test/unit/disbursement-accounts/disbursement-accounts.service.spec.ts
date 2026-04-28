@@ -154,15 +154,14 @@ describe('DisbursementAccountsService', () => {
       expect(disbursement_provider.lookupAccountName).not.toHaveBeenCalled();
     });
 
-    it('still adds BANK account when provider returns no name', async () => {
+    it('throws DISBURSEMENT_ACCOUNT_LOOKUP_FAILED when provider returns no name', async () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(KYC_USER);
       prisma.disbursementAccount.count.mockResolvedValue(0);
       disbursement_provider.lookupAccountName.mockResolvedValue(null);
-      prisma.disbursementAccount.create.mockResolvedValue({ id: 'acct-uuid' });
 
-      const result = await service.addAccount('user-uuid', BANK_DTO);
-
-      expect(result.id).toBe('acct-uuid');
+      await expect(service.addAccount('user-uuid', BANK_DTO))
+        .rejects.toMatchObject({ code: 'DISBURSEMENT_ACCOUNT_LOOKUP_FAILED' });
+      expect(prisma.disbursementAccount.create).not.toHaveBeenCalled();
     });
   });
 

@@ -168,6 +168,17 @@ export class DisbursementAccountNameMismatchException extends BitmonieException 
   }
 }
 
+export class DisbursementAccountLookupFailedException extends BitmonieException {
+  constructor() {
+    super(
+      'DISBURSEMENT_ACCOUNT_LOOKUP_FAILED',
+      'We could not verify this account with your bank. Check the bank and account number and try again.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      [{ field: 'account_unique', issue: 'Provider returned no account holder for this bank/account combination' }],
+    );
+  }
+}
+
 export class DisbursementAccountMaxPerKindException extends BitmonieException {
   constructor(context: { kind: string; limit: number }) {
     super(
