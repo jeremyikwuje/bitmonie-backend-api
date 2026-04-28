@@ -39,7 +39,27 @@ function make_provider(overrides?: Partial<PalmpayConfig>) {
 function mock_ok(body: unknown) {
   global.fetch = jest.fn().mockResolvedValue({
     ok: true,
+    status: 200,
+    text: () => Promise.resolve(JSON.stringify(body)),
     json: () => Promise.resolve(body),
+  });
+}
+
+function mock_http_error(status: number, body: string) {
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: false,
+    status,
+    text: () => Promise.resolve(body),
+    json: () => Promise.reject(new Error('not json')),
+  });
+}
+
+function mock_non_json(body: string) {
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: () => Promise.resolve(body),
+    json: () => Promise.reject(new Error('not json')),
   });
 }
 
@@ -168,6 +188,22 @@ describe('PalmpayProvider.initiateTransfer', () => {
 
     await expect(make_provider().initiateTransfer(TRANSFER_PARAMS)).rejects.toThrow(
       'PalmPay payout failed: 40000099 Account inactive',
+    );
+  });
+
+  it('surfaces the HTTP status + body when PalmPay returns non-2xx', async () => {
+    mock_http_error(503, '<html>Service Unavailable</html>');
+
+    await expect(make_provider().initiateTransfer(TRANSFER_PARAMS)).rejects.toThrow(
+      /HTTP 503/,
+    );
+  });
+
+  it('surfaces a clear error when PalmPay returns non-JSON body', async () => {
+    mock_non_json('upstream timeout');
+
+    await expect(make_provider().initiateTransfer(TRANSFER_PARAMS)).rejects.toThrow(
+      'returned non-JSON response',
     );
   });
 

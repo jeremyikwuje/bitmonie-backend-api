@@ -96,8 +96,56 @@ export class PalmpayProvider implements DisbursementProvider {
       body: JSON.stringify(payload),
     });
 
-    const json: unknown = await response.json();
-    return schema.parse(json);
+    // Read body as text first so non-JSON error pages (HTML 500s, gateway
+    // timeouts) are still visible in logs instead of throwing an opaque
+    // SyntaxError on `response.json()`.
+    const raw_text = await response.text();
+
+    if (!response.ok) {
+      this.logger.warn(
+        { path, http_status: response.status, body: raw_text.slice(0, 1000) },
+        'PalmPay non-OK HTTP response',
+      );
+      throw new Error(`PalmPay ${path} returned HTTP ${response.status}: ${raw_text.slice(0, 200)}`);
+    }
+
+    let json: unknown;
+    try {
+      json = JSON.parse(raw_text);
+    } catch {
+      this.logger.warn(
+        { path, body: raw_text.slice(0, 1000) },
+        'PalmPay response is not valid JSON',
+      );
+      throw new Error(`PalmPay ${path} returned non-JSON response`);
+    }
+
+    let parsed: T;
+    try {
+      parsed = schema.parse(json);
+    } catch (err) {
+      const safe = (json ?? {}) as { respCode?: unknown; respMsg?: unknown };
+      this.logger.warn(
+        { path, respCode: safe.respCode, respMsg: safe.respMsg, raw: json },
+        'PalmPay response failed schema validation — see `raw` for the actual payload',
+      );
+      throw err;
+    }
+
+    // Surface every non-success respCode so ops can read the PalmPay reason
+    // directly from logs (e.g. "Insufficient balance", "Account inactive").
+    // PalmPay response bodies don't echo customer account numbers — only
+    // orderId/orderNo/orderStatus/respMsg — so logging the full data object
+    // is safe under §5.8.
+    const result = parsed as { respCode?: string; respMsg?: string; data?: unknown };
+    if (result.respCode !== PALMPAY_RESP_CODE_SUCCESS) {
+      this.logger.warn(
+        { path, respCode: result.respCode, respMsg: result.respMsg, data: result.data },
+        'PalmPay response indicates failure',
+      );
+    }
+
+    return parsed;
   }
 
   // ── getBalance ────────────────────────────────────────────────────────────
