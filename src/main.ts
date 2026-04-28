@@ -54,7 +54,7 @@ async function bootstrap(): Promise<void> {
     .build();
   SwaggerModule.setup('v1/docs', app, SwaggerModule.createDocument(app, swagger_config));
 
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   Logger.log(`Bitmonie API listening on http://localhost:${port}/v1`, 'Bootstrap');
   Logger.log(`Swagger UI available at http://localhost:${port}/v1/docs`, 'Bootstrap');
 }
