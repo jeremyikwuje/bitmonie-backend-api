@@ -8,6 +8,11 @@ export const PALMPAY_RESP_CODE_SUCCESS       = '00000000';
 
 // ── Query bank account ────────────────────────────────────────────────────────
 
+// PalmPay returns `data: null` (not omitted) on every error response, so all
+// these schemas use .nullish() to admit null + undefined + the success shape.
+// The respCode/respMsg pair is the source of truth for success vs failure —
+// data is only populated on success.
+
 export const PalmpayQueryBankAccountResponseSchema = z.object({
   respCode: z.string(),
   respMsg: z.string(),
@@ -16,7 +21,7 @@ export const PalmpayQueryBankAccountResponseSchema = z.object({
       Status: z.string().optional(),       // 'Success' | 'Failed'
       accountName: z.string().optional(),
     })
-    .optional(),
+    .nullish(),
 });
 
 export type PalmpayQueryBankAccountResponse = z.infer<
@@ -35,7 +40,7 @@ export const PalmpayPayoutResponseSchema = z.object({
       orderStatus: z.number().optional(),
       sessionId: z.string().optional(),
     })
-    .optional(),
+    .nullish(),
 });
 
 export type PalmpayPayoutResponse = z.infer<typeof PalmpayPayoutResponseSchema>;
@@ -58,7 +63,7 @@ export const PalmpayQueryPayStatusResponseSchema = z.object({
       createdTime: z.number().optional(),
       completedTime: z.number().optional(),
     })
-    .optional(),
+    .nullish(),
 });
 
 export type PalmpayQueryPayStatusResponse = z.infer<
@@ -77,7 +82,7 @@ export const PalmpayQueryBalanceResponseSchema = z.object({
       currentBalance: z.number().optional(),
       unSettleBalance: z.number().optional(),
     })
-    .optional(),
+    .nullish(),
 });
 
 export type PalmpayQueryBalanceResponse = z.infer<
@@ -146,7 +151,7 @@ export const PalmpayCreateVirtualAccountResponseSchema = z.object({
       virtualAccountName: z.string().optional(),
       accountReference:   z.string().optional(),
     })
-    .optional(),
+    .nullish(),
 });
 
 export type PalmpayCreateVirtualAccountResponse = z.infer<

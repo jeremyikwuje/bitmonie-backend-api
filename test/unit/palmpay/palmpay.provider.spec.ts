@@ -160,6 +160,17 @@ describe('PalmpayProvider.initiateTransfer', () => {
     );
   });
 
+  // Regression: PalmPay returns the literal `data: null` (not omitted) on
+  // every error response. If the Zod schema rejects null, the real PalmPay
+  // failure reason gets replaced with a Zod issue dump in the outflow row.
+  it('throws the PalmPay failure reason (not a Zod error) when response is { respCode, respMsg, data: null }', async () => {
+    mock_ok({ respCode: '40000099', respMsg: 'Account inactive', data: null });
+
+    await expect(make_provider().initiateTransfer(TRANSFER_PARAMS)).rejects.toThrow(
+      'PalmPay payout failed: 40000099 Account inactive',
+    );
+  });
+
   it('sends orderId, amount and payeeBankCode in body', async () => {
     mock_ok({
       respCode: '00000000',
