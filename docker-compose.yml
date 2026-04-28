@@ -85,6 +85,26 @@ services:
       redis:    { condition: service_healthy }
     command: ["node", "dist/workers/loan-reminder.worker.js"]
 
+  worker-outflow-reconciler:
+    profiles: ["prod"]
+    image: bitmonie
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    command: ["node", "dist/workers/outflow-reconciler.worker.js"]
+
+  worker-disbursement-digest:
+    profiles: ["prod"]
+    image: bitmonie
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    command: ["node", "dist/workers/disbursement-on-hold-digest.worker.js"]
+
 volumes:
   bitmonie_postgres_data:
   bitmonie_redis_data:
