@@ -27,6 +27,7 @@ import {
 import { OpsDisbursementsService } from './ops-disbursements.service';
 import { ListDisbursementsDto } from './dto/list-disbursements.dto';
 import { CancelDisbursementDto } from './dto/cancel-disbursement.dto';
+import { AbandonAttemptDto } from './dto/abandon-attempt.dto';
 
 // Ops triage queue for disbursements that have outflow attempts but no
 // successful outflow. The default GET filter is ON_HOLD — the active queue.
@@ -98,6 +99,32 @@ export class OpsDisbursementsController {
       ip_address:  req.ip ?? null,
     });
     return { message: 'Retry dispatched.' };
+  }
+
+  @Post(':disbursement_id/abandon-attempt')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Abandon the in-flight outflow attempt and move the disbursement to ON_HOLD',
+    description:
+      "Treats the active outflow attempt (PENDING or PROCESSING) as failed and parks the parent disbursement in ON_HOLD. Used when an attempt is genuinely stuck — stub provider in dev, or a real provider gone silent past the reconciler window. After this, ops can retry (which dispatches a fresh attempt against the currently-active provider) or cancel. The state transition reuses OutflowsService.handleFailure, so the resulting disbursement/alert state is identical to a webhook-reported failure — including the first-transition alert + daily digest pickup.",
+  })
+  @ApiParam({ name: 'disbursement_id', description: 'Disbursement UUID' })
+  @ApiResponse({ status: 200, description: 'Outflow attempt abandoned, disbursement on hold' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 404, description: 'Disbursement not found' })
+  @ApiResponse({ status: 409, description: 'Disbursement is terminal or has no active outflow' })
+  async abandonAttempt(
+    @CurrentOpsUser() ops_user: AuthenticatedOpsUser,
+    @Param('disbursement_id', new ParseUUIDPipe()) disbursement_id: string,
+    @Body() dto: AbandonAttemptDto,
+    @Req() req: Request,
+  ): Promise<{ message: string }> {
+    await this.service.abandonAttempt(disbursement_id, dto.reason, {
+      ops_user_id: ops_user.id,
+      request_id:  readRequestId(req),
+      ip_address:  req.ip ?? null,
+    });
+    return { message: 'Outflow attempt abandoned. Disbursement is now ON_HOLD.' };
   }
 
   @Post(':disbursement_id/cancel')

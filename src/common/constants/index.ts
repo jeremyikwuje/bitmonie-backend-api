@@ -26,6 +26,12 @@ export const LOAN_GRACE_PERIOD_DAYS    = 7;
 
 export const COLLATERAL_INVOICE_EXPIRY_SEC = 1800;
 export const COLLATERAL_TOPUP_EXPIRY_SEC   = 1800;
+// Threshold for the outflow reconciler worker — Outflows that stay PROCESSING
+// past this many seconds get probed via DisbursementProvider.getTransferStatus
+// to recover from lost provider webhooks. Real provider webhooks usually
+// arrive within seconds; 5 minutes is generous enough to not race the happy
+// path while still bounding customer-visible delay.
+export const OUTFLOW_PROCESSING_STALE_SEC  = 300;
 export const DISBURSEMENT_NAME_MATCH_THRESHOLD = 0.85;
 export const PRICE_FEED_STALE_MS       = 120_000;
 export const PRICE_CACHE_TTL_SEC       = 90;

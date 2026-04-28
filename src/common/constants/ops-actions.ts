@@ -6,8 +6,9 @@ export const OPS_ACTION = {
   KYC_RESET:            'kyc.reset',
   KYC_REVOKE:           'kyc.revoke',
   KYC_PROVISION_VA:     'kyc.provision_va',
-  DISBURSEMENT_RETRY:   'disbursement.retry',
-  DISBURSEMENT_CANCEL:  'disbursement.cancel',
+  DISBURSEMENT_RETRY:           'disbursement.retry',
+  DISBURSEMENT_CANCEL:          'disbursement.cancel',
+  DISBURSEMENT_ABANDON_ATTEMPT: 'disbursement.abandon_attempt',
 } as const;
 
 export type OpsAction = (typeof OPS_ACTION)[keyof typeof OPS_ACTION];

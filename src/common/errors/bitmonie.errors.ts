@@ -305,6 +305,19 @@ export class DisbursementTerminalException extends BitmonieException {
   }
 }
 
+// Used by the ops "abandon attempt" endpoint when the disbursement has no
+// in-flight (PENDING/PROCESSING) outflow to abandon — there's nothing to act
+// on, so 409 instead of silently no-op'ing.
+export class DisbursementNoActiveOutflowException extends BitmonieException {
+  constructor() {
+    super(
+      'DISBURSEMENT_NO_ACTIVE_OUTFLOW',
+      'Disbursement has no in-flight outflow to abandon.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 // ── ACCOUNT ─────────────────────────────────────────────────────
 
 export class AccountSuspendedException extends BitmonieException {

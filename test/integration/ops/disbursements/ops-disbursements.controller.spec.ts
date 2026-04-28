@@ -50,7 +50,7 @@ describe('OpsDisbursementsController (integration)', () => {
     disbursement:  { findMany: jest.Mock; findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
-  let outflows: { retryDispatch: jest.Mock };
+  let outflows: { retryDispatch: jest.Mock; handleFailure: jest.Mock };
   let disbursements: { findById: jest.Mock; markCancelled: jest.Mock };
 
   async function build_app(): Promise<void> {
@@ -60,7 +60,7 @@ describe('OpsDisbursementsController (integration)', () => {
       disbursement: { findMany: jest.fn(), findUnique: jest.fn() },
       $transaction: jest.fn(),
     };
-    outflows = { retryDispatch: jest.fn() };
+    outflows = { retryDispatch: jest.fn(), handleFailure: jest.fn() };
     disbursements = { findById: jest.fn(), markCancelled: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -278,6 +278,113 @@ describe('OpsDisbursementsController (integration)', () => {
         .send({ reason: 'x' }) // shorter than min length
         .expect(400);
       expect(disbursements.markCancelled).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── POST /:id/abandon-attempt — atomic audit + force outflow failure ───────
+
+  describe('POST /:disbursement_id/abandon-attempt', () => {
+    it('writes audit row in tx then routes the active outflow through OutflowsService.handleFailure with OPS_ABANDONED', async () => {
+      authenticate_ops();
+      const tx = make_tx();
+      const ACTIVE_OUTFLOW_ID = 'outflow-active-001';
+      disbursements.findById.mockResolvedValue({
+        id: DISBURSEMENT_ID,
+        status: 'PROCESSING',
+        outflows: [
+          // Old failed attempt should be ignored
+          { id: 'outflow-old-001', attempt_number: 1, status: 'FAILED' },
+          // The current in-flight outflow that abandon should target
+          { id: ACTIVE_OUTFLOW_ID, attempt_number: 2, status: 'PROCESSING' },
+        ],
+      });
+      prisma.$transaction.mockImplementation(async (fn: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
+        return fn(tx as unknown as Prisma.TransactionClient);
+      });
+
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/${DISBURSEMENT_ID}/abandon-attempt`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .set('x-request-id', 'req_abandon_001')
+        .send({ reason: 'Stub provider stuck — switching to PalmPay' })
+        .expect(200);
+
+      expect(tx.opsAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          ops_user_id: OPS_USER_ID,
+          action:      OPS_ACTION.DISBURSEMENT_ABANDON_ATTEMPT,
+          target_type: OPS_TARGET_TYPE.DISBURSEMENT,
+          target_id:   DISBURSEMENT_ID,
+          request_id:  'req_abandon_001',
+        }),
+      });
+      // Only the active outflow gets failed — past failures stay immutable.
+      expect(outflows.handleFailure).toHaveBeenCalledTimes(1);
+      expect(outflows.handleFailure).toHaveBeenCalledWith(
+        ACTIVE_OUTFLOW_ID,
+        DISBURSEMENT_ID,
+        'Stub provider stuck — switching to PalmPay',
+        'OPS_ABANDONED',
+      );
+    });
+
+    it('returns 409 when there is no active outflow to abandon', async () => {
+      authenticate_ops();
+      disbursements.findById.mockResolvedValue({
+        id: DISBURSEMENT_ID,
+        status: 'PROCESSING',
+        outflows: [{ id: 'outflow-old', attempt_number: 1, status: 'FAILED' }],
+      });
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/${DISBURSEMENT_ID}/abandon-attempt`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .send({ reason: 'Trying to abandon nothing' })
+        .expect(409);
+      expect(outflows.handleFailure).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when the disbursement is already terminal (SUCCESSFUL)', async () => {
+      authenticate_ops();
+      disbursements.findById.mockResolvedValue({
+        id: DISBURSEMENT_ID,
+        status: 'SUCCESSFUL',
+        outflows: [{ id: 'outflow-001', attempt_number: 1, status: 'PROCESSING' }],
+      });
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/${DISBURSEMENT_ID}/abandon-attempt`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .send({ reason: 'Disbursement already settled' })
+        .expect(409);
+      expect(outflows.handleFailure).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the disbursement does not exist', async () => {
+      authenticate_ops();
+      disbursements.findById.mockResolvedValue(null);
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/${DISBURSEMENT_ID}/abandon-attempt`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .send({ reason: 'Does not exist' })
+        .expect(404);
+      expect(outflows.handleFailure).not.toHaveBeenCalled();
+    });
+
+    it('rejects an empty reason with 400', async () => {
+      authenticate_ops();
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/${DISBURSEMENT_ID}/abandon-attempt`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .send({ reason: 'x' })
+        .expect(400);
+      expect(outflows.handleFailure).not.toHaveBeenCalled();
+    });
+
+    it('401 with no ops_session cookie', async () => {
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/${DISBURSEMENT_ID}/abandon-attempt`)
+        .send({ reason: 'Not authenticated' })
+        .expect(401);
+      expect(outflows.handleFailure).not.toHaveBeenCalled();
     });
   });
 });

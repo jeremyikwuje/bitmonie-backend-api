@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { DisbursementStatus, type Prisma } from '@prisma/client';
+import { DisbursementStatus, OutflowStatus, type Prisma } from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { OutflowsService } from '@/modules/disbursements/outflows.service';
 import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
@@ -7,6 +7,7 @@ import { OpsAuditService } from '@/modules/ops/auth/ops-audit.service';
 import { OPS_ACTION, OPS_TARGET_TYPE } from '@/common/constants/ops-actions';
 import {
   DisbursementNotFoundException,
+  DisbursementNoActiveOutflowException,
   DisbursementTerminalException,
 } from '@/common/errors/bitmonie.errors';
 
@@ -151,6 +152,80 @@ export class OpsDisbursementsService {
         ip_address:  ctx.ip_address,
       });
     });
+  }
+
+  // "Abandon attempt" — the ops escape hatch for an outflow stuck in PENDING
+  // or PROCESSING (e.g. stub provider that never resolves, or a real provider
+  // gone silent past the reconciler window). Treats the in-flight attempt as
+  // failed and parks the parent Disbursement in ON_HOLD where ops can retry
+  // (against current router config) or cancel.
+  //
+  // Same audit-then-state pattern as retry(): the audit row records the ops
+  // decision in a tx, then OutflowsService.handleFailure performs the state
+  // transition (outflow → FAILED, disbursement → ON_HOLD, first-transition
+  // alert) outside the tx. Reusing handleFailure means abandon and async
+  // webhook failure produce identical disbursement/alert state.
+  //
+  // Validation:
+  //   • Disbursement must exist (404).
+  //   • Disbursement must not be terminal (409).
+  //   • Exactly one active outflow (PENDING or PROCESSING) must exist (409).
+  //     A disbursement with multiple active outflows is itself a bug — the
+  //     dispatch path explicitly forbids that — so abandoning would mask it.
+  async abandonAttempt(
+    disbursement_id: string,
+    reason:          string,
+    ctx:             OpsAuditContext,
+  ): Promise<void> {
+    const existing = await this.disbursements.findById(disbursement_id);
+    if (!existing) throw new DisbursementNotFoundException();
+
+    if (
+      existing.status === DisbursementStatus.SUCCESSFUL ||
+      existing.status === DisbursementStatus.CANCELLED
+    ) {
+      throw new DisbursementTerminalException({ status: existing.status });
+    }
+
+    const active_outflows = existing.outflows.filter(
+      (o) => o.status === OutflowStatus.PENDING || o.status === OutflowStatus.PROCESSING,
+    );
+    if (active_outflows.length === 0) throw new DisbursementNoActiveOutflowException();
+
+    // Prefer the most recent active outflow when there's somehow more than
+    // one — abandon them all so the disbursement has no in-flight rows when
+    // it lands in ON_HOLD. Each gets the same reason; failure_code is
+    // 'OPS_ABANDONED' so reconcilers/triage can recognise the source.
+    const target_outflow_ids = active_outflows.map((o) => o.id);
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.ops_audit.write(tx, {
+        ops_user_id: ctx.ops_user_id,
+        action:      OPS_ACTION.DISBURSEMENT_ABANDON_ATTEMPT,
+        target_type: OPS_TARGET_TYPE.DISBURSEMENT,
+        target_id:   disbursement_id,
+        details: {
+          previous_status:    existing.status,
+          abandoned_outflows: target_outflow_ids,
+          reason,
+        },
+        request_id:  ctx.request_id,
+        ip_address:  ctx.ip_address,
+      });
+    });
+
+    // handleFailure across all active outflows. The first call moves the
+    // disbursement into ON_HOLD and pages ops; any subsequent call sees
+    // is_first_transition=false and is silently logged — exactly the
+    // "first-transition + daily digest" contract.
+    for (const outflow_id of target_outflow_ids) {
+      await this.outflows.handleFailure(
+        outflow_id,
+        disbursement_id,
+        reason,
+        'OPS_ABANDONED',
+      );
+    }
   }
 
   _summary(row: Prisma.DisbursementGetPayload<{ include: { outflows: true } }>): {

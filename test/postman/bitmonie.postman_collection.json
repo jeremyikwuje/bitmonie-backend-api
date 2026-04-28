@@ -26,6 +26,7 @@
     { "key": "session_token", "value": "", "type": "string" },
     { "key": "loan_id", "value": "", "type": "string" },
     { "key": "disbursement_account_id", "value": "", "type": "string" },
+    { "key": "disbursement_id", "value": "", "type": "string" },
     { "key": "payment_hash", "value": "", "type": "string" },
     { "key": "virtual_account_no", "value": "", "type": "string" },
     { "key": "topup_id", "value": "", "type": "string" },
@@ -738,6 +739,88 @@
                   "variable": [{ "key": "user_id", "value": "" }]
                 },
                 "description": "Revoke a user's KYC to a specific tier (0–3). Same atomicity guarantees as `reset` — writes one `ops_audit_logs` (action: `kyc.revoke`) row in the same transaction."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ops Disbursements",
+          "description": "Triage queue for disbursements. The default GET filter is `ON_HOLD` — disbursements whose latest outflow attempt failed and are waiting for an ops decision. `retry` dispatches a fresh Outflow attempt against whichever provider the router currently resolves. `cancel` is terminal. `abandon-attempt` is the escape hatch for outflows stuck in PROCESSING (stub provider in dev, or a real provider gone silent past the reconciler window).",
+          "item": [
+            {
+              "name": "GET /v1/ops/disbursements  (list — defaults to ON_HOLD)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/disbursements?status=ON_HOLD&limit=25",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "disbursements"],
+                  "query": [
+                    { "key": "status", "value": "ON_HOLD", "description": "PENDING | PROCESSING | ON_HOLD | SUCCESSFUL | CANCELLED. Defaults to ON_HOLD — the active triage queue." },
+                    { "key": "cursor", "value": "", "description": "Disbursement.id from the previous page's `next_cursor`. Omit on first page.", "disabled": true },
+                    { "key": "limit", "value": "25", "description": "1–100. Defaults to 25." }
+                  ]
+                },
+                "description": "Cursor-paginated list. Read-only — no audit row written. Each row carries `attempt_count` so ops can spot disbursements bouncing between attempts. Sorted by `on_hold_at DESC` so the most recently failed rows surface first."
+              }
+            },
+            {
+              "name": "GET /v1/ops/disbursements/:disbursement_id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "disbursements", ":disbursement_id"],
+                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
+                },
+                "description": "Disbursement detail with every Outflow attempt — per-attempt `provider`, `provider_reference`, `failure_reason`, `failure_code`, `initiated_at`, `confirmed_at`. Read-only — no audit row. Use this to confirm the latest attempt's status before retrying or cancelling."
+              }
+            },
+            {
+              "name": "POST /v1/ops/disbursements/:disbursement_id/retry",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id/retry",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "disbursements", ":disbursement_id", "retry"],
+                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
+                },
+                "description": "Retry an ON_HOLD disbursement. Creates a new Outflow with `attempt_number + 1`, dispatches against whichever provider the router currently resolves, and writes one `ops_audit_logs` (action: `disbursement.retry`) row. Returns `202` — the new outflow runs asynchronously and resolves via webhook (or via the reconciler worker if the webhook is lost). 409 if the disbursement is not ON_HOLD."
+              }
+            },
+            {
+              "name": "POST /v1/ops/disbursements/:disbursement_id/cancel",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Wrong account number — customer confirmed via support\"\n}" },
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id/cancel",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "disbursements", ":disbursement_id", "cancel"],
+                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
+                },
+                "description": "Terminally cancel a disbursement. Captures `reason` + `cancelled_by_ops_user_id` on the row and writes one `ops_audit_logs` (action: `disbursement.cancel`) entry in the SAME Prisma transaction. After this, no further attempts. 409 if the disbursement is already SUCCESSFUL or CANCELLED."
+              }
+            },
+            {
+              "name": "POST /v1/ops/disbursements/:disbursement_id/abandon-attempt",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Stub provider stuck — switching to PalmPay\"\n}" },
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id/abandon-attempt",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "disbursements", ":disbursement_id", "abandon-attempt"],
+                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
+                },
+                "description": "Treat the in-flight outflow attempt (PENDING or PROCESSING) as failed and move the disbursement to ON_HOLD. Use when an attempt is genuinely stuck — stub provider in dev, or a real provider gone silent past the reconciler window. State transition reuses `OutflowsService.handleFailure`, so the resulting disbursement/alert state is identical to a webhook-reported failure (with `failure_code=OPS_ABANDONED`). Writes one `ops_audit_logs` (action: `disbursement.abandon_attempt`) row. 409 if the disbursement is terminal or has no active outflow. Follow with `retry` or `cancel`."
               }
             }
           ]
