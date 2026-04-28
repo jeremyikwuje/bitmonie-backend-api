@@ -10,6 +10,7 @@ export interface CreateForLoanParams {
   currency:           string;
   disbursement_rail:  DisbursementRail;
   provider_name:      string;
+  provider_code:      string;
   account_unique:     string;
   account_name:       string | null;
 }
@@ -40,6 +41,7 @@ export class DisbursementsService {
         amount:            params.amount,
         currency:          params.currency,
         provider_name:     params.provider_name,
+        provider_code:     params.provider_code,
         account_unique:    params.account_unique,
         account_name:      params.account_name,
         status:            DisbursementStatus.PENDING,

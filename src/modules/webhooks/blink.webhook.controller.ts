@@ -138,6 +138,7 @@ export class BlinkWebhookController {
       currency:          'NGN',
       disbursement_rail: DisbursementRail.BANK_TRANSFER,
       provider_name:     (loan.disbursement_account as never as { provider_name: string }).provider_name,
+      provider_code:     (loan.disbursement_account as never as { provider_code: string }).provider_code,
       account_unique:    (loan.disbursement_account as never as { account_unique: string }).account_unique,
       account_name:      (loan.disbursement_account as never as { account_holder_name: string | null }).account_holder_name,
     });

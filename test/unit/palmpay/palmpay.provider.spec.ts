@@ -152,7 +152,8 @@ describe('PalmpayProvider.initiateTransfer', () => {
   const TRANSFER_PARAMS = {
     amount: new Decimal('50000.00'),
     currency: 'NGN',
-    provider_name: '058',
+    provider_name: 'GTBank',
+    provider_code: '058',
     account_unique: '0123456789',
     account_name: 'Ada Obi',
     reference: 'txn_ref_001',

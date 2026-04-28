@@ -27,6 +27,7 @@ export class StubDisbursementProvider implements DisbursementProvider {
     amount: Decimal;
     currency: string;
     provider_name: string;
+    provider_code: string;
     account_unique: string;
     account_name: string | null;
     reference: string;

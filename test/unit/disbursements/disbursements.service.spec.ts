@@ -16,6 +16,7 @@ const CREATE_PARAMS = {
   currency:       'NGN',
   disbursement_rail: DisbursementRail.BANK_TRANSFER,
   provider_name:  'GTBank',
+  provider_code:  '058',
   account_unique: '0123456789',
   account_name:   'Ada Obi',
 };
@@ -30,6 +31,7 @@ const DB_DISBURSEMENT = {
   amount:                   new Decimal('300000'),
   currency:                 'NGN',
   provider_name:            'GTBank',
+  provider_code:            '058',
   account_unique:           '0123456789',
   account_name:             'Ada Obi',
   status:                   DisbursementStatus.PENDING,
@@ -88,6 +90,7 @@ describe('DisbursementsService', () => {
           amount:            CREATE_PARAMS.amount,
           currency:          'NGN',
           provider_name:     'GTBank',
+          provider_code:     '058',
           account_unique:    '0123456789',
           account_name:      'Ada Obi',
           status:            DisbursementStatus.PENDING,

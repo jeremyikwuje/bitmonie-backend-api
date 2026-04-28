@@ -125,10 +125,22 @@ export class OutflowsService {
     const provider = this.router.forRoute(disbursement.currency, disbursement.disbursement_rail);
 
     try {
+      // provider_code is nullable only for historical rows pre-dating
+      // 20260428150000_disbursement_provider_code. Fresh dispatches always
+      // populate it; retries on legacy rows fail with a clear reason instead
+      // of silently sending the human-readable provider_name to the upstream
+      // provider as the bank code (which is what triggered this whole fix).
+      if (!disbursement.provider_code) {
+        throw new Error(
+          'Disbursement is missing provider_code (legacy row pre-dating provider_code migration) — cancel and re-create',
+        );
+      }
+
       const { provider_txn_id, provider_response } = await provider.initiateTransfer({
         amount:         disbursement.amount,
         currency:       disbursement.currency,
         provider_name:  disbursement.provider_name,
+        provider_code:  disbursement.provider_code,
         account_unique: disbursement.account_unique,
         account_name:   disbursement.account_name,
         reference:      provider_reference,

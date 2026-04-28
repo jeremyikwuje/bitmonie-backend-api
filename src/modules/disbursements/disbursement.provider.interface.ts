@@ -20,7 +20,8 @@ export interface DisbursementProvider {
   initiateTransfer(params: {
     amount: Decimal;
     currency: string;
-    provider_name: string;    // bank code or provider code
+    provider_name: string;    // human-readable label ("GTBank", "MTN Nigeria") — for narration / audit only
+    provider_code: string;    // machine identifier expected by the provider ("058", "MTN") — used as payeeBankCode etc.
     account_unique: string;   // account number / phone / address
     account_name: string | null;
     reference: string;

@@ -195,6 +195,7 @@ export class PalmpayProvider implements DisbursementProvider {
     amount: Decimal;
     currency: string;
     provider_name: string;
+    provider_code: string;
     account_unique: string;
     account_name: string | null;
     reference: string;
@@ -206,7 +207,7 @@ export class PalmpayProvider implements DisbursementProvider {
         orderId: params.reference,
         amount: params.amount.toDecimalPlaces(2).toNumber(),
         currency: params.currency,
-        payeeBankCode: params.provider_name,
+        payeeBankCode: params.provider_code,
         payeeBankAccNo: params.account_unique,
         payeeName: params.account_name ?? '',
         notifyUrl: this.config.notify_url,

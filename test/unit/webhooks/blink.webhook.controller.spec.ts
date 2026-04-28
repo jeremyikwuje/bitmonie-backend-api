@@ -65,6 +65,7 @@ const CREATED_INFLOW = {
 
 const DISBURSEMENT_ACCOUNT = {
   provider_name:  'GTBank',
+  provider_code:  '058',
   account_unique: '0123456789',
   account_holder_name: 'Ada Obi',
 } as never;

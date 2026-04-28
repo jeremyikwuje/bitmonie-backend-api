@@ -335,8 +335,14 @@ model Disbursement {
   amount   Decimal @db.Decimal(20, 8)
   currency String  @db.VarChar(10)
 
-  // Destination snapshot — provider-agnostic, self-contained, never JOIN to bank_accounts later
+  // Destination snapshot — provider-agnostic, self-contained, never JOIN to bank_accounts later.
+  // provider_name is the human-readable label ("GTBank", "MTN Nigeria"); provider_code
+  // is the machine identifier the upstream provider expects ("058", "MTN") and is what
+  // OutflowsService passes to the disbursement provider's initiateTransfer.
+  // provider_code is nullable only because of historical rows pre-dating
+  // 20260428150000_disbursement_provider_code; new rows always populate it.
   provider_name  String  @db.VarChar(255)
+  provider_code  String? @db.VarChar(50)
   account_unique String  @db.VarChar(512)
   account_name   String? @db.VarChar(255)
 

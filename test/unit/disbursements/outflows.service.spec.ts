@@ -32,6 +32,7 @@ const DISBURSEMENT = {
   amount:                   new Decimal('300000'),
   currency:                 'NGN',
   provider_name:            'GTBank',
+  provider_code:            '058',
   account_unique:           '0123456789',
   account_name:             'Ada Obi',
   status:                   DisbursementStatus.PENDING,
