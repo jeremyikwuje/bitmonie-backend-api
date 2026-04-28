@@ -15,46 +15,46 @@ datasource db {
 // ─────────────────────────────────────────
 
 model User {
-  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email           String        @unique @db.VarChar(255)
-  email_verified  Boolean       @default(false)
-  password_hash   String        @db.VarChar(512)
-  totp_secret     String?       @db.VarChar(512)
-  totp_enabled    Boolean       @default(false)
-  country               String        @default("NG") @db.VarChar(2)
-  is_active             Boolean       @default(true)
-  disbursement_enabled  Boolean       @default(true)
-  loan_enabled          Boolean       @default(true)
-  kyc_tier              Int           @default(0)
-  first_name            String?       @db.VarChar(100)
-  middle_name     String?       @db.VarChar(100)
-  last_name       String?       @db.VarChar(100)
-  date_of_birth   DateTime?     @db.Date
-  created_at      DateTime      @default(now()) @db.Timestamptz
-  updated_at      DateTime      @updatedAt @db.Timestamptz
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email                String    @unique @db.VarChar(255)
+  email_verified       Boolean   @default(false)
+  password_hash        String    @db.VarChar(512)
+  totp_secret          String?   @db.VarChar(512)
+  totp_enabled         Boolean   @default(false)
+  country              String    @default("NG") @db.VarChar(2)
+  is_active            Boolean   @default(true)
+  disbursement_enabled Boolean   @default(true)
+  loan_enabled         Boolean   @default(true)
+  kyc_tier             Int       @default(0)
+  first_name           String?   @db.VarChar(100)
+  middle_name          String?   @db.VarChar(100)
+  last_name            String?   @db.VarChar(100)
+  date_of_birth        DateTime? @db.Date
+  created_at           DateTime  @default(now()) @db.Timestamptz
+  updated_at           DateTime  @updatedAt @db.Timestamptz
 
-  kyc_verifications         KycVerification[]
-  disbursement_accounts     DisbursementAccount[]
-  loans                     Loan[]
-  payment_requests          PaymentRequest[]
-  inflows                   Inflow[]
-  disbursements             Disbursement[]
-  repayment_account         UserRepaymentAccount?
-  audit_logs                AuditLog[]
-  sessions                  Session[]
+  kyc_verifications     KycVerification[]
+  disbursement_accounts DisbursementAccount[]
+  loans                 Loan[]
+  payment_requests      PaymentRequest[]
+  inflows               Inflow[]
+  disbursements         Disbursement[]
+  repayment_account     UserRepaymentAccount?
+  audit_logs            AuditLog[]
+  sessions              Session[]
 
   @@map("users")
 }
 
 model Session {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id     String    @db.Uuid
-  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  token_hash  String    @unique @db.VarChar(512)
-  expires_at  DateTime  @db.Timestamptz
-  ip_address  String?   @db.VarChar(45)
-  user_agent  String?   @db.VarChar(512)
-  created_at  DateTime  @default(now()) @db.Timestamptz
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  token_hash String   @unique @db.VarChar(512)
+  expires_at DateTime @db.Timestamptz
+  ip_address String?  @db.VarChar(45)
+  user_agent String?  @db.VarChar(512)
+  created_at DateTime @default(now()) @db.Timestamptz
 
   @@map("sessions")
 }
@@ -82,36 +82,36 @@ enum KycIdType {
 }
 
 model KycVerification {
-  id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id             String      @db.Uuid
-  user                User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   // Tier 1 — basic identity
   tier                Int
   id_type             KycIdType?
-  id_number_hash      String?     @db.VarChar(512)   // SHA-256+salt; never raw
-  encrypted_id_number String?     @db.VarChar(512)   // AES-256-GCM
-  legal_name          String?     @db.VarChar(255)
-  date_of_birth       DateTime?   @db.Date
+  id_number_hash      String?    @db.VarChar(512) // SHA-256+salt; never raw
+  encrypted_id_number String?    @db.VarChar(512) // AES-256-GCM
+  legal_name          String?    @db.VarChar(255)
+  date_of_birth       DateTime?  @db.Date
 
   // Tier 2 — liveness (stub; fields populated in v1.1)
-  liveness_reference  String?     @db.VarChar(255)
-  selfie_url          String?     @db.VarChar(512)
+  liveness_reference String? @db.VarChar(255)
+  selfie_url         String? @db.VarChar(512)
 
   // Tier 3 — address (stub; fields populated in v1.2)
-  address_line1       String?     @db.VarChar(255)
-  address_city        String?     @db.VarChar(100)
-  address_state       String?     @db.VarChar(100)
-  address_doc_url     String?     @db.VarChar(512)
+  address_line1   String? @db.VarChar(255)
+  address_city    String? @db.VarChar(100)
+  address_state   String? @db.VarChar(100)
+  address_doc_url String? @db.VarChar(512)
 
-  status                  KycStatus   @default(PENDING)
-  failure_reason          String?     @db.VarChar(500)
-  provider_reference      String?     @db.VarChar(255)
-  provider_raw_response   Json?                          // audit snapshot — no photo/image/raw ID
-  verified_at             DateTime?   @db.Timestamptz
+  status                KycStatus @default(PENDING)
+  failure_reason        String?   @db.VarChar(500)
+  provider_reference    String?   @db.VarChar(255)
+  provider_raw_response Json? // audit snapshot — no photo/image/raw ID
+  verified_at           DateTime? @db.Timestamptz
 
-  created_at          DateTime    @default(now()) @db.Timestamptz
-  updated_at          DateTime    @updatedAt @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
 
   @@unique([user_id, tier])
   @@index([user_id, status])
@@ -142,32 +142,32 @@ enum DisbursementAccountStatus {
 }
 
 model DisbursementAccount {
-  id                  String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id             String                    @db.Uuid
-  user                User                      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
-  kind                DisbursementAccountKind
-  currency            String                    @db.VarChar(10)
+  kind     DisbursementAccountKind
+  currency String                  @db.VarChar(10)
 
   // Generic destination — mirrors Disbursement snapshot shape
-  provider_name       String                    @db.VarChar(100)   // 'GTBank' | 'MTN Nigeria' | 'USDT'
-  provider_code       String                    @db.VarChar(50)    // '058' | 'MTN' | 'USDT'
-  account_unique      String                    @db.VarChar(512)   // account_number | phone | address
-  account_unique_tag  String?                   @db.VarChar(100)   // memo / destination tag (crypto)
-  network             PaymentNetwork?                               // crypto-only; NULL for BANK/MOBILE_MONEY
+  provider_name      String          @db.VarChar(100) // 'GTBank' | 'MTN Nigeria' | 'USDT'
+  provider_code      String          @db.VarChar(50) // '058' | 'MTN' | 'USDT'
+  account_unique     String          @db.VarChar(512) // account_number | phone | address
+  account_unique_tag String?         @db.VarChar(100) // memo / destination tag (crypto)
+  network            PaymentNetwork? // crypto-only; NULL for BANK/MOBILE_MONEY
 
-  label               String?                   @db.VarChar(100)
-  account_holder_name String?                   @db.VarChar(255)   // required for BANK + MOBILE_MONEY
+  label               String? @db.VarChar(100)
+  account_holder_name String? @db.VarChar(255) // required for BANK + MOBILE_MONEY
   name_match_score    Float?
 
-  is_default          Boolean                   @default(false)
-  status              DisbursementAccountStatus @default(PENDING_VERIFICATION)
-  verified_at         DateTime?                 @db.Timestamptz
+  is_default  Boolean                   @default(false)
+  status      DisbursementAccountStatus @default(PENDING_VERIFICATION)
+  verified_at DateTime?                 @db.Timestamptz
 
-  created_at          DateTime                  @default(now()) @db.Timestamptz
-  updated_at          DateTime                  @updatedAt @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
 
-  loans               Loan[]
+  loans Loan[]
 
   // Partial unique indexes added in migration raw SQL (NULLS NOT DISTINCT + WHERE is_default):
   //   (user_id, kind, provider_code, network, account_unique) — dedupe destinations
@@ -192,7 +192,7 @@ enum PaymentNetwork {
   BTC_ONCHAIN
   TRC20
   ERC20
-  BANK_TRANSFER   // NGN virtual account inflows (PalmPay PayIn)
+  BANK_TRANSFER // NGN virtual account inflows (PalmPay PayIn)
 
   @@map("payment_network")
 }
@@ -207,35 +207,35 @@ enum PaymentRequestStatus {
 }
 
 model PaymentRequest {
-  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id             String               @db.Uuid
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
 
-  request_type        PaymentRequestType
+  request_type PaymentRequestType
 
   // Polymorphic source: source_type='LOAN' → loans.id | 'OFFRAMP' → ramp_orders.id (v2)
-  source_type         String               @db.VarChar(50)
-  source_id           String               @db.Uuid
+  source_type String @db.VarChar(50)
+  source_id   String @db.Uuid
 
-  asset               String               @db.VarChar(20)
-  network             PaymentNetwork
-  expected_amount     Decimal              @db.Decimal(20, 8)
-  currency            String               @db.VarChar(10)
+  asset           String         @db.VarChar(20)
+  network         PaymentNetwork
+  expected_amount Decimal        @db.Decimal(20, 8)
+  currency        String         @db.VarChar(10)
 
-  receiving_address   String               @db.VarChar(512)
-  payment_request     String?
-  provider_reference  String?              @db.VarChar(512)
+  receiving_address  String  @db.VarChar(512)
+  payment_request    String?
+  provider_reference String? @db.VarChar(512)
 
-  status              PaymentRequestStatus @default(PENDING)
-  expires_at          DateTime             @db.Timestamptz
-  paid_at             DateTime?            @db.Timestamptz
+  status     PaymentRequestStatus @default(PENDING)
+  expires_at DateTime             @db.Timestamptz
+  paid_at    DateTime?            @db.Timestamptz
 
-  inflow_id           String?              @unique @db.Uuid
+  inflow_id String? @unique @db.Uuid
 
-  created_at          DateTime             @default(now()) @db.Timestamptz
-  updated_at          DateTime             @updatedAt @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
 
-  user                User                 @relation(fields: [user_id], references: [id])
-  inflow              Inflow?              @relation(fields: [inflow_id], references: [id])
+  user   User    @relation(fields: [user_id], references: [id])
+  inflow Inflow? @relation(fields: [inflow_id], references: [id])
 
   @@index([source_type, source_id])
   @@index([receiving_address])
@@ -249,39 +249,39 @@ model PaymentRequest {
 // ─────────────────────────────────────────
 
 model Inflow {
-  id                     String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                String?        @db.Uuid
+  id      String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String? @db.Uuid
 
-  asset                  String         @db.VarChar(20)
-  amount                 Decimal        @db.Decimal(20, 8)
-  currency               String         @db.VarChar(10)
-  network                PaymentNetwork
+  asset    String         @db.VarChar(20)
+  amount   Decimal        @db.Decimal(20, 8)
+  currency String         @db.VarChar(10)
+  network  PaymentNetwork
 
-  receiving_address      String         @db.VarChar(512)
-  sender_address         String?        @db.VarChar(512)
+  receiving_address String  @db.VarChar(512)
+  sender_address    String? @db.VarChar(512)
 
   // @unique = primary defence against double-processing (duplicate tx hash / payment hash)
-  provider_reference     String         @unique @db.VarChar(512)
+  provider_reference String @unique @db.VarChar(512)
 
   confirmations_required Int?
-  confirmations_received Int            @default(0)
+  confirmations_received Int       @default(0)
   block_number           BigInt?
-  block_timestamp        DateTime?      @db.Timestamptz
+  block_timestamp        DateTime? @db.Timestamptz
 
-  is_matched             Boolean        @default(false)
-  matched_at             DateTime?      @db.Timestamptz
+  is_matched Boolean   @default(false)
+  matched_at DateTime? @db.Timestamptz
 
-  source_type            String?        @db.VarChar(50)
-  source_id              String?        @db.Uuid
+  source_type String? @db.VarChar(50)
+  source_id   String? @db.Uuid
 
-  provider_response      Json?
+  provider_response Json?
 
-  created_at             DateTime       @default(now()) @db.Timestamptz
-  updated_at             DateTime       @updatedAt @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
 
-  user                   User?          @relation(fields: [user_id], references: [id])
-  payment_request        PaymentRequest?
-  loan_repayment         LoanRepayment?
+  user            User?           @relation(fields: [user_id], references: [id])
+  payment_request PaymentRequest?
+  loan_repayment  LoanRepayment?
 
   @@index([receiving_address])
   @@index([provider_reference])
@@ -314,44 +314,60 @@ enum DisbursementRail {
 enum DisbursementStatus {
   PENDING
   PROCESSING
+  ON_HOLD
   SUCCESSFUL
-  FAILED
+  CANCELLED
 
   @@map("disbursement_status")
 }
 
 model Disbursement {
-  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id             String              @db.Uuid
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
 
-  disbursement_type   DisbursementType
-  disbursement_rail   DisbursementRail
+  disbursement_type DisbursementType
+  disbursement_rail DisbursementRail
 
   // Polymorphic source — values reuse DisbursementType (LOAN_PAYOUT → loans.id, OFFRAMP → ramp_orders.id v2)
-  source_type         DisbursementType
-  source_id           String              @db.Uuid
+  source_type DisbursementType
+  source_id   String           @db.Uuid
 
-  amount              Decimal             @db.Decimal(20, 8)
-  currency            String              @db.VarChar(10)
+  amount   Decimal @db.Decimal(20, 8)
+  currency String  @db.VarChar(10)
 
   // Destination snapshot — provider-agnostic, self-contained, never JOIN to bank_accounts later
-  provider_name       String              @db.VarChar(255)
-  account_unique      String              @db.VarChar(512)
-  account_name        String?             @db.VarChar(255)
+  provider_name  String  @db.VarChar(255)
+  account_unique String  @db.VarChar(512)
+  account_name   String? @db.VarChar(255)
 
-  status              DisbursementStatus  @default(PENDING)
-  failure_reason      String?             @db.VarChar(500)
+  status         DisbursementStatus @default(PENDING)
+  failure_reason String?            @db.VarChar(500)
 
-  created_at          DateTime            @default(now()) @db.Timestamptz
-  updated_at          DateTime            @updatedAt @db.Timestamptz
+  // ON_HOLD bookkeeping. on_hold_at is set on the FIRST transition to ON_HOLD
+  // (the alert-trigger point) and cleared on retry/cancel. on_hold_alerted_at
+  // tracks when the immediate alert email was sent — daily digest uses
+  // on_hold_at to scope the still-stuck rows.
+  on_hold_at         DateTime? @db.Timestamptz
+  on_hold_alerted_at DateTime? @db.Timestamptz
 
-  user                User                @relation(fields: [user_id], references: [id])
-  outflows            Outflow[]
-  loan                Loan?
+  // Cancellation is ops-only. cancelled_by_ops_user_id + cancellation_reason
+  // form the audit pair (the ops_audit_logs row carries the request_id).
+  cancelled_at            DateTime? @db.Timestamptz
+  cancelled_by_ops_user_id String?  @db.Uuid
+  cancellation_reason     String?   @db.VarChar(500)
+
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
+
+  user             User     @relation(fields: [user_id], references: [id])
+  outflows         Outflow[]
+  loan             Loan?
+  cancelled_by_ops OpsUser? @relation("DisbursementCancelledByOpsUser", fields: [cancelled_by_ops_user_id], references: [id])
 
   @@index([user_id, created_at(sort: Desc)])
   @@index([source_type, source_id])
   @@index([status, created_at])
+  @@index([status, on_hold_at])
   @@map("disbursements")
 }
 
@@ -365,33 +381,33 @@ enum OutflowStatus {
 }
 
 model Outflow {
-  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  disbursement_id     String        @db.Uuid
-  user_id             String        @db.Uuid
+  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  disbursement_id String @db.Uuid
+  user_id         String @db.Uuid
 
   // Increment per retry. A failed outflow is NEVER updated — new row with attempt_number + 1.
-  attempt_number      Int           @default(1)
+  attempt_number Int @default(1)
 
   // Provider name as DATA (e.g. 'palmpay' | 'flutterwave' | 'blink') — never in column names.
-  provider String        @db.VarChar(100)
+  provider String @db.VarChar(100)
 
   // Idempotency key — format: "{disbursement_id}:outflow:{attempt_number}" — DB-level dedup
-  provider_reference  String        @unique @db.VarChar(512)
+  provider_reference String @unique @db.VarChar(512)
 
-  provider_tx_id     String?       @db.VarChar(512)
-  provider_response   Json?
+  provider_tx_id    String? @db.VarChar(512)
+  provider_response Json?
 
-  status              OutflowStatus @default(PENDING)
-  failure_reason      String?       @db.VarChar(500)
-  failure_code        String?       @db.VarChar(100)
+  status         OutflowStatus @default(PENDING)
+  failure_reason String?       @db.VarChar(500)
+  failure_code   String?       @db.VarChar(100)
 
-  initiated_at        DateTime?     @db.Timestamptz
-  confirmed_at        DateTime?     @db.Timestamptz
+  initiated_at DateTime? @db.Timestamptz
+  confirmed_at DateTime? @db.Timestamptz
 
-  created_at          DateTime      @default(now()) @db.Timestamptz
-  updated_at          DateTime      @updatedAt @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
 
-  disbursement        Disbursement  @relation(fields: [disbursement_id], references: [id])
+  disbursement Disbursement @relation(fields: [disbursement_id], references: [id])
 
   @@index([disbursement_id, attempt_number])
   @@index([provider, status])
@@ -411,23 +427,23 @@ enum AssetPair {
 }
 
 model PriceFeed {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  pair             AssetPair
+  id   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pair AssetPair
 
   // Raw rates directly from the provider — stored for audit and reconciliation
-  rate_buy_origin  Decimal   @db.Decimal(20, 6)
-  rate_sell_origin Decimal   @db.Decimal(20, 6)
+  rate_buy_origin  Decimal @db.Decimal(20, 6)
+  rate_sell_origin Decimal @db.Decimal(20, 6)
 
   // Marked-up rates — used for all loan calculations, liquidation, and API responses
-  rate_buy         Decimal   @db.Decimal(20, 6)
-  rate_sell        Decimal   @db.Decimal(20, 6)
+  rate_buy  Decimal @db.Decimal(20, 6)
+  rate_sell Decimal @db.Decimal(20, 6)
 
   // Markup applied at capture time — self-contained for historical accuracy
-  markup_percent   Decimal   @db.Decimal(6, 4)
+  markup_percent Decimal @db.Decimal(6, 4)
 
-  source           String    @db.VarChar(50)
-  fetched_at       DateTime  @db.Timestamptz
-  created_at       DateTime  @default(now()) @db.Timestamptz
+  source     String   @db.VarChar(50)
+  fetched_at DateTime @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
 
   @@index([pair, fetched_at(sort: Desc)])
   @@map("price_feeds")
@@ -456,57 +472,57 @@ enum RepaymentMethod {
 }
 
 model Loan {
-  id                          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                     String           @db.Uuid
-  user                        User             @relation(fields: [user_id], references: [id])
-  disbursement_account_id     String               @db.Uuid
-  disbursement_account        DisbursementAccount  @relation(fields: [disbursement_account_id], references: [id])
+  id                      String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                 String              @db.Uuid
+  user                    User                @relation(fields: [user_id], references: [id])
+  disbursement_account_id String              @db.Uuid
+  disbursement_account    DisbursementAccount @relation(fields: [disbursement_account_id], references: [id])
 
-  collateral_asset            CollateralAsset  @default(SAT)
-  collateral_amount_sat       BigInt
-  ltv_percent                 Decimal          @db.Decimal(5, 2)
+  collateral_asset      CollateralAsset @default(SAT)
+  collateral_amount_sat BigInt
+  ltv_percent           Decimal         @db.Decimal(5, 2)
 
-  principal_ngn               Decimal          @db.Decimal(20, 2)
-  origination_fee_ngn         Decimal          @db.Decimal(20, 2)
-  duration_days               Int
+  principal_ngn       Decimal @db.Decimal(20, 2)
+  origination_fee_ngn Decimal @db.Decimal(20, 2)
+  duration_days       Int
 
   // Accrual-based fee inputs (v1.1) — see docs/repayment-matching-redesign.md §3
-  daily_interest_rate_bps     Int              @default(30)                 // 30 bps = 0.3% daily on outstanding principal
-  daily_custody_fee_ngn       Decimal          @db.Decimal(20, 2)           // fixed at origination; ceil(collateral_usd / 100) × 100
-  initial_collateral_usd      Decimal          @db.Decimal(20, 2)           // BTC/USD at origination (sourced from Blink)
+  daily_interest_rate_bps Int     @default(30) // 30 bps = 0.3% daily on outstanding principal
+  daily_custody_fee_ngn   Decimal @db.Decimal(20, 2) // fixed at origination; ceil(collateral_usd / 100) × 100
+  initial_collateral_usd  Decimal @db.Decimal(20, 2) // BTC/USD at origination (sourced from Blink)
 
-  sat_ngn_rate_at_creation    Decimal          @db.Decimal(20, 6)
+  sat_ngn_rate_at_creation Decimal @db.Decimal(20, 6)
 
-  status                      LoanStatus       @default(PENDING_COLLATERAL)
+  status LoanStatus @default(PENDING_COLLATERAL)
 
   // Denormalised convenience — set when matched Inflow confirmed. Used by liquidation monitor.
-  collateral_received_at      DateTime?        @db.Timestamptz
+  collateral_received_at DateTime? @db.Timestamptz
 
-  disbursement_id             String?          @unique @db.Uuid
-  disbursement                Disbursement?    @relation(fields: [disbursement_id], references: [id])
+  disbursement_id String?       @unique @db.Uuid
+  disbursement    Disbursement? @relation(fields: [disbursement_id], references: [id])
 
-  repayment_method            RepaymentMethod?
-  repayment_reference         String?          @db.VarChar(512)
-  repaid_at                   DateTime?        @db.Timestamptz
+  repayment_method    RepaymentMethod?
+  repayment_reference String?          @db.VarChar(512)
+  repaid_at           DateTime?        @db.Timestamptz
 
   // Where to send collateral back after repayment / liquidation surplus
-  collateral_release_address  String?          @db.VarChar(512)
-  collateral_released_at      DateTime?        @db.Timestamptz
-  collateral_release_reference String?         @db.VarChar(512)
+  collateral_release_address   String?   @db.VarChar(512)
+  collateral_released_at       DateTime? @db.Timestamptz
+  collateral_release_reference String?   @db.VarChar(512)
 
-  liquidated_at               DateTime?        @db.Timestamptz
-  liquidation_reference       String?          @db.VarChar(512)
-  liquidation_rate_actual     Decimal?         @db.Decimal(20, 6)
-  surplus_released_sat        BigInt?
+  liquidated_at           DateTime? @db.Timestamptz
+  liquidation_reference   String?   @db.VarChar(512)
+  liquidation_rate_actual Decimal?  @db.Decimal(20, 6)
+  surplus_released_sat    BigInt?
 
-  due_at                      DateTime         @db.Timestamptz
+  due_at DateTime @db.Timestamptz
 
-  created_at                  DateTime         @default(now()) @db.Timestamptz
-  updated_at                  DateTime         @updatedAt @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
 
-  status_logs                 LoanStatusLog[]
-  repayments                  LoanRepayment[]
-  collateral_topups           CollateralTopUp[]
+  status_logs       LoanStatusLog[]
+  repayments        LoanRepayment[]
+  collateral_topups CollateralTopUp[]
 
   @@index([user_id, created_at(sort: Desc)])
   @@index([status])
@@ -524,7 +540,7 @@ model UserRepaymentAccount {
   user_id              String   @unique @db.Uuid
   virtual_account_no   String   @unique @db.VarChar(50)
   virtual_account_name String   @db.VarChar(255)
-  provider             String   @db.VarChar(50)          // 'palmpay'
+  provider             String   @db.VarChar(50) // 'palmpay'
   provider_reference   String?  @db.VarChar(255)
   created_at           DateTime @default(now()) @db.Timestamptz
 
@@ -548,7 +564,7 @@ model LoanRepayment {
   applied_to_interest  Decimal  @db.Decimal(20, 2)
   applied_to_custody   Decimal  @db.Decimal(20, 2)
   overpay_ngn          Decimal  @default(0) @db.Decimal(20, 2)
-  match_method         String   @db.VarChar(20)           // AUTO_AMOUNT | CUSTOMER_CLAIM | OPS_MANUAL
+  match_method         String   @db.VarChar(20) // AUTO_AMOUNT | CUSTOMER_CLAIM | OPS_MANUAL
   created_at           DateTime @default(now()) @db.Timestamptz
 
   loan   Loan   @relation(fields: [loan_id], references: [id])
@@ -575,22 +591,22 @@ enum TopUpStatus {
 }
 
 model CollateralTopUp {
-  id                       String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  loan_id                  String      @db.Uuid
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loan_id String @db.Uuid
 
-  collateral_provider      String      @db.VarChar(50)     // 'blink'
-  collateral_provider_ref  String      @unique @db.VarChar(255)
-  payment_request          String      @db.VarChar(2000)    // BOLT11
-  receiving_address        String      @db.VarChar(512)
-  expected_amount_sat      BigInt
-  expires_at               DateTime    @db.Timestamptz
+  collateral_provider     String   @db.VarChar(50) // 'blink'
+  collateral_provider_ref String   @unique @db.VarChar(255)
+  payment_request         String   @db.VarChar(2000) // BOLT11
+  receiving_address       String   @db.VarChar(512)
+  expected_amount_sat     BigInt
+  expires_at              DateTime @db.Timestamptz
 
-  received_amount_sat      BigInt?
-  received_at              DateTime?   @db.Timestamptz
+  received_amount_sat BigInt?
+  received_at         DateTime? @db.Timestamptz
 
-  status                   TopUpStatus @default(PENDING_COLLATERAL)
-  created_at               DateTime    @default(now()) @db.Timestamptz
-  updated_at               DateTime    @updatedAt @db.Timestamptz
+  status     TopUpStatus @default(PENDING_COLLATERAL)
+  created_at DateTime    @default(now()) @db.Timestamptz
+  updated_at DateTime    @updatedAt @db.Timestamptz
 
   loan Loan @relation(fields: [loan_id], references: [id])
 
@@ -612,22 +628,22 @@ enum StatusTrigger {
 }
 
 model LoanStatusLog {
-  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  loan_id          String        @db.Uuid
-  user_id          String        @db.Uuid
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loan_id String @db.Uuid
+  user_id String @db.Uuid
 
-  from_status      LoanStatus?
-  to_status        LoanStatus
+  from_status LoanStatus?
+  to_status   LoanStatus
 
-  triggered_by     StatusTrigger
-  triggered_by_id  String?       @db.VarChar(255)
-  reason_code      String        @db.VarChar(100)
-  reason_detail    String?       @db.VarChar(500)
-  metadata         Json?
+  triggered_by    StatusTrigger
+  triggered_by_id String?       @db.VarChar(255)
+  reason_code     String        @db.VarChar(100)
+  reason_detail   String?       @db.VarChar(500)
+  metadata        Json?
 
-  created_at       DateTime      @default(now()) @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
 
-  loan             Loan          @relation(fields: [loan_id], references: [id])
+  loan Loan @relation(fields: [loan_id], references: [id])
 
   @@index([loan_id, created_at])
   @@index([user_id, created_at])
@@ -639,15 +655,15 @@ model LoanStatusLog {
 // ─────────────────────────────────────────
 
 model AuditLog {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id     String?   @db.Uuid
-  user        User?     @relation(fields: [user_id], references: [id])
-  action      String    @db.VarChar(255)
-  resource    String?   @db.VarChar(255)
-  ip_address  String?   @db.VarChar(45)
-  user_agent  String?   @db.VarChar(512)
-  metadata    Json?
-  created_at  DateTime  @default(now()) @db.Timestamptz
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?  @db.Uuid
+  user       User?    @relation(fields: [user_id], references: [id])
+  action     String   @db.VarChar(255)
+  resource   String?  @db.VarChar(255)
+  ip_address String?  @db.VarChar(45)
+  user_agent String?  @db.VarChar(512)
+  metadata   Json?
+  created_at DateTime @default(now()) @db.Timestamptz
 
   @@index([user_id, created_at])
   @@index([action, created_at])
@@ -659,18 +675,74 @@ model AuditLog {
 // ─────────────────────────────────────────
 
 model LargeQuoteEnquiry {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name              String    @db.VarChar(255)
-  phone             String    @db.VarChar(20)
-  email             String    @db.VarChar(255)
-  loan_amount       Decimal   @db.Decimal(20, 2)
-  loan_currency     String    @default("NGN") @db.VarChar(10)
-  collateral_type   String    @db.VarChar(50)
-  preferred_contact String    @db.VarChar(20)
-  notes             String?   @db.VarChar(1000)
-  status            String    @default("PENDING") @db.VarChar(20)
-  created_at        DateTime  @default(now()) @db.Timestamptz
-  updated_at        DateTime  @updatedAt @db.Timestamptz
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String   @db.VarChar(255)
+  phone             String   @db.VarChar(20)
+  email             String   @db.VarChar(255)
+  loan_amount       Decimal  @db.Decimal(20, 2)
+  loan_currency     String   @default("NGN") @db.VarChar(10)
+  collateral_type   String   @db.VarChar(50)
+  preferred_contact String   @db.VarChar(20)
+  notes             String?  @db.VarChar(1000)
+  status            String   @default("PENDING") @db.VarChar(20)
+  created_at        DateTime @default(now()) @db.Timestamptz
+  updated_at        DateTime @updatedAt @db.Timestamptz
 
   @@map("large_quote_enquiries")
+}
+
+// ─────────────────────────────────────────
+// OPS USERS — internal operator identity (separate domain from customer User)
+// See docs/ops-module.md for full design rationale.
+// ─────────────────────────────────────────
+
+model OpsUser {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email         String    @unique @db.VarChar(255)
+  password_hash String    @db.VarChar(512)
+  totp_secret   String?   @db.VarChar(512)
+  totp_enabled  Boolean   @default(false)
+  full_name     String    @db.VarChar(200)
+  is_active     Boolean   @default(true)
+  last_login_at DateTime? @db.Timestamptz
+  created_at    DateTime  @default(now()) @db.Timestamptz
+  updated_at    DateTime  @updatedAt @db.Timestamptz
+
+  sessions               OpsSession[]
+  audit_logs             OpsAuditLog[]
+  cancelled_disbursements Disbursement[] @relation("DisbursementCancelledByOpsUser")
+
+  @@map("ops_users")
+}
+
+model OpsSession {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ops_user_id String   @db.Uuid
+  ops_user    OpsUser  @relation(fields: [ops_user_id], references: [id], onDelete: Cascade)
+  token_hash  String   @unique @db.VarChar(512)
+  expires_at  DateTime @db.Timestamptz
+  ip_address  String?  @db.VarChar(45)
+  user_agent  String?  @db.VarChar(512)
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  @@map("ops_sessions")
+}
+
+// Append-only — written in same Prisma transaction as every state-changing
+// ops action (mirror of LoanStatusLog discipline for financial state).
+model OpsAuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ops_user_id String   @db.Uuid
+  ops_user    OpsUser  @relation(fields: [ops_user_id], references: [id], onDelete: Restrict)
+  action      String   @db.VarChar(100)
+  target_type String   @db.VarChar(50)
+  target_id   String   @db.VarChar(100)
+  details     Json?
+  ip_address  String?  @db.VarChar(45)
+  request_id  String?  @db.VarChar(100)
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  @@index([ops_user_id, created_at])
+  @@index([target_type, target_id, created_at])
+  @@map("ops_audit_logs")
 }

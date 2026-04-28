@@ -12,7 +12,7 @@ export class LoansFeesDto {
 }
 
 export class LoansLimitsDto {
-  @ApiProperty({ example: '50000.00' })
+  @ApiProperty({ example: '10000.00' })
   min_loan_ngn!: string;
 
   @ApiProperty({ example: '10000000.00', description: 'Max self-serve principal — above this, customer is routed to /get-quote' })

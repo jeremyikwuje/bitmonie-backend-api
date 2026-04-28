@@ -156,6 +156,12 @@ Verify signature on the **raw request body** before any parsing. Mismatch → 40
 - `Disbursement.status` updated explicitly when an `Outflow` resolves.
 - `processing_provider` is a data value, never a column name.
 
+**Disbursement does not auto-fail.** A disbursement is the obligation; only outflow *attempts* fail. When an outflow attempt fails (sync throw or async webhook), the parent `Disbursement` is moved to `ON_HOLD` — never `FAILED`. Terminal closure is ops-only via `CANCELLED` (with `cancelled_by_ops_user_id` + `cancellation_reason` captured atomically alongside an `ops_audit_logs` row). `DisbursementStatus` enum is `PENDING | PROCESSING | ON_HOLD | SUCCESSFUL | CANCELLED`.
+
+**No automatic retry.** When a disbursement lands in `ON_HOLD`, ops must explicitly retry (`POST /v1/ops/disbursements/:id/retry` → creates a new `Outflow` with `attempt_number + 1`) or cancel (`POST /v1/ops/disbursements/:id/cancel` with a reason). Retry gates on `status === ON_HOLD`. `OutflowsService.retryDispatch` is the only entry point that re-attempts after a failure — never call it from a worker, controller, or webhook handler.
+
+**ON_HOLD alerting (first-transition + daily digest).** The first transition into `ON_HOLD` for a given disbursement pages ops immediately via `OpsAlertsService.alertDisbursementOnHold` and stamps `on_hold_alerted_at`. Subsequent failures on the same disbursement (e.g. retry that also fails) suppress the immediate page — `markOnHold` returns `is_first_transition=false` for already-on-hold rows. The `disbursement-on-hold-digest` worker emails a daily digest of every still-on-hold disbursement so nothing rots silently. `markProcessing` clears `on_hold_at` + `on_hold_alerted_at` so a successful retry starts the cycle clean.
+
 ### 5.7 PaymentRequest + Inflow
 
 - `Loan` never stores `payment_request`, `provider_reference`, or `expires_at` directly. Query `payment_requests` by `source_type + source_id`.
@@ -454,7 +460,7 @@ ORIGINATION_FEE_PER_100K_NGN = 500             // ceil(principal / 100k) × 500 
 DAILY_INTEREST_RATE_BPS      = 30              // 0.3% daily on outstanding principal (simple, non-compounding)
 CUSTODY_FEE_PER_100_USD_NGN  = 100             // ceil(initial_collateral_usd / 100) × 100 — fixed per day at origination
 
-MIN_LOAN_NGN                 = 50_000
+MIN_LOAN_NGN                 = 10_000
 MAX_SELFSERVE_LOAN_NGN       = 10_000_000
 MIN_PARTIAL_REPAYMENT_NGN    = 10_000          // floor; below → unmatched, ops-paged
 MIN_LOAN_DURATION_DAYS       = 1
@@ -577,6 +583,8 @@ Each phase must have passing tests before the next begins.
 - Name any DB column, Prisma field, or TypeScript variable after a provider (`blink_*`, `palmpay_*`, `quidax_*`)
 - Put provider execution fields (`provider_reference`, `provider_txn_id`, `provider_response`) on `Loan` — they belong on `Outflow`
 - Retry a failed outflow by updating its row — create a new `Outflow` with `attempt_number + 1`
+- Auto-retry a disbursement on outflow failure — only ops retries (`POST /v1/ops/disbursements/:id/retry`); the parent disbursement sits in `ON_HOLD` until a human decides
+- Set `Disbursement.status = FAILED` — the enum no longer has it. Outflow attempts fail; the parent goes to `ON_HOLD` (auto) or `CANCELLED` (ops only, with reason)
 - Use `BLINK_WEBHOOK` / `PALMPAY_WEBHOOK` enum values — use `COLLATERAL_WEBHOOK` / `DISBURSEMENT_WEBHOOK`
 - Verify webhook signatures on parsed JSON — always raw body
 - Return stack traces or internal error detail to clients

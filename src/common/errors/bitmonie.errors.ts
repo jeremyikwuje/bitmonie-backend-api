@@ -266,6 +266,45 @@ export class DisbursementTransferFailedException extends BitmonieException {
   }
 }
 
+// ── DISBURSEMENT (ops) ──────────────────────────────────────────
+//
+// Disbursement is the obligation; it never auto-fails. Outflows fail per
+// attempt; the parent Disbursement lands in ON_HOLD and waits for an ops
+// decision. Retry creates a NEW Outflow (attempt_number + 1); cancel is
+// terminal. See CLAUDE.md §5.6.
+
+export class DisbursementNotFoundException extends BitmonieException {
+  constructor() {
+    super(
+      'DISBURSEMENT_NOT_FOUND',
+      'Disbursement not found.',
+      HttpStatus.NOT_FOUND,
+    );
+  }
+}
+
+export class DisbursementNotOnHoldException extends BitmonieException {
+  constructor(context: { status: string }) {
+    super(
+      'DISBURSEMENT_NOT_ON_HOLD',
+      'Disbursement is not on hold; only on-hold disbursements can be retried.',
+      HttpStatus.CONFLICT,
+      [{ field: 'status', issue: `Disbursement is ${context.status}` }],
+    );
+  }
+}
+
+export class DisbursementTerminalException extends BitmonieException {
+  constructor(context: { status: string }) {
+    super(
+      'DISBURSEMENT_TERMINAL',
+      'Disbursement is in a terminal state and cannot be modified.',
+      HttpStatus.CONFLICT,
+      [{ field: 'status', issue: `Disbursement is ${context.status}` }],
+    );
+  }
+}
+
 // ── ACCOUNT ─────────────────────────────────────────────────────
 
 export class AccountSuspendedException extends BitmonieException {
@@ -336,6 +375,85 @@ export class Auth2faRequiredException extends BitmonieException {
       'AUTH_2FA_REQUIRED',
       'Login requires a TOTP code.',
       HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+// ── OPS ─────────────────────────────────────────────────────────
+
+export class OpsInvalidCredentialsException extends BitmonieException {
+  constructor() {
+    super(
+      'OPS_INVALID_CREDENTIALS',
+      'Invalid email or password.',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+// Step 1 of login succeeded; client must call /v1/ops/auth/verify-2fa with
+// the challenge_id. Carries the challenge_id in `details` so the controller
+// can surface it without a special-cased success body.
+export class OpsTwoFactorRequiredException extends BitmonieException {
+  constructor(context: { challenge_id: string }) {
+    super(
+      'OPS_2FA_REQUIRED',
+      'Login requires a TOTP code. Submit the challenge_id with your TOTP code to /v1/ops/auth/verify-2fa.',
+      HttpStatus.UNAUTHORIZED,
+      [{ field: 'challenge_id', issue: context.challenge_id }],
+    );
+  }
+}
+
+// First-ever login after CLI provisioning. Carries the enrolment_token so
+// the client can call /v1/ops/auth/enrol-2fa to set up TOTP server-side.
+export class OpsTwoFactorEnrolmentRequiredException extends BitmonieException {
+  constructor(context: { enrolment_token: string }) {
+    super(
+      'OPS_2FA_ENROLMENT_REQUIRED',
+      'TOTP enrolment is required before a session can be issued. Submit the enrolment_token to /v1/ops/auth/enrol-2fa.',
+      HttpStatus.FORBIDDEN,
+      [{ field: 'enrolment_token', issue: context.enrolment_token }],
+    );
+  }
+}
+
+export class OpsTwoFactorInvalidException extends BitmonieException {
+  constructor() {
+    super(
+      'OPS_2FA_INVALID',
+      'TOTP code is invalid or the challenge has expired.',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class OpsSessionInvalidException extends BitmonieException {
+  constructor() {
+    super(
+      'OPS_SESSION_INVALID',
+      'Ops session cookie is missing, expired, or revoked.',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class OpsUserDisabledException extends BitmonieException {
+  constructor() {
+    super(
+      'OPS_USER_DISABLED',
+      'This ops account has been disabled.',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
+export class OpsTargetUserNotFoundException extends BitmonieException {
+  constructor() {
+    super(
+      'OPS_TARGET_USER_NOT_FOUND',
+      'Target user not found.',
+      HttpStatus.NOT_FOUND,
     );
   }
 }

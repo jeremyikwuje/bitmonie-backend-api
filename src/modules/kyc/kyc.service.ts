@@ -1,6 +1,6 @@
 import { Injectable, Inject, HttpStatus, Logger } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
-import { KycIdType, KycStatus } from '@prisma/client';
+import { KycIdType, KycStatus, type Prisma } from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { CryptoService } from '@/common/crypto/crypto.service';
 import { NameMatchService } from '@/common/name-match/name-match.service';
@@ -163,7 +163,54 @@ export class KycService {
     return { kyc_tier: user.kyc_tier, verifications };
   }
 
-  async revokeToTier(user_id: string, dto: RevokeKycDto): Promise<{ message: string }> {
+  // Returns each tier verification plus the provider's raw payload —
+  // useful for the customer (and ops, when impersonating) to inspect what
+  // the upstream KYC vendor (EaseID / Dojah / QoreID) actually returned.
+  // Encrypted/hashed columns are deliberately omitted; raw_response already
+  // strips photo blobs at the provider layer.
+  async listVerifications(user_id: string): Promise<Array<{
+    tier: number;
+    id_type: KycIdType | null;
+    status: KycStatus;
+    legal_name: string | null;
+    date_of_birth: Date | null;
+    provider_reference: string | null;
+    provider_raw_response: Prisma.JsonValue | null;
+    failure_reason: string | null;
+    verified_at: Date | null;
+    created_at: Date;
+    updated_at: Date;
+  }>> {
+    return this.prisma.kycVerification.findMany({
+      where: { user_id },
+      select: {
+        tier: true,
+        id_type: true,
+        status: true,
+        legal_name: true,
+        date_of_birth: true,
+        provider_reference: true,
+        provider_raw_response: true,
+        failure_reason: true,
+        verified_at: true,
+        created_at: true,
+        updated_at: true,
+      },
+      orderBy: { tier: 'asc' },
+    });
+  }
+
+  // Optional `on_in_tx` runs inside the same Prisma transaction that deletes
+  // the verifications and bumps the user's kyc_tier — load-bearing for ops
+  // callers that must write an OpsAuditLog row atomically with the action
+  // (mirror of loan_status_logs discipline, CLAUDE.md §5.4). If the callback
+  // throws, the whole revoke rolls back and no audit row exists. Customer
+  // callers pass nothing and behave exactly as before.
+  async revokeToTier(
+    user_id: string,
+    dto: RevokeKycDto,
+    on_in_tx?: (tx: Prisma.TransactionClient) => Promise<void>,
+  ): Promise<{ message: string }> {
     await this.prisma.$transaction(async (tx) => {
       await tx.kycVerification.deleteMany({
         where: { user_id, tier: { gt: dto.target_tier } },
@@ -172,6 +219,7 @@ export class KycService {
         where: { id: user_id },
         data: { kyc_tier: dto.target_tier },
       });
+      if (on_in_tx) await on_in_tx(tx);
     });
 
     const label = dto.target_tier === 0 ? 'reset to unverified' : `revoked to tier ${dto.target_tier}`;

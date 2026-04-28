@@ -60,8 +60,8 @@ describe('CalculatorService — origination fee', () => {
     expect(result.origination_fee_ngn).toEqual(new Decimal('1000'));
   });
 
-  it('minimum loan (N50,000) pays N500 (1 × 500, floor of ceil rule)', () => {
-    const result = calculate({ principal_ngn: new Decimal('50000') });
+  it('minimum loan (N10,000) pays N500 (1 × 500, floor of ceil rule)', () => {
+    const result = calculate({ principal_ngn: new Decimal('10000') });
     expect(result.origination_fee_ngn).toEqual(new Decimal('500'));
   });
 
@@ -198,8 +198,8 @@ describe('CalculatorService — initial threshold rates', () => {
 // ── Input validation ──────────────────────────────────────────────────────────
 
 describe('CalculatorService — input validation', () => {
-  it('throws LOAN_AMOUNT_TOO_LOW when principal < N50,000', () => {
-    expect(() => calculate({ principal_ngn: new Decimal('49999') })).toThrow(
+  it('throws LOAN_AMOUNT_TOO_LOW when principal < N10,000', () => {
+    expect(() => calculate({ principal_ngn: new Decimal('9999') })).toThrow(
       expect.objectContaining({ code: 'LOAN_AMOUNT_TOO_LOW' }),
     );
   });
@@ -210,8 +210,8 @@ describe('CalculatorService — input validation', () => {
     );
   });
 
-  it('accepts principal exactly at MIN (N50,000)', () => {
-    expect(() => calculate({ principal_ngn: new Decimal('50000') })).not.toThrow();
+  it('accepts principal exactly at MIN (N10,000)', () => {
+    expect(() => calculate({ principal_ngn: new Decimal('10000') })).not.toThrow();
   });
 
   it('accepts principal exactly at MAX (N10,000,000)', () => {

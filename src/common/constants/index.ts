@@ -15,7 +15,7 @@ export const ORIGINATION_FEE_PER_100K_NGN = new Decimal('500');
 export const DAILY_INTEREST_RATE_BPS      = 30;                    // 30 bps = 0.3%
 export const CUSTODY_FEE_PER_100_USD_NGN  = new Decimal('100');
 
-export const MIN_LOAN_NGN              = new Decimal('50000');
+export const MIN_LOAN_NGN              = new Decimal('10000');
 export const MAX_SELFSERVE_LOAN_NGN    = new Decimal('10000000');
 export const MIN_PARTIAL_REPAYMENT_NGN = new Decimal('10000');
 
@@ -33,6 +33,9 @@ export const SATS_PER_BTC              = new Decimal('100000000');
 export const ALERT_COOLDOWN_SEC        = 86_400;
 export const IDEMPOTENCY_TTL_SEC       = 86_400;
 export const SESSION_TTL_SEC           = 86_400;
+export const OPS_SESSION_TTL_SEC       = 28_800;       // 8h fixed, no sliding (docs/ops-module.md §9)
+export const OPS_CHALLENGE_TTL_SEC     = 300;          // 5min — login → verify-2fa window
+export const OPS_ENROLMENT_TTL_SEC     = 900;          // 15min — login → enrol-2fa window
 
 export const REDIS_KEYS = {
   PRICE: (pair: string) => `price:${pair}`,
@@ -47,6 +50,8 @@ export const REDIS_KEYS = {
   WORKER_HEARTBEAT: (worker: string) => `worker:${worker}:last_run`,
   RATE_LIMIT_AUTH: (ip: string) => `rate_limit:auth:${ip}`,
   RATE_LIMIT_API: (user_id: string) => `rate_limit:api:${user_id}`,
+  OPS_CHALLENGE: (challenge_id: string) => `ops_auth:challenge:${challenge_id}`,
+  OPS_ENROLMENT: (enrolment_token: string) => `ops_auth:enrolment:${enrolment_token}`,
 } as const;
 
 export const LoanReasonCodes = {

@@ -26,6 +26,32 @@ export interface UnmatchedInflowAlertParams {
   detail?:          string;          // free-form (error message, etc.)
 }
 
+export interface DisbursementOnHoldAlertParams {
+  disbursement_id: string;
+  user_id:         string;
+  source_type:     string;
+  source_id:       string;
+  amount:          string;
+  currency:        string;
+  provider_name:   string;
+  account_unique:  string;
+  account_name:    string | null;
+  attempt_number:  number;
+  failure_reason:  string;
+  failure_code?:   string;
+}
+
+export interface DisbursementOnHoldDigestRow {
+  disbursement_id: string;
+  user_id:         string;
+  source_id:       string;
+  amount:          string;
+  currency:        string;
+  on_hold_at:      Date;
+  attempt_count:   number;
+  failure_reason:  string | null;
+}
+
 @Injectable()
 export class OpsAlertsService {
   private readonly logger = new Logger(OpsAlertsService.name);
@@ -61,6 +87,61 @@ export class OpsAlertsService {
           error: err instanceof Error ? err.message : String(err),
         },
         'Failed to send unmatched-inflow ops alert email',
+      );
+    }
+  }
+
+  // First-transition alert. Fired once when a disbursement first lands in
+  // ON_HOLD after an outflow attempt failed. Subsequent failures on the same
+  // disbursement are suppressed by OutflowsService (it consults
+  // markOnHold().is_first_transition before calling this) and surface via
+  // the daily digest instead.
+  async alertDisbursementOnHold(params: DisbursementOnHoldAlertParams): Promise<void> {
+    const recipient = this.config.get<AppConfig>('app')?.internal_alert_email;
+    if (!recipient) {
+      this.logger.warn(
+        { disbursement_id: params.disbursement_id },
+        'Disbursement on hold but INTERNAL_ALERT_EMAIL is unset — alert skipped',
+      );
+      return;
+    }
+
+    const subject   = `[Bitmonie ops] Disbursement on hold — attempt #${params.attempt_number} failed`;
+    const text_body = this._buildOnHoldTextBody(params);
+    const html_body = this._buildOnHoldHtmlBody(params);
+
+    try {
+      await this.email.sendTransactional({ to: recipient, subject, text_body, html_body });
+    } catch (err) {
+      this.logger.error(
+        {
+          disbursement_id: params.disbursement_id,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        'Failed to send disbursement-on-hold ops alert email',
+      );
+    }
+  }
+
+  // Daily digest of every disbursement still ON_HOLD. Sent by the digest
+  // worker — empty digests are skipped by the caller (no signal = no email).
+  async alertDisbursementOnHoldDigest(rows: DisbursementOnHoldDigestRow[]): Promise<void> {
+    const recipient = this.config.get<AppConfig>('app')?.internal_alert_email;
+    if (!recipient) {
+      this.logger.warn({ row_count: rows.length }, 'Disbursement on-hold digest but INTERNAL_ALERT_EMAIL is unset — digest skipped');
+      return;
+    }
+
+    const subject   = `[Bitmonie ops] Disbursement on-hold digest — ${rows.length} stuck`;
+    const text_body = this._buildDigestTextBody(rows);
+    const html_body = this._buildDigestHtmlBody(rows);
+
+    try {
+      await this.email.sendTransactional({ to: recipient, subject, text_body, html_body });
+    } catch (err) {
+      this.logger.error(
+        { row_count: rows.length, error: err instanceof Error ? err.message : String(err) },
+        'Failed to send disbursement on-hold digest email',
       );
     }
   }
@@ -103,6 +184,86 @@ export class OpsAlertsService {
       <p style="color:#666;font-size:13px">
         The Inflow row has been persisted with <code>is_matched=false</code>. Triage in the database.
       </p>
+    `.trim();
+  }
+
+  private _buildOnHoldTextBody(p: DisbursementOnHoldAlertParams): string {
+    const lines = [
+      `An outflow attempt failed and the disbursement is now on hold pending ops review.`,
+      '',
+      `Disbursement ID:  ${p.disbursement_id}`,
+      `User ID:          ${p.user_id}`,
+      `Source:           ${p.source_type} ${p.source_id}`,
+      `Amount:           ${p.amount} ${p.currency}`,
+      `Destination:      ${p.provider_name} / ${p.account_unique}${p.account_name ? ` (${p.account_name})` : ''}`,
+      `Attempt #:        ${p.attempt_number}`,
+      `Failure reason:   ${p.failure_reason}`,
+    ];
+    if (p.failure_code) lines.push(`Failure code:     ${p.failure_code}`);
+    lines.push(
+      '',
+      'Decide via /v1/ops/disbursements/:id — POST .../retry to dispatch a new outflow attempt, or POST .../cancel with a reason to terminally close.',
+    );
+    return lines.join('\n');
+  }
+
+  private _buildOnHoldHtmlBody(p: DisbursementOnHoldAlertParams): string {
+    const row = (label: string, value: string | null | undefined) =>
+      `<tr><td style="padding:4px 12px 4px 0;color:#666"><b>${label}</b></td><td style="padding:4px 0">${escapeHtml(value ?? '')}</td></tr>`;
+
+    return `
+      <p>An outflow attempt failed and the disbursement is now <b>on hold</b> pending ops review.</p>
+      <table style="font-family:system-ui,sans-serif;font-size:14px">
+        ${row('Disbursement ID', p.disbursement_id)}
+        ${row('User ID',         p.user_id)}
+        ${row('Source',          `${p.source_type} ${p.source_id}`)}
+        ${row('Amount',          `${p.amount} ${p.currency}`)}
+        ${row('Destination',     `${p.provider_name} / ${p.account_unique}${p.account_name ? ` (${p.account_name})` : ''}`)}
+        ${row('Attempt #',       String(p.attempt_number))}
+        ${row('Failure reason',  p.failure_reason)}
+        ${p.failure_code ? row('Failure code', p.failure_code) : ''}
+      </table>
+      <p style="color:#666;font-size:13px">
+        Decide via <code>/v1/ops/disbursements/:id</code> — <code>POST .../retry</code> to dispatch a new outflow attempt, or <code>POST .../cancel</code> with a reason to terminally close.
+      </p>
+    `.trim();
+  }
+
+  private _buildDigestTextBody(rows: DisbursementOnHoldDigestRow[]): string {
+    const lines = [
+      `${rows.length} disbursement${rows.length === 1 ? '' : 's'} still on hold. Each is awaiting a retry or cancel decision.`,
+      '',
+    ];
+    for (const r of rows) {
+      lines.push(
+        `• ${r.disbursement_id} — ${r.amount} ${r.currency} — user ${r.user_id} — source ${r.source_id}`,
+        `    on_hold_at=${r.on_hold_at.toISOString()} attempts=${r.attempt_count} reason=${r.failure_reason ?? '(unknown)'}`,
+      );
+    }
+    return lines.join('\n');
+  }
+
+  private _buildDigestHtmlBody(rows: DisbursementOnHoldDigestRow[]): string {
+    const cell = (v: string) => `<td style="padding:4px 12px 4px 0">${escapeHtml(v)}</td>`;
+    const row  = (r: DisbursementOnHoldDigestRow) => `
+      <tr>
+        ${cell(r.disbursement_id)}
+        ${cell(`${r.amount} ${r.currency}`)}
+        ${cell(r.user_id)}
+        ${cell(r.source_id)}
+        ${cell(r.on_hold_at.toISOString())}
+        ${cell(String(r.attempt_count))}
+        ${cell(r.failure_reason ?? '(unknown)')}
+      </tr>
+    `;
+    return `
+      <p><b>${rows.length}</b> disbursement${rows.length === 1 ? '' : 's'} still on hold. Each is awaiting a retry or cancel decision.</p>
+      <table style="font-family:system-ui,sans-serif;font-size:13px;border-collapse:collapse">
+        <thead><tr style="text-align:left;color:#666">
+          <th>Disbursement</th><th>Amount</th><th>User</th><th>Source</th><th>On hold since</th><th>Attempts</th><th>Reason</th>
+        </tr></thead>
+        <tbody>${rows.map(row).join('')}</tbody>
+      </table>
     `.trim();
   }
 }

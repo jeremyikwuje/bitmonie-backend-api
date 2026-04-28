@@ -50,6 +50,7 @@ async function bootstrap(): Promise<void> {
     .setDescription('Crypto-backed instant Naira credit — v1.1 (accrual-based pricing, partial repayments, add-collateral, permanent per-user PalmPay VA)')
     .setVersion('1.1')
     .addCookieAuth('session')
+    .addCookieAuth('ops_session')
     .build();
   SwaggerModule.setup('v1/docs', app, SwaggerModule.createDocument(app, swagger_config));
 

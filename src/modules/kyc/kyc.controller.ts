@@ -3,17 +3,15 @@ import {
   Post,
   Get,
   Body,
-  Param,
   HttpCode,
   HttpStatus,
   UseGuards,
   NotImplementedException,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiCookieAuth, ApiParam } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiCookieAuth } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { KycService } from './kyc.service';
 import { SubmitKycDto } from './dto/submit-kyc.dto';
-import { RevokeKycDto } from './dto/revoke-kyc.dto';
 import { SessionGuard } from '@/common/guards/session.guard';
 import { CurrentUser, type AuthenticatedUser } from '@/common/decorators/current-user.decorator';
 import { KycStatus } from '@prisma/client';
@@ -56,30 +54,6 @@ export class KycController {
     throw new NotImplementedException('Tier 3 address verification is not available yet.');
   }
 
-  @Post(':user_id/reset')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Reset a user\'s KYC to tier 0 — deletes all verifications' })
-  @ApiParam({ name: 'user_id', description: 'Target user UUID' })
-  @ApiResponse({ status: 200, description: 'KYC reset to unverified' })
-  async resetKyc(
-    @Param('user_id') user_id: string,
-  ): Promise<{ message: string }> {
-    return this.kyc_service.revokeToTier(user_id, { target_tier: 0 });
-  }
-
-  @Post(':user_id/revoke')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Revoke a user\'s KYC to a specific tier — deletes all tiers above target' })
-  @ApiParam({ name: 'user_id', description: 'Target user UUID' })
-  @ApiResponse({ status: 200, description: 'KYC revoked to target tier' })
-  @ApiResponse({ status: 400, description: 'Invalid target tier' })
-  async revokeKyc(
-    @Param('user_id') user_id: string,
-    @Body() dto: RevokeKycDto,
-  ): Promise<{ message: string }> {
-    return this.kyc_service.revokeToTier(user_id, dto);
-  }
-
   @Get('status')
   @ApiOperation({ summary: 'Get current KYC tier and verification status' })
   @ApiResponse({ status: 200, description: 'KYC status' })
@@ -90,5 +64,18 @@ export class KycController {
     verifications: Array<{ tier: number; status: KycStatus; verified_at: Date | null }>;
   }> {
     return this.kyc_service.getStatus(user.id);
+  }
+
+  @Get('verifications')
+  @ApiOperation({
+    summary: 'List the current user\'s KYC verifications with the raw provider response',
+    description:
+      'Returns each tier verification including provider_raw_response — the exact payload returned by the upstream KYC vendor (EaseID / Dojah / QoreID). Useful for debugging mismatches or auditing what the provider sent back. Encrypted/hashed columns are not exposed.',
+  })
+  @ApiResponse({ status: 200, description: 'Verifications + raw provider responses' })
+  async listVerifications(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<ReturnType<KycService['listVerifications']>> {
+    return this.kyc_service.listVerifications(user.id);
   }
 }

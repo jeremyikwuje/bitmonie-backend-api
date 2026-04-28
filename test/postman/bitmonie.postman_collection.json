@@ -293,35 +293,6 @@
             "header": [],
             "url": { "raw": "{{base_url}}/v1/kyc/status", "host": ["{{base_url}}"], "path": ["v1", "kyc", "status"] }
           }
-        },
-        {
-          "name": "POST /v1/kyc/:user_id/reset",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/v1/kyc/:user_id/reset",
-              "host": ["{{base_url}}"],
-              "path": ["v1", "kyc", ":user_id", "reset"],
-              "variable": [{ "key": "user_id", "value": "" }]
-            },
-            "description": "Admin: reset a user's KYC to tier 0."
-          }
-        },
-        {
-          "name": "POST /v1/kyc/:user_id/revoke",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"target_tier\": 0\n}" },
-            "url": {
-              "raw": "{{base_url}}/v1/kyc/:user_id/revoke",
-              "host": ["{{base_url}}"],
-              "path": ["v1", "kyc", ":user_id", "revoke"],
-              "variable": [{ "key": "user_id", "value": "" }]
-            },
-            "description": "Admin: revoke KYC to a specific tier (0-3)."
-          }
         }
       ]
     },
@@ -660,6 +631,116 @@
             "url": { "raw": "{{base_url}}/v1/webhooks/palmpay", "host": ["{{base_url}}"], "path": ["v1", "webhooks", "palmpay"] },
             "description": "**Simulates a PalmPay payout status update.**\n\n`orderId` matches the regex `/:outflow:\\d+$/` so the controller routes it to the payout branch (not collection).\n\n- `orderStatus`: 1 = processing, 2 = success, 3 = failed\n- `sign` must be a valid RSA-SHA1 signature over MD5-of-sorted-params using the merchant private key. Forging requires the `PALMPAY_PRIVATE_KEY` from `.env`.\n\nNote: even on webhook receipt, the handler **re-queries PalmPay** to independently confirm the status before mutating outflow state — so a forged webhook alone cannot flip a payout to successful against a real PalmPay endpoint."
           }
+        }
+      ]
+    },
+    {
+      "name": "7. Ops",
+      "description": "Internal ops API. All routes require an `ops_session` cookie issued via `POST /v1/ops/auth/verify-2fa` (or `enrol-2fa` on first login). Customer `session` cookies are NOT accepted — OpsGuard reads `ops_session` exclusively.",
+      "item": [
+        {
+          "name": "Ops Auth",
+          "item": [
+            {
+              "name": "POST /v1/ops/auth/login",
+              "request": {
+                "auth": { "type": "noauth" },
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"ops@bitmonie.com\",\n  \"password\": \"OpsPass123!\"\n}"
+                },
+                "url": { "raw": "{{base_url}}/v1/ops/auth/login", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "login"] },
+                "description": "Step 1 of ops login. Provision the user first via `pnpm ops:create-user --email=... --full-name=...`.\n\nResponses:\n- `202 { challenge_id }` — credentials valid, 2FA enrolled. Pass `challenge_id` to `verify-2fa`.\n- `403 OPS_2FA_ENROLMENT_REQUIRED { enrolment_token }` — first ever login. Use `enrolment_token` against `enrol-2fa` (not yet in this collection).\n- `401 OPS_INVALID_CREDENTIALS` — wrong email or password (deliberately ambiguous).\n- `403 OPS_USER_DISABLED` — `is_active=false`.\n\nThrottled 5/min per IP."
+              }
+            },
+            {
+              "name": "POST /v1/ops/auth/verify-2fa",
+              "request": {
+                "auth": { "type": "noauth" },
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"challenge_id\": \"\",\n  \"totp_code\": \"123456\"\n}"
+                },
+                "url": { "raw": "{{base_url}}/v1/ops/auth/verify-2fa", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "verify-2fa"] },
+                "description": "Step 2 of ops login. Redeem the `challenge_id` from `login` plus the current 6-digit TOTP from your authenticator. On success: sets `ops_session` cookie (HttpOnly, Secure, 8h fixed TTL) and returns `{ token, expires_in }`. Throttled 5/min per IP."
+              }
+            },
+            {
+              "name": "POST /v1/ops/auth/logout",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": { "raw": "{{base_url}}/v1/ops/auth/logout", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "logout"] },
+                "description": "Revokes the current `OpsSession` and clears the `ops_session` cookie. Requires an authenticated ops session."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ops KYC",
+          "item": [
+            {
+              "name": "GET /v1/ops/kyc/:user_id/verifications",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/verifications",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "kyc", ":user_id", "verifications"],
+                  "variable": [{ "key": "user_id", "value": "" }]
+                },
+                "description": "Read-only — no audit row written. Returns each tier verification including the raw provider response. Encrypted/hashed columns are never exposed."
+              }
+            },
+            {
+              "name": "POST /v1/ops/kyc/:user_id/provision-va",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/provision-va",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "kyc", ":user_id", "provision-va"],
+                  "variable": [{ "key": "user_id", "value": "" }]
+                },
+                "description": "Idempotent retry of the post-KYC repayment-VA provisioner. Existing VA → returns the existing summary, no provider call, no audit row. New VA → creates the row and writes one `ops_audit_logs` (action: `kyc.provision_va`) entry in a single Prisma transaction. 404 if the target user has no tier-1 KYC."
+              }
+            },
+            {
+              "name": "POST /v1/ops/kyc/:user_id/reset",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/reset",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "kyc", ":user_id", "reset"],
+                  "variable": [{ "key": "user_id", "value": "" }]
+                },
+                "description": "Reset a user's KYC to tier 0. Atomic: deletes verifications, flips `user.kyc_tier`, and writes one `ops_audit_logs` (action: `kyc.reset`) row — all in a single Prisma transaction."
+              }
+            },
+            {
+              "name": "POST /v1/ops/kyc/:user_id/revoke",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"target_tier\": 0\n}" },
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/revoke",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "kyc", ":user_id", "revoke"],
+                  "variable": [{ "key": "user_id", "value": "" }]
+                },
+                "description": "Revoke a user's KYC to a specific tier (0–3). Same atomicity guarantees as `reset` — writes one `ops_audit_logs` (action: `kyc.revoke`) row in the same transaction."
+              }
+            }
+          ]
         }
       ]
     }

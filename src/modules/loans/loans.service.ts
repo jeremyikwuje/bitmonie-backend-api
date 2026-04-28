@@ -183,7 +183,7 @@ export class LoansService {
         source_type:    'LOAN',
         source_id:      loan.id,
         collateral_sat: calc.collateral_amount_sat,
-        memo:           `Bitmonie loan collateral — N${dto.principal_ngn}`,
+        memo:           `Bitmonie loan collateral — ${dto.principal_ngn.toLocaleString('en-NG')} NGN`,
       });
     } catch {
       throw new CollateralInvoiceFailedException();

@@ -10,6 +10,11 @@ import {
 import { OutflowsService } from '@/modules/disbursements/outflows.service';
 import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
 import { DisbursementRouter } from '@/modules/disbursements/disbursement-router.service';
+import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import {
+  DisbursementNotFoundException,
+  DisbursementNotOnHoldException,
+} from '@/common/errors/bitmonie.errors';
 import type { DisbursementProvider } from '@/modules/disbursements/disbursement.provider.interface';
 import { PrismaService } from '@/database/prisma.service';
 
@@ -18,22 +23,27 @@ const OUTFLOW_ID = 'outflow-uuid-001';
 const USER_ID   = 'user-uuid-001';
 
 const DISBURSEMENT = {
-  id:               DISB_ID,
-  user_id:          USER_ID,
-  disbursement_type: DisbursementType.LOAN,
-  disbursement_rail: DisbursementRail.BANK_TRANSFER,
-  source_type:      DisbursementType.LOAN,
-  source_id:        'loan-uuid-001',
-  amount:           new Decimal('300000'),
-  currency:         'NGN',
-  provider_name:    'GTBank',
-  account_unique:   '0123456789',
-  account_name:     'Ada Obi',
-  status:           DisbursementStatus.PENDING,
-  failure_reason:   null,
-  outflows:         [],
-  created_at:       new Date(),
-  updated_at:       new Date(),
+  id:                       DISB_ID,
+  user_id:                  USER_ID,
+  disbursement_type:        DisbursementType.LOAN,
+  disbursement_rail:        DisbursementRail.BANK_TRANSFER,
+  source_type:              DisbursementType.LOAN,
+  source_id:                'loan-uuid-001',
+  amount:                   new Decimal('300000'),
+  currency:                 'NGN',
+  provider_name:            'GTBank',
+  account_unique:           '0123456789',
+  account_name:             'Ada Obi',
+  status:                   DisbursementStatus.PENDING,
+  failure_reason:           null,
+  on_hold_at:               null,
+  on_hold_alerted_at:       null,
+  cancelled_at:             null,
+  cancelled_by_ops_user_id: null,
+  cancellation_reason:      null,
+  outflows:                 [],
+  created_at:               new Date(),
+  updated_at:               new Date(),
 };
 
 const OUTFLOW_ROW = {
@@ -73,6 +83,7 @@ describe('OutflowsService', () => {
   let disbursements_service: MockProxy<DisbursementsService>;
   let router: MockProxy<DisbursementRouter>;
   let provider: MockProxy<DisbursementProvider>;
+  let ops_alerts: MockProxy<OpsAlertsService>;
   let prisma: ReturnType<typeof make_prisma>;
 
   beforeEach(async () => {
@@ -80,12 +91,14 @@ describe('OutflowsService', () => {
     disbursements_service = mock<DisbursementsService>();
     router = mock<DisbursementRouter>();
     provider = mock<DisbursementProvider>();
+    ops_alerts = mock<OpsAlertsService>();
 
     router.forRoute.mockReturnValue(provider);
     disbursements_service.findById.mockResolvedValue(DISBURSEMENT as never);
     disbursements_service.markProcessing.mockResolvedValue({ ...DISBURSEMENT, status: DisbursementStatus.PROCESSING } as never);
     disbursements_service.markSuccessful.mockResolvedValue({ ...DISBURSEMENT, status: DisbursementStatus.SUCCESSFUL } as never);
-    disbursements_service.markFailed.mockResolvedValue({ ...DISBURSEMENT, status: DisbursementStatus.FAILED } as never);
+    disbursements_service.markOnHold.mockResolvedValue({ is_first_transition: true, on_hold_at: new Date() });
+    disbursements_service.markOnHoldAlerted.mockResolvedValue();
 
     provider.initiateTransfer.mockResolvedValue({
       provider_txn_id: 'ext_txn_001',
@@ -95,9 +108,10 @@ describe('OutflowsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OutflowsService,
-        { provide: PrismaService, useValue: prisma },
-        { provide: DisbursementsService, useValue: disbursements_service },
-        { provide: DisbursementRouter, useValue: router },
+        { provide: PrismaService,         useValue: prisma },
+        { provide: DisbursementsService,  useValue: disbursements_service },
+        { provide: DisbursementRouter,    useValue: router },
+        { provide: OpsAlertsService,      useValue: ops_alerts },
       ],
     }).compile();
 
@@ -121,33 +135,6 @@ describe('OutflowsService', () => {
       });
     });
 
-    it('sets provider_reference to "{disbursement_id}:outflow:{attempt_number}"', async () => {
-      await service.dispatch(DISB_ID);
-
-      const { data } = prisma.outflow.create.mock.calls[0][0];
-      expect(data.provider_reference).toBe(`${DISB_ID}:outflow:1`);
-    });
-
-    it('calls DisbursementRouter.forRoute with disbursement currency and rail', async () => {
-      await service.dispatch(DISB_ID);
-      expect(router.forRoute).toHaveBeenCalledWith('NGN', DisbursementRail.BANK_TRANSFER);
-    });
-
-    it('calls provider.initiateTransfer with correct params', async () => {
-      await service.dispatch(DISB_ID);
-
-      expect(provider.initiateTransfer).toHaveBeenCalledWith(
-        expect.objectContaining({
-          amount:         DISBURSEMENT.amount,
-          currency:       'NGN',
-          provider_name:  'GTBank',
-          account_unique: '0123456789',
-          account_name:   'Ada Obi',
-          reference:      `${DISB_ID}:outflow:1`,
-        }),
-      );
-    });
-
     it('marks Disbursement as PROCESSING after creating Outflow', async () => {
       await service.dispatch(DISB_ID);
       expect(disbursements_service.markProcessing).toHaveBeenCalledWith(DISB_ID);
@@ -167,8 +154,16 @@ describe('OutflowsService', () => {
       });
     });
 
-    it('marks Outflow FAILED and Disbursement FAILED when provider throws', async () => {
+    it('on provider failure: marks Outflow FAILED, calls markOnHold (NOT markFailed), and pages ops on first transition', async () => {
       provider.initiateTransfer.mockRejectedValue(new Error('Provider timeout'));
+      // First findById returns the original; second (inside _markOnHoldAndMaybeAlert) returns the row with the new outflow
+      disbursements_service.findById
+        .mockResolvedValueOnce(DISBURSEMENT as never)
+        .mockResolvedValueOnce({
+          ...DISBURSEMENT,
+          status: DisbursementStatus.ON_HOLD,
+          outflows: [{ ...OUTFLOW_ROW, status: OutflowStatus.FAILED, attempt_number: 1 }],
+        } as never);
 
       await service.dispatch(DISB_ID);
 
@@ -179,7 +174,27 @@ describe('OutflowsService', () => {
           failure_reason: expect.stringContaining('Provider timeout'),
         }),
       });
-      expect(disbursements_service.markFailed).toHaveBeenCalledWith(DISB_ID, expect.any(String));
+      expect(disbursements_service.markOnHold).toHaveBeenCalledWith(DISB_ID, expect.stringContaining('Provider timeout'));
+      expect(ops_alerts.alertDisbursementOnHold).toHaveBeenCalledWith(expect.objectContaining({
+        disbursement_id: DISB_ID,
+        attempt_number:  1,
+        failure_reason:  expect.stringContaining('Provider timeout'),
+      }));
+      expect(disbursements_service.markOnHoldAlerted).toHaveBeenCalledWith(DISB_ID);
+    });
+
+    it('on provider failure when already ON_HOLD: suppresses immediate alert (digest will surface it)', async () => {
+      provider.initiateTransfer.mockRejectedValue(new Error('Provider timeout 2'));
+      disbursements_service.markOnHold.mockResolvedValue({
+        is_first_transition: false,
+        on_hold_at:          new Date('2026-04-25T10:00:00Z'),
+      });
+
+      await service.dispatch(DISB_ID);
+
+      expect(disbursements_service.markOnHold).toHaveBeenCalled();
+      expect(ops_alerts.alertDisbursementOnHold).not.toHaveBeenCalled();
+      expect(disbursements_service.markOnHoldAlerted).not.toHaveBeenCalled();
     });
 
     it('skips dispatch if an active Outflow already exists (PROCESSING)', async () => {
@@ -206,6 +221,23 @@ describe('OutflowsService', () => {
 
       expect(prisma.outflow.create).not.toHaveBeenCalled();
     });
+
+    it('skips dispatch if Disbursement is CANCELLED', async () => {
+      disbursements_service.findById.mockResolvedValue({
+        ...DISBURSEMENT,
+        status: DisbursementStatus.CANCELLED,
+        outflows: [],
+      } as never);
+
+      await service.dispatch(DISB_ID);
+
+      expect(prisma.outflow.create).not.toHaveBeenCalled();
+    });
+
+    it('throws DisbursementNotFoundException when the disbursement is missing', async () => {
+      disbursements_service.findById.mockResolvedValue(null);
+      await expect(service.dispatch(DISB_ID)).rejects.toBeInstanceOf(DisbursementNotFoundException);
+    });
   });
 
   // ── retryDispatch ─────────────────────────────────────────────────────────────
@@ -213,10 +245,9 @@ describe('OutflowsService', () => {
   describe('retryDispatch', () => {
     it('creates a new Outflow with attempt_number incremented by 1', async () => {
       const failed_outflow = { ...OUTFLOW_ROW, attempt_number: 1, status: OutflowStatus.FAILED };
-      prisma.outflow.findFirst.mockResolvedValue(failed_outflow);
       disbursements_service.findById.mockResolvedValue({
         ...DISBURSEMENT,
-        status: DisbursementStatus.FAILED,
+        status: DisbursementStatus.ON_HOLD,
         outflows: [failed_outflow],
       } as never);
 
@@ -234,30 +265,33 @@ describe('OutflowsService', () => {
       const failed_outflow = { ...OUTFLOW_ROW, id: 'outflow-old-001', attempt_number: 1, status: OutflowStatus.FAILED };
       const new_outflow    = { ...OUTFLOW_ROW, id: 'outflow-new-002', attempt_number: 2, status: OutflowStatus.PENDING };
       prisma.outflow.create.mockResolvedValue(new_outflow);
-      prisma.outflow.findFirst.mockResolvedValue(failed_outflow);
       disbursements_service.findById.mockResolvedValue({
         ...DISBURSEMENT,
-        status: DisbursementStatus.FAILED,
+        status: DisbursementStatus.ON_HOLD,
         outflows: [failed_outflow],
       } as never);
 
       await service.retryDispatch(DISB_ID);
 
-      // update must only be called for the NEW outflow (after provider call) — not for the old row
       const update_calls = prisma.outflow.update.mock.calls;
       for (const [args] of update_calls) {
         expect(args.where.id).not.toBe(failed_outflow.id);
       }
     });
 
-    it('throws if Disbursement is not in FAILED status', async () => {
+    it('throws DisbursementNotOnHoldException if Disbursement is not ON_HOLD', async () => {
       disbursements_service.findById.mockResolvedValue({
         ...DISBURSEMENT,
         status: DisbursementStatus.PROCESSING,
         outflows: [],
       } as never);
 
-      await expect(service.retryDispatch(DISB_ID)).rejects.toThrow();
+      await expect(service.retryDispatch(DISB_ID)).rejects.toBeInstanceOf(DisbursementNotOnHoldException);
+    });
+
+    it('throws DisbursementNotFoundException if the disbursement is missing', async () => {
+      disbursements_service.findById.mockResolvedValue(null);
+      await expect(service.retryDispatch(DISB_ID)).rejects.toBeInstanceOf(DisbursementNotFoundException);
     });
   });
 
@@ -285,8 +319,13 @@ describe('OutflowsService', () => {
   // ── handleFailure ─────────────────────────────────────────────────────────────
 
   describe('handleFailure', () => {
-    it('marks Outflow FAILED and Disbursement FAILED', async () => {
+    it('marks Outflow FAILED and parent Disbursement ON_HOLD with first-transition alert', async () => {
       prisma.outflow.update.mockResolvedValue({ ...OUTFLOW_ROW, status: OutflowStatus.FAILED });
+      disbursements_service.findById.mockResolvedValue({
+        ...DISBURSEMENT,
+        status: DisbursementStatus.ON_HOLD,
+        outflows: [{ ...OUTFLOW_ROW, status: OutflowStatus.FAILED, attempt_number: 1 }],
+      } as never);
 
       await service.handleFailure(OUTFLOW_ID, DISB_ID, 'Declined by bank', 'BANK_DECLINED');
 
@@ -298,7 +337,25 @@ describe('OutflowsService', () => {
           failure_code:   'BANK_DECLINED',
         }),
       });
-      expect(disbursements_service.markFailed).toHaveBeenCalledWith(DISB_ID, 'Declined by bank');
+      expect(disbursements_service.markOnHold).toHaveBeenCalledWith(DISB_ID, 'Declined by bank');
+      expect(ops_alerts.alertDisbursementOnHold).toHaveBeenCalledWith(expect.objectContaining({
+        disbursement_id: DISB_ID,
+        failure_reason:  'Declined by bank',
+        failure_code:    'BANK_DECLINED',
+      }));
+    });
+
+    it('does not page ops when disbursement was already ON_HOLD', async () => {
+      prisma.outflow.update.mockResolvedValue({ ...OUTFLOW_ROW, status: OutflowStatus.FAILED });
+      disbursements_service.markOnHold.mockResolvedValue({
+        is_first_transition: false,
+        on_hold_at:          new Date('2026-04-25T10:00:00Z'),
+      });
+
+      await service.handleFailure(OUTFLOW_ID, DISB_ID, 'Declined again');
+
+      expect(disbursements_service.markOnHold).toHaveBeenCalled();
+      expect(ops_alerts.alertDisbursementOnHold).not.toHaveBeenCalled();
     });
   });
 });

@@ -136,4 +136,96 @@ describe('OpsAlertsService', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  // ── alertDisbursementOnHold ────────────────────────────────────────────────
+  // First-transition page: fires once when an outflow attempt fails and the
+  // parent Disbursement first lands in ON_HOLD. Subsequent failures on the
+  // same disbursement are suppressed by the caller (OutflowsService); the
+  // service itself always sends when invoked.
+
+  describe('alertDisbursementOnHold', () => {
+    it('subject names the attempt number and addresses the failure', async () => {
+      await service.alertDisbursementOnHold({
+        disbursement_id: 'disb-001',
+        user_id:         'user-001',
+        source_type:     'LOAN',
+        source_id:       'loan-001',
+        amount:          '300000',
+        currency:        'NGN',
+        provider_name:   'GTBank',
+        account_unique:  '0123456789',
+        account_name:    'Ada Obi',
+        attempt_number:  2,
+        failure_reason:  'Provider timeout',
+        failure_code:    'TIMEOUT',
+      });
+
+      expect(email.sendTransactional).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to:      ALERT_RECIPIENT,
+          subject: expect.stringContaining('attempt #2 failed'),
+        }),
+      );
+      const arg = email.sendTransactional.mock.calls[0]![0]!;
+      expect(arg.text_body).toContain('disb-001');
+      expect(arg.text_body).toContain('Provider timeout');
+      expect(arg.text_body).toContain('TIMEOUT');
+      expect(arg.text_body).toContain('GTBank');
+      expect(arg.html_body).toContain('disb-001');
+    });
+
+    it('skips silently when INTERNAL_ALERT_EMAIL is unset', async () => {
+      config.get.mockReturnValue({ internal_alert_email: '' });
+      await service.alertDisbursementOnHold({
+        disbursement_id: 'disb-002',
+        user_id:         'user-002',
+        source_type:     'LOAN',
+        source_id:       'loan-002',
+        amount:          '50000',
+        currency:        'NGN',
+        provider_name:   'GTBank',
+        account_unique:  '0123456789',
+        account_name:    null,
+        attempt_number:  1,
+        failure_reason:  'Bank error',
+      });
+      expect(email.sendTransactional).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── alertDisbursementOnHoldDigest ─────────────────────────────────────────
+
+  describe('alertDisbursementOnHoldDigest', () => {
+    it('sends a digest summarizing every still-on-hold disbursement', async () => {
+      const ts = new Date('2026-04-25T08:00:00Z');
+      await service.alertDisbursementOnHoldDigest([
+        {
+          disbursement_id: 'disb-001',
+          user_id:         'user-001',
+          source_id:       'loan-001',
+          amount:          '300000',
+          currency:        'NGN',
+          on_hold_at:      ts,
+          attempt_count:   3,
+          failure_reason:  'Bank declined',
+        },
+        {
+          disbursement_id: 'disb-002',
+          user_id:         'user-002',
+          source_id:       'loan-002',
+          amount:          '500000',
+          currency:        'NGN',
+          on_hold_at:      ts,
+          attempt_count:   1,
+          failure_reason:  null,
+        },
+      ]);
+
+      const arg = email.sendTransactional.mock.calls[0]![0]!;
+      expect(arg.subject).toContain('2 stuck');
+      expect(arg.text_body).toContain('disb-001');
+      expect(arg.text_body).toContain('disb-002');
+      expect(arg.text_body).toContain('Bank declined');
+    });
+  });
 });

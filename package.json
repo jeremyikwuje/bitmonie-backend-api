@@ -15,11 +15,13 @@
     "worker:liquidation": "ts-node -r dotenv/config -r tsconfig-paths/register workers/liquidation-monitor.worker.ts",
     "worker:loan-expiry": "ts-node -r dotenv/config -r tsconfig-paths/register workers/loan-expiry.worker.ts",
     "worker:loan-reminder": "ts-node -r dotenv/config -r tsconfig-paths/register workers/loan-reminder.worker.ts",
+    "worker:disbursement-digest": "ts-node -r dotenv/config -r tsconfig-paths/register workers/disbursement-on-hold-digest.worker.ts",
     "worker:price-feed:prod": "node dist/workers/price-feed.worker.js",
     "worker:liquidation:prod": "node dist/workers/liquidation-monitor.worker.js",
     "worker:loan-expiry:prod": "node dist/workers/loan-expiry.worker.js",
     "worker:loan-reminder:prod": "node dist/workers/loan-reminder.worker.js",
-    "worker:all": "concurrently -n price,liq,expiry,remind -c green,yellow,magenta,cyan \"pnpm worker:price-feed\" \"pnpm worker:liquidation\" \"pnpm worker:loan-expiry\" \"pnpm worker:loan-reminder\"",
+    "worker:disbursement-digest:prod": "node dist/workers/disbursement-on-hold-digest.worker.js",
+    "worker:all": "concurrently -n price,liq,expiry,remind,disbdig -c green,yellow,magenta,cyan,blue \"pnpm worker:price-feed\" \"pnpm worker:liquidation\" \"pnpm worker:loan-expiry\" \"pnpm worker:loan-reminder\" \"pnpm worker:disbursement-digest\"",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest --config jest.config.ts --selectProjects unit",
     "test:watch": "jest --config jest.config.ts --selectProjects unit --watch",
@@ -28,7 +30,9 @@
     "test:cov": "jest --config jest.config.ts --selectProjects unit --coverage",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "ops:create-user": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/create-ops-user.ts",
+    "ops:disable-user": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/disable-ops-user.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.6",

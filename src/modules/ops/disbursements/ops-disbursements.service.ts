@@ -1,0 +1,227 @@
+import { Injectable } from '@nestjs/common';
+import { DisbursementStatus, type Prisma } from '@prisma/client';
+import { PrismaService } from '@/database/prisma.service';
+import { OutflowsService } from '@/modules/disbursements/outflows.service';
+import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
+import { OpsAuditService } from '@/modules/ops/auth/ops-audit.service';
+import { OPS_ACTION, OPS_TARGET_TYPE } from '@/common/constants/ops-actions';
+import {
+  DisbursementNotFoundException,
+  DisbursementTerminalException,
+} from '@/common/errors/bitmonie.errors';
+
+const DEFAULT_LIMIT = 25;
+
+export interface ListResult {
+  rows: ReturnType<OpsDisbursementsService['_summary']>[];
+  next_cursor: string | null;
+}
+
+export interface OpsAuditContext {
+  ops_user_id: string;
+  request_id:  string | null;
+  ip_address:  string | null;
+}
+
+@Injectable()
+export class OpsDisbursementsService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly disbursements: DisbursementsService,
+    private readonly outflows: OutflowsService,
+    private readonly ops_audit: OpsAuditService,
+  ) {}
+
+  // Cursor-based listing — CLAUDE.md §5.12 forbids offset pagination. Default
+  // status filter is ON_HOLD because that's the active triage queue; ops can
+  // override to inspect any other status.
+  async list(params: {
+    status?:  DisbursementStatus;
+    cursor?:  string;
+    limit?:   number;
+  }): Promise<ListResult> {
+    const limit  = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), 100);
+    const status = params.status ?? DisbursementStatus.ON_HOLD;
+
+    const rows = await this.prisma.disbursement.findMany({
+      where:  { status },
+      take:   limit + 1, // +1 to peek at next-page existence
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+      orderBy: [{ on_hold_at: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+      include: {
+        outflows: {
+          orderBy: { attempt_number: 'desc' },
+        },
+      },
+    });
+
+    const has_next = rows.length > limit;
+    const page     = has_next ? rows.slice(0, limit) : rows;
+    const last     = page[page.length - 1];
+
+    return {
+      rows: page.map((r) => this._summary(r)),
+      next_cursor: has_next && last ? last.id : null,
+    };
+  }
+
+  async getById(id: string) {
+    const row = await this.prisma.disbursement.findUnique({
+      where: { id },
+      include: {
+        outflows: { orderBy: { attempt_number: 'asc' } },
+      },
+    });
+    if (!row) throw new DisbursementNotFoundException();
+    return this._detail(row);
+  }
+
+  // Retry is "create a new outflow attempt". OutflowsService.retryDispatch
+  // already enforces ON_HOLD-only and creates the new Outflow; we just wrap
+  // the audit row. Audit is written in the same transaction as a no-op
+  // SELECT against the disbursement so the audit row + the dispatch attempt
+  // succeed-or-fail-together at the level of "ops triggered a retry".
+  //
+  // Note: OutflowsService.retryDispatch performs its own writes (Outflow
+  // create, Disbursement update). Those are NOT inside the tx — Prisma
+  // requires interactive callbacks to share the same client, and the
+  // outflow create is intentionally idempotency-friendly via its
+  // provider_reference unique key (CLAUDE.md §5.6). The audit row records
+  // the ops decision regardless of whether the new outflow succeeds.
+  async retry(disbursement_id: string, ctx: OpsAuditContext): Promise<void> {
+    const existing = await this.disbursements.findById(disbursement_id);
+    if (!existing) throw new DisbursementNotFoundException();
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.ops_audit.write(tx, {
+        ops_user_id: ctx.ops_user_id,
+        action:      OPS_ACTION.DISBURSEMENT_RETRY,
+        target_type: OPS_TARGET_TYPE.DISBURSEMENT,
+        target_id:   disbursement_id,
+        details:     {
+          previous_status: existing.status,
+          attempt_number_so_far: existing.outflows.length,
+        },
+        request_id:  ctx.request_id,
+        ip_address:  ctx.ip_address,
+      });
+    });
+
+    await this.outflows.retryDispatch(disbursement_id);
+  }
+
+  // Cancel is terminal. The audit row + state change land in the SAME
+  // Prisma transaction so a failure to write the audit row rolls back the
+  // cancellation — same discipline as KYC reset/revoke (CLAUDE.md §5.4
+  // applied to ops actions via OpsAuditService).
+  async cancel(
+    disbursement_id: string,
+    reason:          string,
+    ctx:             OpsAuditContext,
+  ): Promise<void> {
+    const existing = await this.disbursements.findById(disbursement_id);
+    if (!existing) throw new DisbursementNotFoundException();
+
+    if (
+      existing.status === DisbursementStatus.SUCCESSFUL ||
+      existing.status === DisbursementStatus.CANCELLED
+    ) {
+      throw new DisbursementTerminalException({ status: existing.status });
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.disbursements.markCancelled(
+        {
+          disbursement_id,
+          cancelled_by_ops_user_id: ctx.ops_user_id,
+          cancellation_reason:      reason,
+        },
+        tx,
+      );
+      await this.ops_audit.write(tx, {
+        ops_user_id: ctx.ops_user_id,
+        action:      OPS_ACTION.DISBURSEMENT_CANCEL,
+        target_type: OPS_TARGET_TYPE.DISBURSEMENT,
+        target_id:   disbursement_id,
+        details:     {
+          previous_status: existing.status,
+          reason,
+        },
+        request_id:  ctx.request_id,
+        ip_address:  ctx.ip_address,
+      });
+    });
+  }
+
+  _summary(row: Prisma.DisbursementGetPayload<{ include: { outflows: true } }>): {
+    id:               string;
+    user_id:          string;
+    status:           DisbursementStatus;
+    amount:           string;
+    currency:         string;
+    source_type:      string;
+    source_id:        string;
+    on_hold_at:       string | null;
+    failure_reason:   string | null;
+    attempt_count:    number;
+    created_at:       string;
+  } {
+    return {
+      id:             row.id,
+      user_id:        row.user_id,
+      status:         row.status,
+      amount:         row.amount.toString(),
+      currency:       row.currency,
+      source_type:    row.source_type,
+      source_id:      row.source_id,
+      on_hold_at:     row.on_hold_at?.toISOString() ?? null,
+      failure_reason: row.failure_reason,
+      attempt_count:  row.outflows.length,
+      created_at:     row.created_at.toISOString(),
+    };
+  }
+
+  private _detail(row: Prisma.DisbursementGetPayload<{ include: { outflows: true } }>): {
+    summary:  ReturnType<OpsDisbursementsService['_summary']>;
+    outflows: Array<{
+      id:                 string;
+      attempt_number:     number;
+      provider:           string;
+      provider_reference: string;
+      provider_tx_id:     string | null;
+      status:             string;
+      failure_reason:     string | null;
+      failure_code:       string | null;
+      initiated_at:       string | null;
+      confirmed_at:       string | null;
+      created_at:         string;
+    }>;
+    cancellation: {
+      cancelled_at:             string | null;
+      cancelled_by_ops_user_id: string | null;
+      cancellation_reason:      string | null;
+    };
+  } {
+    return {
+      summary: this._summary(row),
+      outflows: row.outflows.map((o) => ({
+        id:                 o.id,
+        attempt_number:     o.attempt_number,
+        provider:           o.provider,
+        provider_reference: o.provider_reference,
+        provider_tx_id:     o.provider_tx_id,
+        status:             o.status,
+        failure_reason:     o.failure_reason,
+        failure_code:       o.failure_code,
+        initiated_at:       o.initiated_at?.toISOString() ?? null,
+        confirmed_at:       o.confirmed_at?.toISOString() ?? null,
+        created_at:         o.created_at.toISOString(),
+      })),
+      cancellation: {
+        cancelled_at:             row.cancelled_at?.toISOString() ?? null,
+        cancelled_by_ops_user_id: row.cancelled_by_ops_user_id,
+        cancellation_reason:      row.cancellation_reason,
+      },
+    };
+  }
+}

@@ -4,6 +4,7 @@ import { PalmpayProvider } from '@/providers/palmpay/palmpay.provider';
 import { StubDisbursementProvider } from '@/providers/stub/stub-disbursement.provider';
 import { DisbursementProviderName } from '@/config/disbursement.config';
 import { PrismaService } from '@/database/prisma.service';
+import { OpsAlertsModule } from '@/modules/ops-alerts/ops-alerts.module';
 import type { DisbursementProvider } from './disbursement.provider.interface';
 import { DisbursementRouter, DISBURSEMENT_PROVIDERS_MAP } from './disbursement-router.service';
 import { DisbursementsService } from './disbursements.service';
@@ -24,7 +25,7 @@ function resolveDisbursementProvider(
 const ALL_PROVIDER_MODULES = [PalmpayModule];
 
 @Module({
-  imports: [...ALL_PROVIDER_MODULES],
+  imports: [...ALL_PROVIDER_MODULES, OpsAlertsModule],
   providers: [
     PrismaService,
     StubDisbursementProvider,
