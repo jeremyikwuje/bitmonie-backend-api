@@ -65,26 +65,6 @@ services:
       redis:    { condition: service_healthy }
     command: ["node", "dist/workers/liquidation-monitor.worker.js"]
 
-  worker-loan-expiry:
-    profiles: ["prod"]
-    image: bitmonie
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis:    { condition: service_healthy }
-    command: ["node", "dist/workers/loan-expiry.worker.js"]
-
-  worker-loan-reminder:
-    profiles: ["prod"]
-    image: bitmonie
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis:    { condition: service_healthy }
-    command: ["node", "dist/workers/loan-reminder.worker.js"]
-
   worker-outflow-reconciler:
     profiles: ["prod"]
     image: bitmonie
@@ -95,7 +75,7 @@ services:
       redis:    { condition: service_healthy }
     command: ["node", "dist/workers/outflow-reconciler.worker.js"]
 
-  worker-disbursement-digest:
+  worker-scheduler:
     profiles: ["prod"]
     image: bitmonie
     restart: unless-stopped
@@ -103,7 +83,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
-    command: ["node", "dist/workers/disbursement-on-hold-digest.worker.js"]
+    command: ["node", "dist/workers/scheduler.worker.js"]
 
 volumes:
   bitmonie_postgres_data:

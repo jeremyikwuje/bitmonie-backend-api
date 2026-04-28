@@ -3,5 +3,5 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "node dist/workers/disbursement-on-hold-digest.worker.js"
+startCommand = "node dist/workers/scheduler.worker.js"
 restartPolicyType = "ALWAYS"
