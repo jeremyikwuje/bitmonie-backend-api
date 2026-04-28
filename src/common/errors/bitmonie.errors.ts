@@ -168,6 +168,17 @@ export class DisbursementAccountNameMismatchException extends BitmonieException 
   }
 }
 
+export class DisbursementAccountDuplicateException extends BitmonieException {
+  constructor() {
+    super(
+      'DISBURSEMENT_ACCOUNT_DUPLICATE',
+      'You have already linked this account.',
+      HttpStatus.CONFLICT,
+      [{ field: 'account_unique', issue: 'An account with the same provider_code and account_unique already exists for this kind' }],
+    );
+  }
+}
+
 export class DisbursementAccountLookupFailedException extends BitmonieException {
   constructor() {
     super(

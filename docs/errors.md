@@ -111,6 +111,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 | `LOAN_NOT_FOUND` | 404 | Loan not found or not owned by user |
 | `DISBURSEMENT_ACCOUNT_NAME_MISMATCH` | 422 | Fuzzy match score < 0.85 vs BVN legal name (BANK + MOBILE_MONEY only) |
 | `DISBURSEMENT_ACCOUNT_LOOKUP_FAILED` | 422 | Provider could not resolve an account holder for the given bank/account number — wrong account, hard reject |
+| `DISBURSEMENT_ACCOUNT_DUPLICATE` | 409 | User already has a linked account with the same kind + provider_code + account_unique |
 | `DISBURSEMENT_ACCOUNT_MAX_PER_KIND` | 400 | 5-per-kind limit reached |
 | `DISBURSEMENT_ACCOUNT_DEFAULT_DELETE` | 400 | Cannot delete the sole default account for that kind |
 | `KYC_ALREADY_VERIFIED` | 409 | Cannot re-verify |

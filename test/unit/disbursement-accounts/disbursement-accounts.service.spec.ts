@@ -143,6 +143,16 @@ describe('DisbursementAccountsService', () => {
         .rejects.toMatchObject({ code: 'DISBURSEMENT_ACCOUNT_MAX_PER_KIND' });
     });
 
+    it('throws DISBURSEMENT_ACCOUNT_DUPLICATE when same kind + provider_code + account_unique already linked', async () => {
+      prisma.disbursementAccount.count.mockResolvedValue(1);
+      prisma.disbursementAccount.findFirst.mockResolvedValue({ id: 'existing-acct' });
+
+      await expect(service.addAccount('user-uuid', BANK_DTO))
+        .rejects.toMatchObject({ code: 'DISBURSEMENT_ACCOUNT_DUPLICATE' });
+      expect(disbursement_provider.lookupAccountName).not.toHaveBeenCalled();
+      expect(prisma.disbursementAccount.create).not.toHaveBeenCalled();
+    });
+
     it('skips name lookup for CRYPTO_ADDRESS', async () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(UNVERIFIED_USER);
       prisma.disbursementAccount.count.mockResolvedValue(0);

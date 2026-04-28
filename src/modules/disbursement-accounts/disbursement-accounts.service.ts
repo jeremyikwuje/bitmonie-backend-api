@@ -6,6 +6,7 @@ import { DisbursementRouter } from '@/modules/disbursements/disbursement-router.
 import {
   DisbursementAccountNameMismatchException,
   DisbursementAccountLookupFailedException,
+  DisbursementAccountDuplicateException,
   DisbursementAccountMaxPerKindException,
   DisbursementAccountDefaultDeleteException,
 } from '@/common/errors/bitmonie.errors';
@@ -43,6 +44,19 @@ export class DisbursementAccountsService {
         kind: dto.kind,
         limit: MAX_DISBURSEMENT_ACCOUNTS_PER_KIND,
       });
+    }
+
+    const duplicate = await this.prisma.disbursementAccount.findFirst({
+      where: {
+        user_id,
+        kind: dto.kind,
+        provider_code: dto.provider_code,
+        account_unique: dto.account_unique,
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      throw new DisbursementAccountDuplicateException();
     }
 
     let account_holder_name: string | null = null;
