@@ -26,8 +26,21 @@ For each worker in the table above:
    `${{ Postgres.DATABASE_URL }}`, `${{ Redis.REDIS_URL }}`.
 4. Deploy.
 
-Only the `api` service runs `prisma migrate deploy` on boot. Workers assume the
-schema is already migrated — never put migration commands in worker start commands.
+## Migrations
+
+Migrations are run **manually**, not on service boot. After merging a migration:
+
+```sh
+railway run --service api -- node_modules/.bin/prisma migrate deploy
+```
+
+(or `prisma migrate deploy` from a workstation pointed at the prod `DATABASE_URL`).
+
+No service start command runs `prisma migrate deploy` — the api boots straight into
+`node dist/src/main`, and workers assume the schema is already migrated. Keeping
+migrations out of the start command avoids the every-redeploy migrate roundtrip,
+boot-time lock contention when the app scales horizontally, and accidental
+migration on a rollback redeploy.
 
 ## Why per-service toml
 
