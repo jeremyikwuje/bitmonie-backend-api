@@ -15,7 +15,7 @@ export interface DisbursementRoutesConfig {
 
 export const DISBURSEMENT_ROUTES_CONFIG: DisbursementRoutesConfig = {
   NGN: {
-    [DisbursementRail.BANK_TRANSFER]: { provider: DisbursementProviderName.Stub },
+    [DisbursementRail.BANK_TRANSFER]: { provider: DisbursementProviderName.Palmpay },
     [DisbursementRail.MOBILE_MONEY]:  { provider: DisbursementProviderName.Stub },
   },
 };

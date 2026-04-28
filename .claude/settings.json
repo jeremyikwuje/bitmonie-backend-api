@@ -1,0 +1,48 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' http://localhost:3000/v1/loans/__TRACKED_VAR__)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('status:', d['status']\\); print\\('collateral_received_at:', d['collateral_received_at']\\); print\\('disbursement_id:', d['disbursement_id']\\); print\\('status_logs:'\\); [print\\(f'  {l[\\\\\"from_status\\\\\"]} -> {l[\\\\\"to_status\\\\\"]} [{l[\\\\\"reason_code\\\\\"]}] @ {l[\\\\\"created_at\\\\\"]}'\\) for l in d['status_logs']]\")",
+      "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' http://localhost:3000/v1/loans)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(f'{a[\\\\\"kind\\\\\"]:15} {a[\\\\\"provider_name\\\\\"]:12} {a[\\\\\"account_unique\\\\\"]:30} default={a[\\\\\"is_default\\\\\"]} match_score={a[\\\\\"name_match_score\\\\\"]}'\\) for a in d['accounts']]\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(f'{a[\\\\\"kind\\\\\"]:15} {a.get\\(\\\\\"provider_name\\\\\",\\\\\"?\\\\\"\\):12} {a.get\\(\\\\\"account_unique\\\\\",\\\\\"?\\\\\"\\):30} default={a.get\\(\\\\\"is_default\\\\\"\\)} score={a.get\\(\\\\\"name_match_score\\\\\",\\\\\"n/a\\\\\"\\)}'\\) for a in d['accounts']]\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('otpauth_url:', d.get\\('otpauth_url','?'\\)[:60]+'...'\\); print\\('qr_code_uri:', str\\(d.get\\('qr_code_uri','?'\\)\\)[:60]+'...'\\)\")",
+      "Bash(curl -s -w \"\\\\nHTTP_%{http_code}\\\\n\" http://localhost:3000/v1/auth/me)",
+      "Bash(curl -s -o /dev/null -w \"rates: %{http_code}\\\\n\" http://localhost:3000/v1/rates)",
+      "Bash(ps -p 57228 -o pid,command)",
+      "Bash(kill 57228)",
+      "Bash(ps -p 48981,48985,49001,49885,49888 -o pid,command)",
+      "Bash(ps -p 64390,67610 -o pid,command)",
+      "Bash(kill 64390)",
+      "Bash(ps -p 68219 -o pid,command)",
+      "Bash(kill 68219)",
+      "WebSearch",
+      "WebFetch(domain:docs.palmpay.com)",
+      "WebFetch(domain:apitracker.io)",
+      "WebFetch(domain:business.palmpay.com)",
+      "Bash(node -e \"console.log\\(require\\('dotenv/package.json'\\).version\\)\")",
+      "Bash(pnpm add *)",
+      "Bash(pnpm jest *)",
+      "Bash(pnpm tsc *)",
+      "Bash(git -C /Users/jeremy/source/apps/bitmonie log --oneline -5 -- test/unit/disbursement-accounts/disbursement-accounts.service.spec.ts src/modules/disbursement-accounts/disbursement-accounts.service.ts)",
+      "Bash(git -C /Users/jeremy/source/apps/bitmonie stash --keep-index)",
+      "Bash(git -C /Users/jeremy/source/apps/bitmonie stash pop)",
+      "Bash(git -C /Users/jeremy/source/apps/bitmonie stash list)",
+      "Bash(git -C /Users/jeremy/source/apps/bitmonie status --short)",
+      "Bash(git -C /Users/jeremy/source/apps/bitmonie diff HEAD -- src/modules/disbursement-accounts/disbursement-accounts.service.ts)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('/Users/jeremy/source/apps/bitmonie/test/postman/bitmonie.postman_collection.json','utf8'\\)\\); console.log\\('valid JSON'\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(pnpm build *)",
+      "Bash(python3 -c \"import json; json.load\\(open\\('/Users/jeremy/source/apps/bitmonie/test/postman/bitmonie.postman_collection.json'\\)\\)\")",
+      "Bash(git commit -m ' *)",
+      "Bash(git stash *)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('test/postman/bitmonie.postman_collection.json','utf8'\\)\\); console.log\\('JSON valid'\\)\")",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(git mv *)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('test/postman/bitmonie.postman_collection.json', 'utf8'\\)\\); console.log\\('valid JSON'\\)\")"
+    ],
+    "additionalDirectories": [
+      "/private/tmp"
+    ]
+  }
+}
