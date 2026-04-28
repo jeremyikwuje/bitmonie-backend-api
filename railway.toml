@@ -1,3 +1,7 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
 [deploy]
 startCommand = "node_modules/.bin/prisma migrate deploy && node dist/src/main"
 restartPolicyType = "ON_FAILURE"
