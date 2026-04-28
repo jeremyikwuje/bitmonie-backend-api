@@ -51,6 +51,7 @@ describe('OpsAuthController (integration)', () => {
   let ops_auth_service: {
     login: jest.Mock;
     verifyTwoFactor: jest.Mock;
+    startEnrolment: jest.Mock;
     confirmEnrolment: jest.Mock;
     logout: jest.Mock;
   };
@@ -63,6 +64,7 @@ describe('OpsAuthController (integration)', () => {
     ops_auth_service = {
       login: jest.fn(),
       verifyTwoFactor: jest.fn(),
+      startEnrolment: jest.fn(),
       confirmEnrolment: jest.fn(),
       logout: jest.fn(),
     };
@@ -189,6 +191,39 @@ describe('OpsAuthController (integration)', () => {
         { field: 'enrolment_token', issue: 'enrol-tok' },
       ]);
       expect(response.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('start-enrolment with valid token returns TOTP secret + QR + otpauth url, no cookie', async () => {
+      ops_auth_service.startEnrolment.mockResolvedValue({
+        secret: 'BASE32OPSSECRET',
+        qr_code_uri: 'data:image/png;base64,MOCK',
+        otpauth_url: 'otpauth://totp/x?secret=BASE32OPSSECRET',
+      });
+
+      const response = await request(app.getHttpServer())
+        .post('/ops/auth/start-enrolment')
+        .send({ enrolment_token: 'enrol-tok' })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        secret: 'BASE32OPSSECRET',
+        qr_code_uri: 'data:image/png;base64,MOCK',
+        otpauth_url: 'otpauth://totp/x?secret=BASE32OPSSECRET',
+      });
+      expect(ops_auth_service.startEnrolment).toHaveBeenCalledWith({ enrolment_token: 'enrol-tok' });
+      expect(response.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('start-enrolment with stale token returns 401, no secret leaked', async () => {
+      ops_auth_service.startEnrolment.mockRejectedValue(new OpsTwoFactorInvalidException());
+
+      const response = await request(app.getHttpServer())
+        .post('/ops/auth/start-enrolment')
+        .send({ enrolment_token: 'stale' })
+        .expect(401);
+
+      expect(response.body.error.code).toBe('OPS_2FA_INVALID');
+      expect(response.body.secret).toBeUndefined();
     });
 
     it('enrol-2fa with valid TOTP issues a session and sets ops_session cookie', async () => {

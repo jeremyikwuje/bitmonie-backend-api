@@ -21,6 +21,7 @@ import { OpsAuthService } from './ops-auth.service';
 import { OpsLoginDto } from './dto/ops-login.dto';
 import { OpsVerify2faDto } from './dto/ops-verify-2fa.dto';
 import { OpsEnrol2faDto } from './dto/ops-enrol-2fa.dto';
+import { OpsStartEnrolmentDto } from './dto/ops-start-enrolment.dto';
 import { OpsGuard } from '@/common/guards/ops-session.guard';
 import {
   CurrentOpsUser,
@@ -92,6 +93,18 @@ export class OpsAuthController {
     });
 
     return { message: 'Logged in.', token, expires_in: OPS_SESSION_TTL_SEC };
+  }
+
+  @Post('start-enrolment')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @ApiOperation({ summary: 'First-time ops enrolment: redeem enrolment_token for a fresh TOTP secret + QR code' })
+  @ApiResponse({ status: 200, description: 'TOTP secret + QR returned — scan with an authenticator, then call /enrol-2fa' })
+  @ApiResponse({ status: 401, description: 'Enrolment token stale or unknown' })
+  async startEnrolment(
+    @Body() dto: OpsStartEnrolmentDto,
+  ): Promise<{ secret: string; qr_code_uri: string; otpauth_url: string }> {
+    return this.ops_auth_service.startEnrolment({ enrolment_token: dto.enrolment_token });
   }
 
   @Post('enrol-2fa')
