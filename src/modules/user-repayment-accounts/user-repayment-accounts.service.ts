@@ -20,6 +20,7 @@ function mapToCollectionIdentityType(id_type: KycIdType): CollectionIdentityType
 export interface UserRepaymentAccountSummary {
   virtual_account_no:   string;
   virtual_account_name: string;
+  bank_name:            string;
   provider:             string;
 }
 
@@ -71,6 +72,7 @@ export class UserRepaymentAccountsService {
         summary: {
           virtual_account_no:   existing.virtual_account_no,
           virtual_account_name: existing.virtual_account_name,
+          bank_name:            existing.bank_name,
           provider:             existing.provider,
         },
         created: false,
@@ -132,6 +134,7 @@ export class UserRepaymentAccountsService {
           user_id,
           virtual_account_no:   result.virtual_account_no,
           virtual_account_name: result.virtual_account_name,
+          bank_name:            result.bank_name,
           provider:             provider_name,
         },
       });
@@ -148,6 +151,7 @@ export class UserRepaymentAccountsService {
       summary: {
         virtual_account_no:   account.virtual_account_no,
         virtual_account_name: account.virtual_account_name,
+        bank_name:            account.bank_name,
         provider:             account.provider,
       },
       created: true,

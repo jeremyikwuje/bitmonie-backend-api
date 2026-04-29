@@ -53,6 +53,7 @@ export interface ReminderTemplateParams {
   outstanding_ngn:      string;     // pre-formatted with 2dp
   virtual_account_no:   string;
   virtual_account_name: string;
+  bank_name:            string;     // partner bank visible to the customer on their transfer screen
   due_at:               Date;
 }
 
@@ -79,11 +80,11 @@ function greet(first_name: string | null): string {
 }
 
 function paymentBlock(p: ReminderTemplateParams): string {
-  return `Pay to:\n  Account name:    ${p.virtual_account_name}\n  Account number:  ${p.virtual_account_no}`;
+  return `Pay to:\n  Bank:            ${p.bank_name}\n  Account name:    ${p.virtual_account_name}\n  Account number:  ${p.virtual_account_no}`;
 }
 
 function paymentBlockHtml(p: ReminderTemplateParams): string {
-  return `<p style="margin:12px 0">Pay to:<br><b>${escapeHtml(p.virtual_account_name)}</b><br><code style="font-size:16px">${escapeHtml(p.virtual_account_no)}</code></p>`;
+  return `<p style="margin:12px 0">Pay to:<br><b>${escapeHtml(p.bank_name)}</b><br><b>${escapeHtml(p.virtual_account_name)}</b><br><code style="font-size:16px">${escapeHtml(p.virtual_account_no)}</code></p>`;
 }
 
 const FOOTER_TEXT = '\n\n— Bitmonie';

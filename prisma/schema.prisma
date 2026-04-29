@@ -546,6 +546,12 @@ model UserRepaymentAccount {
   user_id              String   @unique @db.Uuid
   virtual_account_no   String   @unique @db.VarChar(50)
   virtual_account_name String   @db.VarChar(255)
+  // Human-readable bank that hosts the VA — what the customer's banking app
+  // shows on the transfer screen. PalmPay's createVirtualAccount response
+  // does not include this field, so it falls back to the partner bank
+  // (Bloom MFB) at the provider layer. Default on the column backfills
+  // existing rows non-destructively.
+  bank_name            String   @default("Bloom Microfinance Bank") @db.VarChar(100)
   provider             String   @db.VarChar(50) // 'palmpay'
   provider_reference   String?  @db.VarChar(255)
   created_at           DateTime @default(now()) @db.Timestamptz

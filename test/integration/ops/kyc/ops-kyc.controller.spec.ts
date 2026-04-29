@@ -205,6 +205,7 @@ describe('OpsKycController (integration)', () => {
             summary: {
               virtual_account_no:   '9000000001',
               virtual_account_name: 'Bitmonie Loan Repayment',
+              bank_name:            'Bloom Microfinance Bank',
               provider:             'palmpay',
             },
             created: true,
@@ -222,6 +223,7 @@ describe('OpsKycController (integration)', () => {
       expect(response.body).toEqual({
         virtual_account_no:   '9000000001',
         virtual_account_name: 'Bitmonie Loan Repayment',
+        bank_name:            'Bloom Microfinance Bank',
         provider:             'palmpay',
       });
 
@@ -281,6 +283,7 @@ describe('OpsKycController (integration)', () => {
             summary: {
               virtual_account_no:   '9000000099',
               virtual_account_name: 'Bitmonie Loan Repayment',
+              bank_name:            'Bloom Microfinance Bank',
               provider:             'palmpay',
             },
             created: false,

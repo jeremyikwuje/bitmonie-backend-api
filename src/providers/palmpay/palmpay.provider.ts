@@ -17,6 +17,13 @@ import {
   PALMPAY_ORDER_STATUS_FAILED,
 } from './palmpay.types';
 
+// PalmPay's createVirtualAccount response does not include the host bank's
+// human-readable name. For PalmPay-hosted VAs the partner bank visible on
+// the customer's banking-app transfer screen is Bloom MFB. Centralised here
+// so the same default backs both the provider return value and the
+// schema-level column default — keeps the two in lockstep.
+const PALMPAY_VA_DEFAULT_BANK_NAME = 'Bloom Microfinance Bank';
+
 // Bank list rarely changes upstream (new PSPs/MFBs trickle in over weeks).
 // Cache the parsed list in-memory so the public /banks endpoint stays cheap
 // and survives short PalmPay blips. TTL is short enough that a newly-onboarded
@@ -417,7 +424,7 @@ export class PalmpayProvider implements DisbursementProvider {
     license_number: string;    // BVN or NIN value — never logged
     customer_name: string;
     account_reference: string;
-  }): Promise<{ virtual_account_no: string; virtual_account_name: string }> {
+  }): Promise<{ virtual_account_no: string; virtual_account_name: string; bank_name: string }> {
     // PalmPay's wire enum diverges from our role-named identity_type:
     // BVN → "personal", NIN → "personal_nin", CAC (out of scope at v1.1)
     // → "company". Mismatched identityType/licenseNumber pairings are
@@ -445,6 +452,7 @@ export class PalmpayProvider implements DisbursementProvider {
     return {
       virtual_account_no:   data.data?.virtualAccountNo   ?? '',
       virtual_account_name: data.data?.virtualAccountName ?? params.virtual_account_name,
+      bank_name:            PALMPAY_VA_DEFAULT_BANK_NAME,
     };
   }
 

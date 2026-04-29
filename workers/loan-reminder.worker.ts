@@ -65,7 +65,7 @@ type CandidateLoan = {
   daily_custody_fee_ngn:    Decimal | { toString(): string };
   collateral_received_at:   Date | null;
   user: { email: string; first_name: string | null };
-  repayment_account:        { virtual_account_no: string; virtual_account_name: string } | null;
+  repayment_account:        { virtual_account_no: string; virtual_account_name: string; bank_name: string } | null;
   repayments: Array<{
     applied_to_principal: Decimal | { toString(): string };
     applied_to_interest:  Decimal | { toString(): string };
@@ -101,7 +101,7 @@ export async function runReminderCycle(deps: LoanReminderDeps): Promise<void> {
   const user_ids = Array.from(new Set(candidates.map((l) => l.user_id)));
   const accounts = await prisma.userRepaymentAccount.findMany({
     where: { user_id: { in: user_ids } },
-    select: { user_id: true, virtual_account_no: true, virtual_account_name: true },
+    select: { user_id: true, virtual_account_no: true, virtual_account_name: true, bank_name: true },
   });
   const account_by_user = new Map(accounts.map((a) => [a.user_id, a]));
 
@@ -151,6 +151,7 @@ export async function runReminderCycle(deps: LoanReminderDeps): Promise<void> {
         outstanding_ngn:      outstanding.total_outstanding_ngn.toFixed(2),
         virtual_account_no:   account.virtual_account_no,
         virtual_account_name: account.virtual_account_name,
+        bank_name:            account.bank_name,
         due_at:               loan.due_at,
       });
 

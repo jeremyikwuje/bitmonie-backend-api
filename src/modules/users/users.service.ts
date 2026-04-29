@@ -18,6 +18,7 @@ export interface UserProfile {
   repayment_account: {
     virtual_account_no: string;
     virtual_account_name: string;
+    bank_name: string;
     provider: string;
   } | null;
   created_at: Date;
@@ -51,6 +52,7 @@ export class UsersService {
           select: {
             virtual_account_no: true,
             virtual_account_name: true,
+            bank_name: true,
             provider: true,
           },
         },

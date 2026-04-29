@@ -17,5 +17,10 @@ export interface CollectionProvider {
   }): Promise<{
     virtual_account_no: string;
     virtual_account_name: string;
+    // Human-readable bank that hosts the VA (what shows on the customer's
+    // banking-app transfer screen). When the upstream API doesn't return
+    // this — PalmPay's createVirtualAccount notably omits it — the provider
+    // fills in the partner-bank fallback rather than leaving it null.
+    bank_name: string;
   }>;
 }

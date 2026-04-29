@@ -10,8 +10,9 @@ import { REDIS_KEYS } from '@/common/constants';
 
 const LOAN_ID = 'loan-uuid-001';
 const USER_ID = 'user-uuid-001';
-const VA_NO   = '9012345678';
-const VA_NAME = 'Bitmonie Loan Repayment';
+const VA_NO    = '9012345678';
+const VA_NAME  = 'Bitmonie Loan Repayment';
+const VA_BANK  = 'Bloom Microfinance Bank';
 
 // Pin "now" to a fixed instant. due_at offsets are computed relative to NOW
 // so individual tests can choose where in the timeline a loan sits.
@@ -37,11 +38,11 @@ function makeLoan(opts: {
 
 function makeDeps(overrides: {
   loans?: ReturnType<typeof makeLoan>[];
-  accounts?: Array<{ user_id: string; virtual_account_no: string; virtual_account_name: string }>;
+  accounts?: Array<{ user_id: string; virtual_account_no: string; virtual_account_name: string; bank_name: string }>;
   redis_get?: jest.Mock;
 } = {}) {
   const loans     = overrides.loans     ?? [];
-  const accounts  = overrides.accounts  ?? [{ user_id: USER_ID, virtual_account_no: VA_NO, virtual_account_name: VA_NAME }];
+  const accounts  = overrides.accounts  ?? [{ user_id: USER_ID, virtual_account_no: VA_NO, virtual_account_name: VA_NAME, bank_name: VA_BANK }];
   const redis_get = overrides.redis_get ?? jest.fn().mockResolvedValue(null);
 
   const prisma = {
@@ -105,6 +106,7 @@ describe('buildReminderEmail', () => {
     outstanding_ngn:      '566000.00',
     virtual_account_no:   VA_NO,
     virtual_account_name: VA_NAME,
+    bank_name:            VA_BANK,
     due_at:               new Date('2026-05-01T00:00:00Z'),
   };
 
@@ -141,6 +143,17 @@ describe('buildReminderEmail', () => {
       expect(e.text_body).toContain('566,000.00');
       expect(e.html_body).toContain(VA_NO);
       expect(e.html_body).toContain('566,000.00');
+    }
+  });
+
+  // Without the bank label customers can't actually find the VA on their
+  // banking app's transfer screen — so every reminder slot must surface it.
+  it('every email surfaces the partner bank name', () => {
+    const slots: ReminderSlot[] = ['t_minus_7d', 't_minus_1d', 't_maturity', 'grace_d1', 'grace_d6', 'grace_final'];
+    for (const slot of slots) {
+      const e = buildReminderEmail(slot, baseParams);
+      expect(e.text_body).toContain(VA_BANK);
+      expect(e.html_body).toContain(VA_BANK);
     }
   });
 
@@ -228,8 +241,8 @@ describe('runReminderCycle', () => {
     const deps = makeDeps({
       loans:    [loan_a, loan_b],
       accounts: [
-        { user_id: 'user-A', virtual_account_no: '111', virtual_account_name: 'A' },
-        { user_id: 'user-B', virtual_account_no: '222', virtual_account_name: 'B' },
+        { user_id: 'user-A', virtual_account_no: '111', virtual_account_name: 'A', bank_name: VA_BANK },
+        { user_id: 'user-B', virtual_account_no: '222', virtual_account_name: 'B', bank_name: VA_BANK },
       ],
     });
     deps.send_email.mockRejectedValueOnce(new Error('Mailgun 503'));
