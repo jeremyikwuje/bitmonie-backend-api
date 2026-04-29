@@ -123,7 +123,7 @@ describe('OpsDisbursementsController (integration)', () => {
   // ── GET / list ─────────────────────────────────────────────────────────────
 
   describe('GET /', () => {
-    it('defaults the status filter to ON_HOLD and returns cursor + summaries', async () => {
+    it('returns all statuses by default (no implicit status filter) and returns cursor + summaries', async () => {
       authenticate_ops();
       const ts = new Date('2026-04-25T10:00:00Z');
       prisma.disbursement.findMany.mockResolvedValue([
@@ -147,8 +147,10 @@ describe('OpsDisbursementsController (integration)', () => {
         .set('Cookie', [`ops_session=${OPS_TOKEN}`])
         .expect(200);
 
+      // No `status` query param → no implicit status filter (Prisma `where: { status: undefined }`
+      // is equivalent to "all rows"); ops can pass ?status=ON_HOLD explicitly to scope the queue.
       expect(prisma.disbursement.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { status: 'ON_HOLD' } }),
+        expect.objectContaining({ where: { status: undefined } }),
       );
       expect(res.body.rows).toHaveLength(1);
       expect(res.body.rows[0]).toMatchObject({
@@ -157,6 +159,20 @@ describe('OpsDisbursementsController (integration)', () => {
         attempt_count:  1,
       });
       expect(res.body.next_cursor).toBeNull();
+    });
+
+    it('applies an explicit status filter when ?status= is passed', async () => {
+      authenticate_ops();
+      prisma.disbursement.findMany.mockResolvedValue([]);
+
+      await request(app.getHttpServer())
+        .get('/ops/disbursements?status=ON_HOLD')
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .expect(200);
+
+      expect(prisma.disbursement.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { status: 'ON_HOLD' } }),
+      );
     });
 
     it('rejects an invalid status filter with 400', async () => {

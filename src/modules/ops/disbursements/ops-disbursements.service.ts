@@ -43,16 +43,16 @@ export class OpsDisbursementsService {
     private readonly ops_audit: OpsAuditService,
   ) {}
 
-  // Cursor-based listing — CLAUDE.md §5.12 forbids offset pagination. Default
-  // status filter is ON_HOLD because that's the active triage queue; ops can
-  // override to inspect any other status.
+  // Cursor-based listing — CLAUDE.md §5.12 forbids offset pagination. No
+  // implicit status filter: ops gets every disbursement by default and must
+  // pass ?status=ON_HOLD explicitly when they want the active triage queue.
   async list(params: {
     status?:  DisbursementStatus;
     cursor?:  string;
     limit?:   number;
   }): Promise<ListResult> {
     const limit  = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), 100);
-    const status = params.status ?? DisbursementStatus.ON_HOLD;
+    const status = params.status ?? undefined;
 
     const rows = await this.prisma.disbursement.findMany({
       where:  { status },

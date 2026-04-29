@@ -29,11 +29,10 @@ import { ListDisbursementsDto } from './dto/list-disbursements.dto';
 import { CancelDisbursementDto } from './dto/cancel-disbursement.dto';
 import { AbandonAttemptDto } from './dto/abandon-attempt.dto';
 
-// Ops triage queue for disbursements that have outflow attempts but no
-// successful outflow. The default GET filter is ON_HOLD — the active queue.
-// Retry creates a new Outflow attempt; cancel terminally closes the
-// disbursement with a reason. Mirrors the audit-in-tx discipline used by
-// OpsKycController.
+// Ops triage view of every disbursement (any status). GET is unfiltered by
+// default; pass ?status=ON_HOLD to scope to the active triage queue. Retry
+// creates a new Outflow attempt; cancel terminally closes the disbursement
+// with a reason. Mirrors the audit-in-tx discipline used by OpsKycController.
 function readRequestId(req: Request): string | null {
   const raw = req.headers['x-request-id'];
   if (typeof raw === 'string' && raw.length > 0) return raw;
@@ -49,9 +48,9 @@ export class OpsDisbursementsController {
 
   @Get()
   @ApiOperation({
-    summary: 'List disbursements (defaults to ON_HOLD — the active triage queue)',
+    summary: 'List disbursements (no implicit status filter — pass ?status=… to scope)',
     description:
-      'Cursor-paginated. Read-only — no audit row written. Default status filter is ON_HOLD; pass `status=` to inspect any other state.',
+      'Cursor-paginated. Read-only — no audit row written. By default returns all statuses; pass `status=ON_HOLD` for the active triage queue or any other DisbursementStatus to scope.',
   })
   @ApiResponse({ status: 200, description: 'List of disbursement summaries with cursor' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
