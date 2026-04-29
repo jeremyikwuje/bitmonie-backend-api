@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -22,7 +23,10 @@ import {
   CurrentOpsUser,
   type AuthenticatedOpsUser,
 } from '@/common/decorators/current-ops-user.decorator';
-import { OpsLoansService } from './ops-loans.service';
+import {
+  OpsLoansService,
+  type LoanRemindersDiagnostic,
+} from './ops-loans.service';
 import { RestoreFromBadLiquidationDto } from './dto/restore-from-bad-liquidation.dto';
 
 function readRequestId(req: Request): string | null {
@@ -37,6 +41,22 @@ function readRequestId(req: Request): string | null {
 @ApiCookieAuth('ops_session')
 export class OpsLoansController {
   constructor(private readonly service: OpsLoansService) {}
+
+  @Get(':loan_id/reminders')
+  @ApiOperation({
+    summary: "Diagnostic: which reminder slots have fired for this loan",
+    description:
+      'Read-only — no audit row written. For each known reminder slot, returns whether the dedup key (reminder_sent:{loan_id}:{slot}) is present in Redis and its remaining TTL. Also returns the loan-reminder worker heartbeat (healthy = ≤2× tick interval) and the slot the worker is currently expected to send. Lets ops disambiguate "scheduler down" vs "worker ran but skipped" vs "send succeeded but bounced".',
+  })
+  @ApiParam({ name: 'loan_id', description: 'Loan UUID' })
+  @ApiResponse({ status: 200, description: 'Reminder diagnostic' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 404, description: 'Loan not found' })
+  async getReminders(
+    @Param('loan_id', new ParseUUIDPipe()) loan_id: string,
+  ): Promise<LoanRemindersDiagnostic> {
+    return this.service.getReminders(loan_id);
+  }
 
   @Post(':loan_id/restore-from-bad-liquidation')
   @HttpCode(HttpStatus.OK)
