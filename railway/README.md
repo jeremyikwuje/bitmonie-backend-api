@@ -5,19 +5,18 @@ each service overrides its config-as-code path to a toml in this folder.
 
 ## Services
 
-| Service name (Railway)      | Config-as-code path                       | Runs                                                                              |
-|-----------------------------|-------------------------------------------|-----------------------------------------------------------------------------------|
-| `api`                       | `railway.toml` (root)                     | NestJS HTTP API                                                                   |
-| `worker-price-feed`         | `railway/worker-price-feed.toml`          | SAT/NGN, BTC/NGN, USDT/NGN poller (30s)                                           |
-| `worker-liquidation`        | `railway/worker-liquidation.toml`         | Liquidation monitor (30s)                                                         |
-| `worker-scheduler`          | `railway/worker-scheduler.toml`           | loan-expiry + loan-reminder + disbursement-on-hold-digest + outflow-reconciler    |
+| Service name (Railway)      | Config-as-code path                       | Runs                                       |
+|-----------------------------|-------------------------------------------|--------------------------------------------|
+| `api`                       | `railway.toml` (root)                     | NestJS HTTP API                            |
+| `worker-price-feed`         | `railway/worker-price-feed.toml`          | SAT/NGN, BTC/NGN, USDT/NGN poller (30s)    |
+| `worker-liquidation`        | `railway/worker-liquidation.toml`         | Liquidation monitor (30s)                  |
+| `worker-outflow-reconciler` | `railway/worker-outflow-reconciler.toml`  | Stale-PROCESSING outflow reconciliation    |
+| `worker-scheduler`          | `railway/worker-scheduler.toml`           | loan-expiry + loan-reminder + disbursement-on-hold-digest |
 
-The two payout-originating workers (`price-feed`, `liquidation`) stay isolated so
-a crash in one doesn't take the others down. `outflow-reconciler` runs inside the
-scheduler — it never *creates* a payout, it only polls providers for ground-truth
-status and routes the answer through the same `OutflowsService.handleSuccess` /
-`handleFailure` paths the webhook controllers use; failure mode is "stale
-PROCESSING rows take an extra cycle to reconcile," not lost money.
+The three financial-state workers (`price-feed`, `liquidation`, `outflow-reconciler`)
+stay isolated so a crash in one doesn't take the others down. The remaining three
+non-financial periodic jobs share one `worker-scheduler` process — failure mode
+is "alert fires late," not lost money.
 
 ## Creating a worker service
 
@@ -57,9 +56,8 @@ config-as-code pattern is one toml per service, kept in version control here.
 The scheduler reads the same env vars as the standalone workers — set them on
 the `worker-scheduler` service:
 
-| Env var                                      | Default        | Job                                                                            |
-|----------------------------------------------|----------------|--------------------------------------------------------------------------------|
-| `WORKER_LOAN_EXPIRY_INTERVAL_MS`             | `60000` (1m)   | mark `PENDING_COLLATERAL` loans `EXPIRED`                                      |
-| `WORKER_LOAN_REMINDER_INTERVAL_MS`           | `3600000` (1h) | T−7d / T−1d / T / grace / final reminders                                      |
-| `WORKER_DISBURSEMENT_DIGEST_INTERVAL_MS`     | `86400000` (1d)| daily digest of `ON_HOLD` disbursements                                        |
-| `WORKER_OUTFLOW_RECONCILER_INTERVAL_MS`      | `60000` (1m)   | poll providers for stale `PROCESSING` outflows past `OUTFLOW_PROCESSING_STALE_SEC` (5m) |
+| Env var                                      | Default        | Job                            |
+|----------------------------------------------|----------------|--------------------------------|
+| `WORKER_LOAN_EXPIRY_INTERVAL_MS`             | `60000` (1m)   | mark `PENDING_COLLATERAL` loans `EXPIRED` |
+| `WORKER_LOAN_REMINDER_INTERVAL_MS`           | `3600000` (1h) | T−7d / T−1d / T / grace / final reminders |
+| `WORKER_DISBURSEMENT_DIGEST_INTERVAL_MS`     | `86400000` (1d)| daily digest of `ON_HOLD` disbursements   |
