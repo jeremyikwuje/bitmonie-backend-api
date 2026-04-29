@@ -64,9 +64,13 @@ function mock_non_json(body: string) {
 }
 
 // Build a signed PalmPay-style webhook payload.
-// PalmPay signs: MD5(sorted key=value params, excl. sign) using SHA1+RSA.
+// PalmPay signs: MD5(sorted non-empty key=value params, excl. sign) using
+// SHA1+RSA. null/undefined/'' are excluded from the signing string —
+// must match the verifier and the real PalmPay server behavior, otherwise
+// tests give false confidence on payloads with optional fields.
 function build_signed_payload(params: Record<string, unknown>): Record<string, unknown> {
   const sorted = Object.keys(params)
+    .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== '')
     .sort()
     .map((k) => `${k}=${String(params[k])}`)
     .join('&');
@@ -78,6 +82,16 @@ function build_signed_payload(params: Record<string, unknown>): Record<string, u
   const sign = encodeURIComponent(forge.util.encode64(raw_sig));
 
   return { ...params, sign };
+}
+
+// PalmPay's merchant dashboard exposes the platform public key as bare
+// base64-encoded DER (X.509 SubjectPublicKeyInfo) — no PEM headers.
+// This is the format the production env var actually contains.
+function pub_key_as_bare_base64_der(pem: string): string {
+  const pub = forge.pki.publicKeyFromPem(pem);
+  const asn1 = forge.pki.publicKeyToAsn1(pub);
+  const der = forge.asn1.toDer(asn1).getBytes();
+  return forge.util.encode64(der);
 }
 
 afterEach(() => jest.resetAllMocks());
@@ -337,5 +351,67 @@ describe('PalmpayProvider.verifyWebhookSignature', () => {
     const other_keypair = forge.pki.rsa.generateKeyPair({ bits: 1024 });
     const provider = make_provider({ webhook_pub_key: forge.pki.publicKeyToPem(other_keypair.publicKey) });
     expect(provider.verifyWebhookSignature(raw_body, '')).toBe(false);
+  });
+
+  // PalmPay's dashboard hands out the platform public key as bare base64
+  // DER (no PEM headers). Operators copy that verbatim into the env var,
+  // so the verifier MUST accept it — otherwise every prod webhook silently
+  // 401's with "Invalid webhook signature" and the cause is invisible.
+  it('accepts a bare base64-DER (no PEM headers) webhook_pub_key', () => {
+    const provider = make_provider({ webhook_pub_key: pub_key_as_bare_base64_der(TEST_PUB_PEM) });
+    const payload = build_signed_payload({ orderId: 'txn_001', orderStatus: 2 });
+    expect(provider.verifyWebhookSignature(JSON.stringify(payload), '')).toBe(true);
+  });
+
+  it('returns false (and does not throw) when webhook_pub_key is misconfigured', () => {
+    const provider = make_provider({ webhook_pub_key: '' });
+    const payload = build_signed_payload({ orderId: 'txn_001', orderStatus: 2 });
+    expect(provider.verifyWebhookSignature(JSON.stringify(payload), '')).toBe(false);
+  });
+
+  // Regression: a real-shape collection notification (mix of strings and
+  // numbers, optional fields, all non-empty) must verify cleanly. This is
+  // the payload shape that was 401-ing in production before the fix.
+  it('verifies a real-shape collection notification (string + number fields)', () => {
+    const payload = build_signed_payload({
+      accountReference:   'c2803c4e-ba21-483f-85f2-5fb4d7d948a4',
+      appId:              'L250919160477027524951',
+      createdTime:        1777475459986,
+      currency:           'NGN',
+      orderAmount:        100000,
+      orderNo:            'MI2049506742177587200',
+      orderStatus:        1,
+      payerAccountName:   'JEREMIAH SUCCEED IKWUJE',
+      payerAccountNo:     '8109677781',
+      payerBankName:      'OPay',
+      reference:          'Transfer from JEREMIAH SUCCEED IKWUJE',
+      sessionId:          '100004260429151058158494603250',
+      updateTime:         1777475459986,
+      virtualAccountName: 'Jeremiah Ikwuje(PROCESSWITH SOFTWARE LIMITED)',
+      virtualAccountNo:   '9931107760',
+    });
+    expect(make_provider().verifyWebhookSignature(JSON.stringify(payload), '')).toBe(true);
+  });
+
+  // PalmPay's signing spec excludes null/undefined/'' values. The verifier
+  // must filter the same way — otherwise any optional field PalmPay omitted
+  // produces a verification mismatch. Today this matters for sessionId,
+  // which non-NIBSS rails skip per the docs.
+  it('verifies a payload with omitted optional fields (null/empty filtered consistently)', () => {
+    const payload = build_signed_payload({
+      orderNo:           'MI2049506742177587200',
+      orderStatus:       2,
+      currency:          'NGN',
+      orderAmount:       100000,
+      payerAccountNo:    '8109677781',
+      payerAccountName:  'ADA OBI',
+      payerBankName:     'GTBank',
+      sessionId:         null,        // PalmPay omits this for non-NIBSS rails
+      virtualAccountNo:  '9931107760',
+      accountReference:  'c2803c4e-ba21-483f-85f2-5fb4d7d948a4',
+      createdTime:       1777475459986,
+      updateTime:        1777475459986,
+    });
+    expect(make_provider().verifyWebhookSignature(JSON.stringify(payload), '')).toBe(true);
   });
 });

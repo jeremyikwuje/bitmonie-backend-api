@@ -62,22 +62,61 @@ export class PalmpayProvider implements DisbursementProvider {
     return Buffer.from(signature, 'binary').toString('base64');
   }
 
+  // PalmPay's dashboard hands the platform public key out as bare
+  // base64-encoded X.509 SubjectPublicKeyInfo DER — NO PEM BEGIN/END
+  // headers — so a strict PEM parse silently fails and every webhook
+  // gets rejected as UNAUTHORIZED. Accept either format and trim any
+  // whitespace/newlines that may have crept in via env-var copy-paste.
+  private load_webhook_pub_key(): forge.pki.rsa.PublicKey {
+    const raw = (this.config.webhook_pub_key ?? '').trim();
+    if (raw === '') {
+      throw new Error('PalmPay webhook public key is not configured (PALMPAY_WEBHOOK_PUB_KEY)');
+    }
+    if (raw.includes('-----BEGIN')) {
+      return forge.pki.publicKeyFromPem(raw) as forge.pki.rsa.PublicKey;
+    }
+    const der_bytes = forge.util.decode64(raw.replace(/\s+/g, ''));
+    const asn1 = forge.asn1.fromDer(der_bytes);
+    return forge.pki.publicKeyFromAsn1(asn1) as forge.pki.rsa.PublicKey;
+  }
+
   private verify_webhook_sign(params: Record<string, unknown>, signature: string): boolean {
+    let public_key: forge.pki.rsa.PublicKey;
     try {
+      public_key = this.load_webhook_pub_key();
+    } catch (err) {
+      // Bad key config is operator error, not a tampered payload — surface
+      // the cause loudly so it doesn't masquerade as a signature mismatch.
+      this.logger.error(
+        { error: err instanceof Error ? err.message : String(err) },
+        'PalmPay webhook public key failed to load — every signature will fail until this is fixed',
+      );
+      return false;
+    }
+
+    try {
+      // Match PalmPay's signing spec exactly: drop the sign field, exclude
+      // null/undefined/empty values (asymmetric handling here would break
+      // verification on any payload with optional fields PalmPay omitted),
+      // sort keys ascending, join as key=value&… .
       const { sign: _, ...rest } = params;
       const sorted = Object.keys(rest)
+        .filter((k) => rest[k] !== undefined && rest[k] !== null && rest[k] !== '')
         .sort()
         .map((k) => `${k}=${String(rest[k])}`)
         .join('&');
-      const md5 = crypto.createHash('md5').update(sorted).digest('hex').toUpperCase();
+      const md5 = crypto.createHash('md5').update(sorted, 'utf8').digest('hex').toUpperCase();
 
-      const public_key = forge.pki.publicKeyFromPem(this.config.webhook_pub_key);
       const md = forge.md.sha1.create();
       md.update(md5, 'utf8');
       // sign in webhook payload is URL-encoded base64
       const raw_sig = forge.util.decode64(decodeURIComponent(signature));
       return public_key.verify(md.digest().bytes(), raw_sig);
-    } catch {
+    } catch (err) {
+      this.logger.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        'PalmPay webhook signature verification threw — treating as invalid',
+      );
       return false;
     }
   }
