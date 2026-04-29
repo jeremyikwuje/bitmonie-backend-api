@@ -208,7 +208,7 @@ describe('PalmpayProvider.initiateTransfer', () => {
     );
   });
 
-  it('sends orderId, amount and payeeBankCode in body', async () => {
+  it('sends orderId, amount (in kobo — 100x NGN), and payeeBankCode in body', async () => {
     mock_ok({
       respCode: '00000000',
       respMsg: 'success',
@@ -220,8 +220,27 @@ describe('PalmpayProvider.initiateTransfer', () => {
     const call = (global.fetch as jest.Mock).mock.calls[0];
     const body = JSON.parse(call[1].body as string) as Record<string, unknown>;
     expect(body.orderId).toBe('txn_ref_001');
-    expect(body.amount).toBe(50000);
+    // PalmPay expects amount in MINOR units (kobo): 50,000 NGN × 100 = 5_000_000 kobo
+    expect(body.amount).toBe(5_000_000);
     expect(body.payeeBankCode).toBe('058');
+  });
+
+  it('rounds sub-kobo dust to integer kobo (defensive — should never occur in practice)', async () => {
+    mock_ok({
+      respCode: '00000000',
+      respMsg: 'success',
+      data: { orderId: 'id', orderNo: 'ref' },
+    });
+
+    // 1234.567 NGN → 123,456.7 kobo → rounds to 123,457 kobo (HALF_UP default)
+    await make_provider().initiateTransfer({
+      ...TRANSFER_PARAMS,
+      amount: new Decimal('1234.567'),
+    });
+
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string) as { amount: number };
+    expect(body.amount).toBe(123_457);
+    expect(Number.isInteger(body.amount)).toBe(true);
   });
 });
 

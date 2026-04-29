@@ -201,11 +201,19 @@ export class PalmpayProvider implements DisbursementProvider {
     reference: string;
     narration: string;
   }): Promise<{ provider_txn_id: string; provider_response: Record<string, unknown> }> {
+    // PalmPay expects amount in MINOR units (kobo) for both payout and
+    // collection notifications: 1 NGN = 100 kobo. Multiplying by 100 and
+    // rounding to integer kobo is the canonical conversion — Decimal handles
+    // the multiply precisely; toDecimalPlaces(0) collapses sub-kobo dust that
+    // shouldn't exist (you can't physically transfer 0.5 kobo) but defends
+    // against floating-point oddities upstream.
+    const amount_kobo = params.amount.times(100).toDecimalPlaces(0).toNumber();
+
     const data = await this.post(
       '/api/v2/merchant/payment/payout',
       {
         orderId: params.reference,
-        amount: params.amount.toDecimalPlaces(2).toNumber(),
+        amount: amount_kobo,
         currency: params.currency,
         payeeBankCode: params.provider_code,
         payeeBankAccNo: params.account_unique,
