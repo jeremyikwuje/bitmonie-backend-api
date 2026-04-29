@@ -55,8 +55,8 @@ function buildEmailProvider(): EmailProvider {
         api_key:      process.env.MAILGUN_API_KEY      ?? '',
         domain:       process.env.MAILGUN_DOMAIN       ?? '',
         region:       (process.env.MAILGUN_REGION as 'us' | 'eu') ?? 'us',
-        from_address: process.env.MAILGUN_FROM_ADDRESS ?? '',
-        from_name:    process.env.MAILGUN_FROM_NAME    ?? 'Bitmonie',
+        from_address: process.env.EMAIL_FROM_ADDRESS ?? '',
+        from_name:    process.env.EMAIL_FROM_NAME    ?? 'Bitmonie',
       });
     case EmailProviderName.Resend:
       return new ResendProvider({
