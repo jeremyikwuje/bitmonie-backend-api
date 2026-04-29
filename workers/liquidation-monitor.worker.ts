@@ -14,9 +14,11 @@ import {
   LIQUIDATION_THRESHOLD,
   ALERT_THRESHOLD,
   ALERT_COOLDOWN_SEC,
+  MIN_LIQUIDATION_RATE_FRACTION,
   REDIS_KEYS,
   LoanReasonCodes,
 } from '@/common/constants';
+import { AccrualService } from '@/modules/loans/accrual.service';
 import { BlinkProvider } from '@/providers/blink/blink.provider';
 
 const WORKER_INTERVAL_MS = parseInt(process.env.WORKER_LIQUIDATION_INTERVAL_MS ?? '30000', 10);
@@ -27,6 +29,7 @@ export interface LiquidationDeps {
   redis: Redis;
   log: (level: string, event: string, extra?: Record<string, unknown>) => void;
   blink: { swapBtcToUsd: (amount_sat: bigint) => Promise<void> };
+  accrual: AccrualService;
 }
 
 function defaultLog(level: string, event: string, extra: Record<string, unknown> = {}): void {
@@ -36,7 +39,7 @@ function defaultLog(level: string, event: string, extra: Record<string, unknown>
 }
 
 export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> {
-  const { prisma, redis, log, blink } = deps;
+  const { prisma, redis, log, blink, accrual } = deps;
 
   // 1. Skip if price is stale
   const stale = await redis.get(REDIS_KEYS.PRICE_STALE);
@@ -64,30 +67,123 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
     return;
   }
 
+  // 2a. Hard guard: a non-positive rate is always a broken feed. Mark stale,
+  // page ops, and abort the cycle — never liquidate on a zero/negative price.
+  if (!current_rate.isFinite() || current_rate.lte(0)) {
+    log('error', 'rate_non_positive_abort', {
+      raw: rate_raw,
+      alert_recipient: INTERNAL_ALERT_EMAIL,
+    });
+    await redis.set(REDIS_KEYS.PRICE_STALE, Date.now().toString());
+    await redis.set(REDIS_KEYS.WORKER_HEARTBEAT('liquidation_monitor'), Date.now().toString());
+    return;
+  }
+
   // 3. Query ACTIVE loans FOR UPDATE SKIP LOCKED
   type ActiveLoanRow = {
     id: string;
     user_id: string;
     collateral_amount_sat: bigint;
     principal_ngn: string;
+    daily_interest_rate_bps: number;
+    daily_custody_fee_ngn: string;
+    collateral_received_at: Date | null;
+    sat_ngn_rate_at_creation: string;
     collateral_release_address: string | null;
   };
 
   const active_loans = await prisma.$queryRaw<ActiveLoanRow[]>`
-    SELECT id, user_id, collateral_amount_sat, principal_ngn::text, collateral_release_address
+    SELECT id, user_id, collateral_amount_sat,
+           principal_ngn::text,
+           daily_interest_rate_bps,
+           daily_custody_fee_ngn::text,
+           collateral_received_at,
+           sat_ngn_rate_at_creation::text,
+           collateral_release_address
     FROM loans
     WHERE status = ${LoanStatus.ACTIVE}::"LoanStatus"
     FOR UPDATE SKIP LOCKED
   `;
 
+  // 3a. Pull repayments for all locked loans in one query — needed for accrual
+  // (the waterfall reduces principal piecewise, which changes the daily
+  // interest rate from each repayment forward).
+  const repayments_by_loan = new Map<string, Array<{
+    applied_to_principal: Decimal;
+    applied_to_interest:  Decimal;
+    applied_to_custody:   Decimal;
+    created_at:           Date;
+  }>>();
+
+  if (active_loans.length > 0) {
+    const repayment_rows = await prisma.loanRepayment.findMany({
+      where: { loan_id: { in: active_loans.map((l) => l.id) } },
+      select: {
+        loan_id:              true,
+        applied_to_principal: true,
+        applied_to_interest:  true,
+        applied_to_custody:   true,
+        created_at:           true,
+      },
+    });
+    for (const row of repayment_rows) {
+      const list = repayments_by_loan.get(row.loan_id) ?? [];
+      list.push({
+        applied_to_principal: new Decimal(row.applied_to_principal.toString()),
+        applied_to_interest:  new Decimal(row.applied_to_interest.toString()),
+        applied_to_custody:   new Decimal(row.applied_to_custody.toString()),
+        created_at:           row.created_at,
+      });
+      repayments_by_loan.set(row.loan_id, list);
+    }
+  }
+
   let liquidated = 0;
   let alerted = 0;
+  let suspicious_skipped = 0;
+  const as_of = new Date();
 
   for (const loan of active_loans) {
     const collateral_sat = new Decimal(loan.collateral_amount_sat.toString());
     const principal = new Decimal(loan.principal_ngn);
+    const rate_at_creation = new Decimal(loan.sat_ngn_rate_at_creation);
+
+    // Compute live outstanding (principal + accrued interest + accrued custody)
+    // per CLAUDE.md §5.4a. Liquidation ratio is collateral / outstanding,
+    // NOT collateral / principal.
+    const outstanding = accrual.compute({
+      loan: {
+        principal_ngn:           principal,
+        daily_interest_rate_bps: loan.daily_interest_rate_bps,
+        daily_custody_fee_ngn:   new Decimal(loan.daily_custody_fee_ngn),
+        collateral_received_at:  loan.collateral_received_at,
+      },
+      repayments: repayments_by_loan.get(loan.id) ?? [],
+      as_of,
+    });
+
     const current_value_ngn = collateral_sat.mul(current_rate);
-    const ratio = current_value_ngn.div(principal);
+    const ratio = current_value_ngn.div(outstanding.total_outstanding_ngn);
+
+    // Per-loan sanity bound: never liquidate if the current rate has cratered
+    // beyond a plausible market move vs. this loan's origination rate. Page ops
+    // — if the drop is real, ops can verify and liquidate manually; if it's a
+    // single-feed glitch, this stops it from cascading across the book.
+    const sanity_floor = rate_at_creation.mul(MIN_LIQUIDATION_RATE_FRACTION);
+    if (current_rate.lt(sanity_floor)) {
+      suspicious_skipped++;
+      log('error', 'liquidation_skipped_rate_suspect', {
+        loan_id:                  loan.id,
+        user_id:                  loan.user_id,
+        current_rate:             current_rate.toFixed(6),
+        rate_at_creation:         rate_at_creation.toFixed(6),
+        sanity_floor:             sanity_floor.toFixed(6),
+        min_fraction:             MIN_LIQUIDATION_RATE_FRACTION.toString(),
+        ratio:                    ratio.toFixed(4),
+        alert_recipient:          INTERNAL_ALERT_EMAIL,
+      });
+      continue;
+    }
 
     if (ratio.lte(LIQUIDATION_THRESHOLD)) {
       // Liquidate
@@ -122,12 +218,13 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
       if (!already_alerted) {
         await redis.set(alert_key, '1', 'EX', ALERT_COOLDOWN_SEC);
         log('warn', 'liquidation_alert', {
-          loan_id: loan.id,
-          user_id: loan.user_id,
-          ratio: ratio.toFixed(4),
+          loan_id:           loan.id,
+          user_id:           loan.user_id,
+          ratio:             ratio.toFixed(4),
           current_value_ngn: current_value_ngn.toFixed(2),
-          principal_ngn: principal.toFixed(2),
-          alert_recipient: INTERNAL_ALERT_EMAIL,
+          outstanding_ngn:   outstanding.total_outstanding_ngn.toFixed(2),
+          principal_ngn:     principal.toFixed(2),
+          alert_recipient:   INTERNAL_ALERT_EMAIL,
         });
         alerted++;
       }
@@ -136,11 +233,12 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
 
   await redis.set(REDIS_KEYS.WORKER_HEARTBEAT('liquidation_monitor'), Date.now().toString());
 
-  if (active_loans.length > 0 || liquidated > 0 || alerted > 0) {
+  if (active_loans.length > 0 || liquidated > 0 || alerted > 0 || suspicious_skipped > 0) {
     log('info', 'cycle_complete', {
       checked: active_loans.length,
       liquidated,
       alerted,
+      suspicious_skipped,
       rate: current_rate.toFixed(6),
     });
   }
@@ -200,7 +298,9 @@ async function main(): Promise<void> {
     webhook_secret: process.env.BLINK_WEBHOOK_SECRET  ?? '',
   });
 
-  const deps: LiquidationDeps = { prisma, redis, log: defaultLog, blink };
+  const accrual = new AccrualService();
+
+  const deps: LiquidationDeps = { prisma, redis, log: defaultLog, blink, accrual };
 
   defaultLog('info', 'started', { interval_ms: WORKER_INTERVAL_MS });
   await redis.ping();

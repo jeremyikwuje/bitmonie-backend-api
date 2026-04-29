@@ -36,7 +36,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "ops:create-user": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/create-ops-user.ts",
-    "ops:disable-user": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/disable-ops-user.ts"
+    "ops:disable-user": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/disable-ops-user.ts",
+    "ops:restore-bad-liquidations": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/restore-bad-rate-liquidations.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.6",

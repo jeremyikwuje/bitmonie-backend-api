@@ -19,6 +19,7 @@ import { LoansModule } from './modules/loans/loans.module';
 import { OpsAuthModule } from './modules/ops/auth/ops-auth.module';
 import { OpsKycModule } from './modules/ops/kyc/ops-kyc.module';
 import { OpsDisbursementsModule } from './modules/ops/disbursements/ops-disbursements.module';
+import { OpsLoansModule } from './modules/ops/loans/ops-loans.module';
 import { PlatformConfigModule } from './modules/platform-config/platform-config.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
@@ -43,6 +44,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     OpsAuthModule,
     OpsKycModule,
     OpsDisbursementsModule,
+    OpsLoansModule,
     PlatformConfigModule,
     WebhooksModule,
   ],

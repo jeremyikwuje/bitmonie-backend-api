@@ -5,6 +5,12 @@ export const LOAN_LTV_PERCENT          = new Decimal('0.60');
 export const LIQUIDATION_THRESHOLD     = new Decimal('1.10');
 export const ALERT_THRESHOLD           = new Decimal('1.20');
 
+// Sanity floor for the liquidation monitor: a current SAT/NGN rate below this
+// fraction of the loan's `sat_ngn_rate_at_creation` is treated as a likely
+// feed glitch — the cycle skips liquidation and pages ops instead of seizing
+// collateral on a bad price. Default 0.5 (i.e. > 50% drop since origination).
+export const MIN_LIQUIDATION_RATE_FRACTION = new Decimal('0.5');
+
 // ── Fee model (v1.1 — accrual-based) ────────────────────────────────────────
 // See docs/repayment-matching-redesign.md §1, §3, §4.
 //
@@ -62,19 +68,20 @@ export const REDIS_KEYS = {
 } as const;
 
 export const LoanReasonCodes = {
-  LOAN_CREATED:              'LOAN_CREATED',
-  COLLATERAL_CONFIRMED:      'COLLATERAL_CONFIRMED',
-  DISBURSEMENT_CONFIRMED:    'DISBURSEMENT_CONFIRMED',
-  REPAYMENT_PARTIAL_NGN:     'REPAYMENT_PARTIAL_NGN',
-  REPAYMENT_COMPLETED:       'REPAYMENT_COMPLETED',
-  COLLATERAL_TOPPED_UP:      'COLLATERAL_TOPPED_UP',
-  COLLATERAL_RELEASED:       'COLLATERAL_RELEASED',
-  LIQUIDATION_TRIGGERED:     'LIQUIDATION_TRIGGERED',
-  LIQUIDATION_COMPLETED:     'LIQUIDATION_COMPLETED',
-  MATURITY_GRACE_STARTED:    'MATURITY_GRACE_STARTED',
-  MATURITY_GRACE_EXPIRED:    'MATURITY_GRACE_EXPIRED',
-  INVOICE_EXPIRED:           'INVOICE_EXPIRED',
-  CUSTOMER_CANCELLED:        'CUSTOMER_CANCELLED',
+  LOAN_CREATED:                  'LOAN_CREATED',
+  COLLATERAL_CONFIRMED:          'COLLATERAL_CONFIRMED',
+  DISBURSEMENT_CONFIRMED:        'DISBURSEMENT_CONFIRMED',
+  REPAYMENT_PARTIAL_NGN:         'REPAYMENT_PARTIAL_NGN',
+  REPAYMENT_COMPLETED:           'REPAYMENT_COMPLETED',
+  COLLATERAL_TOPPED_UP:          'COLLATERAL_TOPPED_UP',
+  COLLATERAL_RELEASED:           'COLLATERAL_RELEASED',
+  LIQUIDATION_TRIGGERED:         'LIQUIDATION_TRIGGERED',
+  LIQUIDATION_COMPLETED:         'LIQUIDATION_COMPLETED',
+  LIQUIDATION_REVERSED_BAD_RATE: 'LIQUIDATION_REVERSED_BAD_RATE',
+  MATURITY_GRACE_STARTED:        'MATURITY_GRACE_STARTED',
+  MATURITY_GRACE_EXPIRED:        'MATURITY_GRACE_EXPIRED',
+  INVOICE_EXPIRED:               'INVOICE_EXPIRED',
+  CUSTOMER_CANCELLED:            'CUSTOMER_CANCELLED',
 } as const;
 
 export type LoanReasonCode = (typeof LoanReasonCodes)[keyof typeof LoanReasonCodes];

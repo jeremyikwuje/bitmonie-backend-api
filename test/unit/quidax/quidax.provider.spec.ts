@@ -97,6 +97,21 @@ describe('QuidaxProvider.fetchRates', () => {
     await expect(make_provider().fetchRates()).rejects.toThrow('validation failed');
   });
 
+  it('throws when ticker rate is zero', async () => {
+    mock_ok({ status: 'success', data: { btcngn: { ticker: { buy: '0', sell: '0' } } } });
+    await expect(make_provider().fetchRates()).rejects.toThrow('validation failed');
+  });
+
+  it('throws when ticker rate is negative', async () => {
+    mock_ok({ status: 'success', data: { btcngn: { ticker: { buy: '-1', sell: '-1' } } } });
+    await expect(make_provider().fetchRates()).rejects.toThrow('validation failed');
+  });
+
+  it('throws when ticker rate is not a parseable decimal', async () => {
+    mock_ok({ status: 'success', data: { btcngn: { ticker: { buy: 'abc', sell: 'abc' } } } });
+    await expect(make_provider().fetchRates()).rejects.toThrow('validation failed');
+  });
+
   it('throws when response contains no recognised pairs', async () => {
     mock_ok({ status: 'success', data: { unknownpair: { ticker: { buy: '1.0', sell: '1.0' } } } });
     await expect(make_provider().fetchRates()).rejects.toThrow('no usable rate pairs');

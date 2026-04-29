@@ -1,6 +1,7 @@
 import { runLiquidationCycle, type LiquidationDeps } from '../../../workers/liquidation-monitor.worker';
 import { LoanStatus, StatusTrigger } from '@prisma/client';
 import { REDIS_KEYS, LoanReasonCodes } from '@/common/constants';
+import { AccrualService } from '@/modules/loans/accrual.service';
 
 const LOAN_ID   = 'loan-uuid-001';
 const USER_ID   = 'user-uuid-001';
@@ -10,13 +11,21 @@ function makeLoan(overrides: Partial<{
   user_id: string;
   collateral_amount_sat: bigint;
   principal_ngn: string;
+  daily_interest_rate_bps: number;
+  daily_custody_fee_ngn: string;
+  collateral_received_at: Date | null;
+  sat_ngn_rate_at_creation: string;
   collateral_release_address: string | null;
 }> = {}) {
   return {
     id:                         LOAN_ID,
     user_id:                    USER_ID,
-    collateral_amount_sat:      BigInt(1_000_000),   // 0.01 BTC
-    principal_ngn:              '80000',             // N80,000
+    collateral_amount_sat:      BigInt(1_000_000),                 // 0.01 BTC
+    principal_ngn:              '80000',                           // N80,000
+    daily_interest_rate_bps:    30,
+    daily_custody_fee_ngn:      '100',
+    collateral_received_at:     new Date(Date.now() - 1_000),      // ~1s ago — day 1 accrual
+    sat_ngn_rate_at_creation:   '1.000000',                        // baseline for sanity-bound checks
     collateral_release_address: null,
     ...overrides,
   };
@@ -30,6 +39,13 @@ type MockTx = {
 function makeDeps(
   loans: ReturnType<typeof makeLoan>[] = [],
   redis_overrides: Record<string, string | null> = {},
+  repayments: Array<{
+    loan_id: string;
+    applied_to_principal: string;
+    applied_to_interest:  string;
+    applied_to_custody:   string;
+    created_at:           Date;
+  }> = [],
 ): LiquidationDeps & { prisma: jest.Mocked<LiquidationDeps['prisma']>; redis: jest.Mocked<LiquidationDeps['redis']>; log: jest.Mock; blink: { swapBtcToUsd: jest.Mock } } {
   const redis_store: Record<string, string | null> = {
     [REDIS_KEYS.PRICE_STALE]:        null,
@@ -43,9 +59,10 @@ function makeDeps(
   };
 
   const prisma = {
-    $queryRaw:   jest.fn().mockResolvedValue(loans),
+    $queryRaw:    jest.fn().mockResolvedValue(loans),
     $transaction: jest.fn().mockImplementation((fn: (tx: typeof mock_tx) => Promise<unknown>) => fn(mock_tx)),
-    _mock_tx:    mock_tx,
+    loanRepayment: { findMany: jest.fn().mockResolvedValue(repayments) },
+    _mock_tx:     mock_tx,
   } as unknown as jest.Mocked<LiquidationDeps['prisma']>;
 
   const redis = {
@@ -55,10 +72,11 @@ function makeDeps(
     set: jest.fn().mockResolvedValue('OK'),
   } as unknown as jest.Mocked<LiquidationDeps['redis']>;
 
-  const log   = jest.fn();
-  const blink = { swapBtcToUsd: jest.fn().mockResolvedValue(undefined) };
+  const log     = jest.fn();
+  const blink   = { swapBtcToUsd: jest.fn().mockResolvedValue(undefined) };
+  const accrual = new AccrualService();
 
-  return { prisma, redis, log, blink } as unknown as LiquidationDeps & {
+  return { prisma, redis, log, blink, accrual } as unknown as LiquidationDeps & {
     prisma: jest.Mocked<LiquidationDeps['prisma']>;
     redis: jest.Mocked<LiquidationDeps['redis']>;
     log: jest.Mock;
@@ -200,6 +218,137 @@ describe('runLiquidationCycle', () => {
     expect(deps.redis.set).toHaveBeenCalledWith(
       REDIS_KEYS.WORKER_HEARTBEAT('liquidation_monitor'),
       expect.any(String),
+    );
+  });
+
+  it('aborts cycle and marks price stale when rate is zero', async () => {
+    const loan = makeLoan({ collateral_amount_sat: BigInt(100_000), principal_ngn: '80000' });
+    const deps = makeDeps([loan], {
+      [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '0', sell: '0' }),
+    });
+
+    await runLiquidationCycle(deps);
+
+    expect(deps.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(deps.prisma.$transaction).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith('error', 'rate_non_positive_abort', expect.any(Object));
+    expect(deps.redis.set).toHaveBeenCalledWith(REDIS_KEYS.PRICE_STALE, expect.any(String));
+  });
+
+  it('aborts cycle when rate is negative', async () => {
+    const deps = makeDeps([], {
+      [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '-1', sell: '-1' }),
+    });
+
+    await runLiquidationCycle(deps);
+
+    expect(deps.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith('error', 'rate_non_positive_abort', expect.any(Object));
+    expect(deps.redis.set).toHaveBeenCalledWith(REDIS_KEYS.PRICE_STALE, expect.any(String));
+  });
+
+  it('skips liquidation and pages ops when current rate is below sanity floor', async () => {
+    // sat_ngn_rate_at_creation = 1.000000; floor = 1.0 × 0.5 = 0.5
+    // current rate = 0.4 (below floor) → would have liquidated, but skipped instead
+    const loan = makeLoan({
+      collateral_amount_sat:    BigInt(100_000),
+      principal_ngn:            '80000',
+      sat_ngn_rate_at_creation: '1.000000',
+    });
+    const deps = makeDeps([loan], {
+      [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '0.500000', sell: '0.400000' }),
+    });
+
+    await runLiquidationCycle(deps);
+
+    expect(deps.prisma.$transaction).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(
+      'error',
+      'liquidation_skipped_rate_suspect',
+      expect.objectContaining({ loan_id: LOAN_ID, current_rate: '0.400000' }),
+    );
+    expect(deps.blink.swapBtcToUsd).not.toHaveBeenCalled();
+  });
+
+  it('liquidates when collateral covers principal but not outstanding (accrual-aware ratio)', async () => {
+    // 60-day-old loan at 0.3% daily + N100/day custody.
+    // outstanding = 80_000 + 80_000 × 0.003 × 60 + 100 × 60 = 100_400 NGN
+    // collateral  = 100_000 sat × 0.95 = 95_000 NGN
+    // ratio_principal   = 95_000 / 80_000  = 1.1875  → old behaviour: only alerts
+    // ratio_outstanding = 95_000 / 100_400 = 0.9462  → new behaviour: liquidates
+    const sixty_days_ago = new Date(Date.now() - 60 * 86_400_000);
+    const loan = makeLoan({
+      collateral_amount_sat:  BigInt(100_000),
+      principal_ngn:          '80000',
+      collateral_received_at: sixty_days_ago,
+    });
+    const deps = makeDeps([loan], {
+      [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '1.000000', sell: '0.950000' }),
+    });
+
+    await runLiquidationCycle(deps);
+
+    expect(deps.prisma.$transaction).toHaveBeenCalled();
+    const mock_tx = (deps.prisma as unknown as { _mock_tx: MockTx })._mock_tx;
+    expect(mock_tx.loan.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: LoanStatus.LIQUIDATED }) }),
+    );
+  });
+
+  it('reduces outstanding by repayments when computing ratio', async () => {
+    // 60-day-old loan, customer paid back N50_000 30 days ago — waterfall took
+    // custody (3000) + interest (~7200) + ~39_800 of principal. From day 30 on,
+    // interest accrues at the lower principal. With repayment, outstanding ends
+    // up healthy enough that ratio > 1.10 (no liquidation).
+    const sixty_days_ago = new Date(Date.now() - 60 * 86_400_000);
+    const thirty_days_ago = new Date(Date.now() - 30 * 86_400_000);
+    const loan = makeLoan({
+      collateral_amount_sat:  BigInt(100_000),
+      principal_ngn:          '80000',
+      collateral_received_at: sixty_days_ago,
+    });
+    const deps = makeDeps(
+      [loan],
+      { [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '1.000000', sell: '0.950000' }) },
+      [{
+        loan_id:              LOAN_ID,
+        applied_to_principal: '39800',
+        applied_to_interest:  '7200',
+        applied_to_custody:   '3000',
+        created_at:           thirty_days_ago,
+      }],
+    );
+
+    await runLiquidationCycle(deps);
+
+    // outstanding ≈ (80000 - 39800) + interest_after_repayment + (60×100 - 3000)
+    //             = 40_200 + ~3618 + 3000 ≈ 46_818
+    // collateral  = 95_000; ratio ≈ 2.029 → healthy, no action
+    expect(deps.prisma.$transaction).not.toHaveBeenCalled();
+    const alert_logs = (deps.log as jest.Mock).mock.calls.filter(
+      (call: unknown[]) => call[1] === 'liquidation_alert',
+    );
+    expect(alert_logs).toHaveLength(0);
+  });
+
+  it('still liquidates when current rate is at or above the sanity floor', async () => {
+    // sat_ngn_rate_at_creation = 1.000000; floor = 0.5; current rate = 0.6 → above floor
+    // collateral 100_000 sat × 0.6 = 60_000 NGN; principal 80_000; ratio = 0.75 ≤ 1.10
+    const loan = makeLoan({
+      collateral_amount_sat:    BigInt(100_000),
+      principal_ngn:            '80000',
+      sat_ngn_rate_at_creation: '1.000000',
+    });
+    const deps = makeDeps([loan], {
+      [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '0.700000', sell: '0.600000' }),
+    });
+
+    await runLiquidationCycle(deps);
+
+    expect(deps.prisma.$transaction).toHaveBeenCalled();
+    const mock_tx = (deps.prisma as unknown as { _mock_tx: MockTx })._mock_tx;
+    expect(mock_tx.loan.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: LoanStatus.LIQUIDATED }) }),
     );
   });
 

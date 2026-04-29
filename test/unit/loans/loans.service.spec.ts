@@ -122,6 +122,7 @@ function make_prisma() {
       findFirst: jest.fn().mockResolvedValue(DEFAULT_ACCOUNT),
     },
     loan: {
+      count:             jest.fn().mockResolvedValue(0),
       create:            jest.fn().mockResolvedValue(DB_LOAN),
       findFirst:         jest.fn().mockResolvedValue(DB_LOAN),
       findUniqueOrThrow: jest.fn().mockResolvedValue(DB_LOAN),

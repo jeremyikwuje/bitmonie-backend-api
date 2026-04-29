@@ -139,6 +139,38 @@ export class LoanHasActiveDisbursementException extends BitmonieException {
   }
 }
 
+// Restore-from-bad-liquidation guardrails. Both 409 because the request is
+// well-formed but the target loan is in the wrong state for this remediation.
+export class LoanNotLiquidatedException extends BitmonieException {
+  constructor(context: { status: string }) {
+    super(
+      'LOAN_NOT_LIQUIDATED',
+      'Only LIQUIDATED loans can be restored.',
+      HttpStatus.CONFLICT,
+      [{ field: 'status', issue: `Loan is ${context.status}` }],
+    );
+  }
+}
+
+export class LiquidationNotBadRateException extends BitmonieException {
+  constructor(context: {
+    liquidation_rate_actual: string | null;
+    sat_ngn_rate_at_creation: string;
+    sanity_floor:             string;
+  }) {
+    super(
+      'LIQUIDATION_NOT_BAD_RATE',
+      'Liquidation does not match the bad-rate signature; restoration refused.',
+      HttpStatus.CONFLICT,
+      [
+        { field: 'liquidation_rate_actual',  issue: context.liquidation_rate_actual ?? 'null' },
+        { field: 'sat_ngn_rate_at_creation', issue: context.sat_ngn_rate_at_creation },
+        { field: 'sanity_floor',             issue: context.sanity_floor },
+      ],
+    );
+  }
+}
+
 export class InflowBelowFloorException extends BitmonieException {
   constructor(context: { received_ngn: string; floor_ngn: string }) {
     super(
