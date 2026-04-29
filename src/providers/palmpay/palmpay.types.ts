@@ -70,6 +70,34 @@ export type PalmpayQueryPayStatusResponse = z.infer<
   typeof PalmpayQueryPayStatusResponseSchema
 >;
 
+// ── Query bank list ──────────────────────────────────────────────────────────
+// PalmPay returns the catalogue of banks and bank-equivalent destinations that
+// can be set as the payee on a payout. Some unofficial entries (mobile-money
+// wallets, MFBs) are surfaced under the same shape as bank rows. We expose
+// them all as banks to the frontend; PalmPay's payout API treats them
+// uniformly when bankCode is supplied.
+//
+// Per the docs, every row carries bankCode + bankName. bankUrl is the brand
+// mark; bgUrl/bg2Url are background/list-card variants we don't need.
+
+export const PalmpayQueryBankListResponseSchema = z.object({
+  respCode: z.string(),
+  respMsg:  z.string(),
+  data: z
+    .array(
+      z.object({
+        bankCode: z.string(),
+        bankName: z.string(),
+        bankUrl:  z.string().nullish(),
+      }),
+    )
+    .nullish(),
+});
+
+export type PalmpayQueryBankListResponse = z.infer<
+  typeof PalmpayQueryBankListResponseSchema
+>;
+
 // ── Query balance ─────────────────────────────────────────────────────────────
 
 export const PalmpayQueryBalanceResponseSchema = z.object({

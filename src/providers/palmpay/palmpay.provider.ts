@@ -3,18 +3,25 @@ import * as crypto from 'crypto';
 import * as forge from 'node-forge';
 import { Decimal } from 'decimal.js';
 import type { PalmpayConfig } from '@/config/providers.config';
-import type { DisbursementProvider } from '@/modules/disbursements/disbursement.provider.interface';
+import type { Bank, DisbursementProvider } from '@/modules/disbursements/disbursement.provider.interface';
 import type { CollectionIdentityType } from '@/modules/loans/collection.provider.interface';
 import {
   PalmpayQueryBankAccountResponseSchema,
   PalmpayPayoutResponseSchema,
   PalmpayQueryPayStatusResponseSchema,
   PalmpayQueryBalanceResponseSchema,
+  PalmpayQueryBankListResponseSchema,
   PalmpayCreateVirtualAccountResponseSchema,
   PALMPAY_RESP_CODE_SUCCESS,
   PALMPAY_ORDER_STATUS_SUCCESS,
   PALMPAY_ORDER_STATUS_FAILED,
 } from './palmpay.types';
+
+// Bank list rarely changes upstream (new PSPs/MFBs trickle in over weeks).
+// Cache the parsed list in-memory so the public /banks endpoint stays cheap
+// and survives short PalmPay blips. TTL is short enough that a newly-onboarded
+// PSP shows up on the next hot reload.
+const PALMPAY_BANK_LIST_CACHE_TTL_MS = 60 * 60 * 1000;
 
 function nonce_str(): string {
   return crypto.randomBytes(16).toString('hex');
@@ -23,6 +30,12 @@ function nonce_str(): string {
 @Injectable()
 export class PalmpayProvider implements DisbursementProvider {
   private readonly logger = new Logger(PalmpayProvider.name);
+
+  // In-memory cache for listBanks(). PalmPay's bank catalogue is small,
+  // public, and rarely changes — re-fetching on every dropdown render
+  // would be wasteful and would expose us to upstream blips. `expires_at`
+  // is checked on each call; a miss re-fetches in-band on the next caller.
+  private bank_list_cache: { banks: Bank[]; expires_at: number } | null = null;
 
   constructor(private readonly config: PalmpayConfig) {}
 
@@ -168,6 +181,37 @@ export class PalmpayProvider implements DisbursementProvider {
       current_ngn:   data.data?.currentBalance   ?? 0,
       unsettle_ngn:  data.data?.unSettleBalance   ?? 0,
     };
+  }
+
+  // ── listBanks ─────────────────────────────────────────────────────────────
+  // Returns the catalogue of payout destinations PalmPay can route to in NG.
+  // businessType=0 ("all") includes commercial banks, MFBs, and mobile-money
+  // wallets — they share the same bankCode/bankName shape and are accepted
+  // uniformly by the payout endpoint via payeeBankCode.
+  async listBanks(): Promise<Bank[]> {
+    const now = Date.now();
+    if (this.bank_list_cache && this.bank_list_cache.expires_at > now) {
+      return this.bank_list_cache.banks;
+    }
+
+    const data = await this.post(
+      '/api/v2/general/merchant/queryBankList',
+      { businessType: '0' },
+      PalmpayQueryBankListResponseSchema,
+    );
+
+    if (data.respCode !== PALMPAY_RESP_CODE_SUCCESS) {
+      throw new Error(`PalmPay queryBankList failed: ${data.respCode} ${data.respMsg}`);
+    }
+
+    const banks: Bank[] = (data.data ?? []).map((row) => ({
+      code:     row.bankCode,
+      name:     row.bankName,
+      logo_url: row.bankUrl ?? null,
+    }));
+
+    this.bank_list_cache = { banks, expires_at: now + PALMPAY_BANK_LIST_CACHE_TTL_MS };
+    return banks;
   }
 
   // ── lookupAccountName ──────────────────────────────────────────────────────

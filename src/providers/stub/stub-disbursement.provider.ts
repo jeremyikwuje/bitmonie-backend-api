@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Decimal } from 'decimal.js';
 import { PrismaService } from '@/database/prisma.service';
-import type { DisbursementProvider, DisbursementBalance } from '@/modules/disbursements/disbursement.provider.interface';
+import type { Bank, DisbursementProvider, DisbursementBalance } from '@/modules/disbursements/disbursement.provider.interface';
 
 @Injectable()
 export class StubDisbursementProvider implements DisbursementProvider {
@@ -9,6 +9,24 @@ export class StubDisbursementProvider implements DisbursementProvider {
 
   async getBalance(): Promise<DisbursementBalance> {
     return { available_ngn: 10_000_000, frozen_ngn: 0, current_ngn: 10_000_000, unsettle_ngn: 0 };
+  }
+
+  // Local-dev fallback so the bank-select dropdown is populated without
+  // hitting PalmPay. Codes are NIBSS sort codes — sufficient for any flow
+  // that ends in the stub initiateTransfer (which echoes success regardless).
+  async listBanks(): Promise<Bank[]> {
+    return [
+      { code: '044',    name: 'Access Bank',                  logo_url: null },
+      { code: '058',    name: 'Guaranty Trust Bank (GTBank)', logo_url: null },
+      { code: '011',    name: 'First Bank of Nigeria',        logo_url: null },
+      { code: '033',    name: 'United Bank for Africa (UBA)', logo_url: null },
+      { code: '057',    name: 'Zenith Bank',                  logo_url: null },
+      { code: '232',    name: 'Sterling Bank',                logo_url: null },
+      { code: '100033', name: 'PalmPay',                      logo_url: null },
+      { code: '50515',  name: 'Moniepoint MFB',               logo_url: null },
+      { code: '90267',  name: 'Kuda Bank',                    logo_url: null },
+      { code: '100004', name: 'OPay',                         logo_url: null },
+    ];
   }
 
   // Returns the most recent verified tier-1 legal_name so name-match always passes

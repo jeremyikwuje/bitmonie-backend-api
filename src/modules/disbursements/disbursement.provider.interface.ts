@@ -9,8 +9,19 @@ export interface DisbursementBalance {
   unsettle_ngn: number;
 }
 
+export interface Bank {
+  code: string;            // provider-specific code passed back as provider_code on payout
+  name: string;            // human-readable label for the customer / narration
+  logo_url: string | null; // brand mark URL — for the frontend bank-select dropdown
+}
+
 export interface DisbursementProvider {
   getBalance(): Promise<DisbursementBalance>;
+
+  // Returns the list of banks (and bank-equivalent destinations) the provider
+  // can route money to. Used by the public /banks endpoint to populate the
+  // bank-select dropdown on the disbursement-account add screen.
+  listBanks(): Promise<Bank[]>;
 
   lookupAccountName(params: {
     bank_code: string;

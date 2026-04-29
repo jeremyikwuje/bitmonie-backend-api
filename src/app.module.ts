@@ -14,6 +14,7 @@ import { PriceFeedModule } from './modules/price-feed/price-feed.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { KycModule } from './modules/kyc/kyc.module';
+import { BanksModule } from './modules/banks/banks.module';
 import { DisbursementAccountsModule } from './modules/disbursement-accounts/disbursement-accounts.module';
 import { LoansModule } from './modules/loans/loans.module';
 import { OpsAuthModule } from './modules/ops/auth/ops-auth.module';
@@ -39,6 +40,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     AuthModule,
     UsersModule,
     KycModule,
+    BanksModule,
     DisbursementAccountsModule,
     LoansModule,
     OpsAuthModule,
