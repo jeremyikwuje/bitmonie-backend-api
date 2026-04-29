@@ -119,7 +119,25 @@ export async function runReconcilerCycle(deps: ReconcilerDeps): Promise<void> {
         continue;
       }
 
+      log('debug', 'querying_provider', {
+        outflow_id:         row.outflow_id,
+        disbursement_id:    row.disbursement_id,
+        provider:           row.provider,
+        provider_reference: row.provider_reference,
+      });
+
       const status = await impl.getTransferStatus(row.provider_reference);
+
+      // Log the mapped result so a stuck row is auditable end-to-end:
+      // PalmPay (queryPayStatus payload) → provider (mapped status) → reconciler.
+      log('info', 'provider_status_resolved', {
+        outflow_id:         row.outflow_id,
+        disbursement_id:    row.disbursement_id,
+        provider_reference: row.provider_reference,
+        mapped_status:      status.status,
+        failure_reason:     status.failure_reason,
+        failure_code:       status.failure_code,
+      });
 
       if (status.status === 'successful') {
         await outflows.handleSuccess(
@@ -149,7 +167,14 @@ export async function runReconcilerCycle(deps: ReconcilerDeps): Promise<void> {
         });
       } else {
         // Provider says still processing — leave the row alone, try again next tick.
+        // Log per-row so a row stuck across many cycles is visible (used to be
+        // silent — only the cycle-level still_processing counter showed it).
         still_processing++;
+        log('info', 'still_processing', {
+          outflow_id:         row.outflow_id,
+          disbursement_id:    row.disbursement_id,
+          provider_reference: row.provider_reference,
+        });
       }
     } catch (err) {
       errors++;

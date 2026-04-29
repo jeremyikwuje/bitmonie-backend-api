@@ -249,6 +249,27 @@ export class PalmpayProvider implements DisbursementProvider {
 
     const order_status = data.data?.orderStatus;
 
+    // Log every parsed status reply so the reconciler's "stuck PROCESSING"
+    // path is debuggable. PalmPay queryPayStatus responses don't echo
+    // customer account numbers — only orderId/orderNo/orderStatus/message —
+    // so this is safe under §5.8. orderStatus codes: 1=processing, 2=success,
+    // 3=failed; anything else falls through to "processing" below, which is
+    // the most common cause of stuck rows when PalmPay returns a code we
+    // don't have mapped.
+    this.logger.log(
+      {
+        provider_reference,
+        respCode:    data.respCode,
+        respMsg:     data.respMsg,
+        orderStatus: order_status,
+        orderId:     data.data?.orderId,
+        orderNo:     data.data?.orderNo,
+        sessionId:   data.data?.sessionId,
+        message:     data.data?.message,
+      },
+      'PalmPay queryPayStatus response',
+    );
+
     if (order_status === PALMPAY_ORDER_STATUS_SUCCESS) return { status: 'successful' };
     if (order_status === PALMPAY_ORDER_STATUS_FAILED) {
       return {
