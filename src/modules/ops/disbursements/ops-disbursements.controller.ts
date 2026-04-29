@@ -61,6 +61,32 @@ export class OpsDisbursementsController {
     return this.service.list(query);
   }
 
+  @Post('recreate-for-loan/:loan_id')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Recreate a disbursement for an ACTIVE loan whose previous disbursement was cancelled',
+    description:
+      "Use when a loan reached ACTIVE but the original disbursement was terminally cancelled (or otherwise never funded the customer). Re-snapshots the loan's CURRENT default disbursement_account and dispatches a fresh Disbursement + Outflow. Rejects when the loan isn't ACTIVE, when a non-terminal disbursement already exists for the loan, or when no default account / no provider_code is set. Writes one ops_audit_logs row with action=disbursement.recreate.",
+  })
+  @ApiParam({ name: 'loan_id', description: 'Loan UUID' })
+  @ApiResponse({ status: 202, description: 'New disbursement created and dispatched' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 404, description: 'Loan not found' })
+  @ApiResponse({ status: 409, description: 'Loan is not ACTIVE, or already has a non-terminal disbursement' })
+  @ApiResponse({ status: 422, description: 'Loan has no default disbursement account / missing provider_code' })
+  async recreateForLoan(
+    @CurrentOpsUser() ops_user: AuthenticatedOpsUser,
+    @Param('loan_id', new ParseUUIDPipe()) loan_id: string,
+    @Req() req: Request,
+  ): Promise<{ message: string; disbursement_id: string }> {
+    const { disbursement_id } = await this.service.recreateForActiveLoan(loan_id, {
+      ops_user_id: ops_user.id,
+      request_id:  readRequestId(req),
+      ip_address:  req.ip ?? null,
+    });
+    return { message: 'New disbursement created and dispatched.', disbursement_id };
+  }
+
   @Get(':disbursement_id')
   @ApiOperation({
     summary: 'Disbursement detail with all outflow attempts',

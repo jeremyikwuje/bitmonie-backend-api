@@ -47,21 +47,23 @@ describe('OpsDisbursementsController (integration)', () => {
   let prisma: {
     opsSession:    { findUnique: jest.Mock };
     opsUser:       { findUnique: jest.Mock };
-    disbursement:  { findMany: jest.Mock; findUnique: jest.Mock };
+    disbursement:  { findMany: jest.Mock; findUnique: jest.Mock; findFirst: jest.Mock };
+    loan:          { findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
-  let outflows: { retryDispatch: jest.Mock; handleFailure: jest.Mock };
-  let disbursements: { findById: jest.Mock; markCancelled: jest.Mock };
+  let outflows: { retryDispatch: jest.Mock; handleFailure: jest.Mock; dispatch: jest.Mock };
+  let disbursements: { findById: jest.Mock; markCancelled: jest.Mock; createForLoan: jest.Mock };
 
   async function build_app(): Promise<void> {
     prisma = {
       opsSession:   { findUnique: jest.fn() },
       opsUser:      { findUnique: jest.fn() },
-      disbursement: { findMany: jest.fn(), findUnique: jest.fn() },
+      disbursement: { findMany: jest.fn(), findUnique: jest.fn(), findFirst: jest.fn() },
+      loan:         { findUnique: jest.fn() },
       $transaction: jest.fn(),
     };
-    outflows = { retryDispatch: jest.fn(), handleFailure: jest.fn() };
-    disbursements = { findById: jest.fn(), markCancelled: jest.fn() };
+    outflows = { retryDispatch: jest.fn(), handleFailure: jest.fn(), dispatch: jest.fn() };
+    disbursements = { findById: jest.fn(), markCancelled: jest.fn(), createForLoan: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [OpsDisbursementsController],
@@ -385,6 +387,146 @@ describe('OpsDisbursementsController (integration)', () => {
         .send({ reason: 'Not authenticated' })
         .expect(401);
       expect(outflows.handleFailure).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── POST /recreate-for-loan/:loan_id — fresh disbursement on a stranded loan ─
+
+  describe('POST /recreate-for-loan/:loan_id', () => {
+    const LOAN_ID    = '33333333-3333-3333-3333-333333333333';
+    const NEW_DISB_ID = '44444444-4444-4444-4444-444444444444';
+
+    function active_loan_with_account(overrides: Record<string, unknown> = {}) {
+      return {
+        id: LOAN_ID,
+        user_id: 'user-001',
+        status: 'ACTIVE',
+        principal_ngn: { toString: () => '300000' },
+        disbursement_account: {
+          id: 'acct-001',
+          provider_name: 'GTBank',
+          provider_code: '058',
+          account_unique: '0123456789',
+          account_holder_name: 'Ada Obi',
+        },
+        ...overrides,
+      };
+    }
+
+    it('writes audit row with target=loan, then creates a fresh disbursement and dispatches it', async () => {
+      authenticate_ops();
+      const tx = make_tx();
+      prisma.loan.findUnique.mockResolvedValue(active_loan_with_account());
+      prisma.disbursement.findFirst.mockResolvedValue(null); // no blocking row
+      prisma.$transaction.mockImplementation(async (fn: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
+        return fn(tx as unknown as Prisma.TransactionClient);
+      });
+      disbursements.createForLoan.mockResolvedValue({ id: NEW_DISB_ID });
+      outflows.dispatch.mockResolvedValue(undefined);
+
+      const res = await request(app.getHttpServer())
+        .post(`/ops/disbursements/recreate-for-loan/${LOAN_ID}`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .set('x-request-id', 'req_recreate_001')
+        .expect(202);
+
+      expect(res.body).toMatchObject({ disbursement_id: NEW_DISB_ID });
+
+      expect(tx.opsAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          ops_user_id: OPS_USER_ID,
+          action:      OPS_ACTION.DISBURSEMENT_RECREATE,
+          target_type: OPS_TARGET_TYPE.LOAN,
+          target_id:   LOAN_ID,
+          request_id:  'req_recreate_001',
+        }),
+      });
+
+      // Snapshot uses the loan's CURRENT default account, including provider_code.
+      expect(disbursements.createForLoan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source_id:      LOAN_ID,
+          provider_name:  'GTBank',
+          provider_code:  '058',
+          account_unique: '0123456789',
+          account_name:   'Ada Obi',
+        }),
+      );
+      expect(outflows.dispatch).toHaveBeenCalledWith(NEW_DISB_ID);
+    });
+
+    it('returns 404 when the loan does not exist', async () => {
+      authenticate_ops();
+      prisma.loan.findUnique.mockResolvedValue(null);
+
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/recreate-for-loan/${LOAN_ID}`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .expect(404);
+
+      expect(disbursements.createForLoan).not.toHaveBeenCalled();
+      expect(outflows.dispatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when the loan is not ACTIVE', async () => {
+      authenticate_ops();
+      prisma.loan.findUnique.mockResolvedValue(active_loan_with_account({ status: 'REPAID' }));
+
+      const res = await request(app.getHttpServer())
+        .post(`/ops/disbursements/recreate-for-loan/${LOAN_ID}`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .expect(409);
+
+      expect(res.body.error.code).toBe('LOAN_NOT_ACTIVE_FOR_DISBURSEMENT');
+      expect(disbursements.createForLoan).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when the loan already has a non-terminal disbursement', async () => {
+      authenticate_ops();
+      prisma.loan.findUnique.mockResolvedValue(active_loan_with_account());
+      prisma.disbursement.findFirst.mockResolvedValue({
+        id: 'existing-disb',
+        status: 'ON_HOLD',
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/ops/disbursements/recreate-for-loan/${LOAN_ID}`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .expect(409);
+
+      expect(res.body.error.code).toBe('LOAN_HAS_ACTIVE_DISBURSEMENT');
+      expect(disbursements.createForLoan).not.toHaveBeenCalled();
+    });
+
+    it('returns 422 when the loan has no disbursement_account (or missing provider_code)', async () => {
+      authenticate_ops();
+      prisma.loan.findUnique.mockResolvedValue(active_loan_with_account({
+        disbursement_account: null,
+      }));
+      prisma.disbursement.findFirst.mockResolvedValue(null);
+
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/recreate-for-loan/${LOAN_ID}`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .expect(422);
+
+      expect(disbursements.createForLoan).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-UUID loan_id with 400', async () => {
+      authenticate_ops();
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/recreate-for-loan/not-a-uuid`)
+        .set('Cookie', [`ops_session=${OPS_TOKEN}`])
+        .expect(400);
+      expect(prisma.loan.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('401 with no ops_session cookie', async () => {
+      await request(app.getHttpServer())
+        .post(`/ops/disbursements/recreate-for-loan/${LOAN_ID}`)
+        .expect(401);
+      expect(prisma.loan.findUnique).not.toHaveBeenCalled();
     });
   });
 });

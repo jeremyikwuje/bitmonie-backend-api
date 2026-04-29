@@ -109,6 +109,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 | `LOAN_INVALID_TRANSITION` | 409 | State machine violation |
 | `LOAN_PENDING_ALREADY_EXISTS` | 409 | User already has a PENDING_COLLATERAL loan — pay or cancel before starting another |
 | `LOAN_NOT_FOUND` | 404 | Loan not found or not owned by user |
+| `LOAN_NOT_ACTIVE_FOR_DISBURSEMENT` | 409 | Cannot recreate a disbursement on a loan that is not in ACTIVE state (ops endpoint) |
+| `LOAN_HAS_ACTIVE_DISBURSEMENT` | 409 | Loan already has a non-terminal disbursement (PENDING/PROCESSING/ON_HOLD) — cancel or wait before recreating |
 | `DISBURSEMENT_ACCOUNT_NAME_MISMATCH` | 422 | Fuzzy match score < 0.85 vs BVN legal name (BANK + MOBILE_MONEY only) |
 | `DISBURSEMENT_ACCOUNT_LOOKUP_FAILED` | 422 | Provider could not resolve an account holder for the given bank/account number — wrong account, hard reject |
 | `DISBURSEMENT_ACCOUNT_DUPLICATE` | 409 | User already has a linked account with the same kind + provider_code + account_unique |

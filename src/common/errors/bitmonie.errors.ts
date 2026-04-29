@@ -114,6 +114,31 @@ export class LoanNotActiveException extends BitmonieException {
   }
 }
 
+export class LoanNotActiveForDisbursementException extends BitmonieException {
+  constructor(context: { status: string }) {
+    super(
+      'LOAN_NOT_ACTIVE_FOR_DISBURSEMENT',
+      'Loan must be ACTIVE to create a new disbursement.',
+      HttpStatus.CONFLICT,
+      [{ field: 'status', issue: `Loan is ${context.status}` }],
+    );
+  }
+}
+
+export class LoanHasActiveDisbursementException extends BitmonieException {
+  constructor(context: { disbursement_id: string; status: string }) {
+    super(
+      'LOAN_HAS_ACTIVE_DISBURSEMENT',
+      'Loan already has a non-terminal disbursement. Cancel or wait for it to settle before creating a new one.',
+      HttpStatus.CONFLICT,
+      [
+        { field: 'disbursement_id', issue: context.disbursement_id },
+        { field: 'status',          issue: context.status },
+      ],
+    );
+  }
+}
+
 export class InflowBelowFloorException extends BitmonieException {
   constructor(context: { received_ngn: string; floor_ngn: string }) {
     super(

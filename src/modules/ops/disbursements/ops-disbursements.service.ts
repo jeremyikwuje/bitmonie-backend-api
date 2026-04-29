@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { DisbursementStatus, OutflowStatus, type Prisma } from '@prisma/client';
+import {
+  DisbursementRail,
+  DisbursementStatus,
+  LoanStatus,
+  OutflowStatus,
+  type Prisma,
+} from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { OutflowsService } from '@/modules/disbursements/outflows.service';
 import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
@@ -9,6 +15,10 @@ import {
   DisbursementNotFoundException,
   DisbursementNoActiveOutflowException,
   DisbursementTerminalException,
+  LoanNotFoundException,
+  LoanNotActiveForDisbursementException,
+  LoanHasActiveDisbursementException,
+  LoanDisbursementAccountRequiredException,
 } from '@/common/errors/bitmonie.errors';
 
 const DEFAULT_LIMIT = 25;
@@ -152,6 +162,105 @@ export class OpsDisbursementsService {
         ip_address:  ctx.ip_address,
       });
     });
+  }
+
+  // Recreate a disbursement for an ACTIVE loan whose previous disbursement was
+  // terminally cancelled (or never funded the customer for some other reason).
+  // Re-snapshots the loan's CURRENT default disbursement_account so a customer
+  // who updated their account between the cancel and the recreate gets paid to
+  // the new destination — the cancelled row keeps the old snapshot for audit.
+  //
+  // Validation:
+  //   • Loan exists (404).
+  //   • Loan.status is ACTIVE (409). REPAID/LIQUIDATED/EXPIRED/PENDING are not
+  //     valid recreate targets — there's no obligation to fund.
+  //   • No non-terminal Disbursement exists for this source_id (409). A loan
+  //     with a PENDING/PROCESSING/ON_HOLD disbursement must be cancelled or
+  //     allowed to resolve before a fresh one is dispatched — never two
+  //     simultaneous obligations against the same loan.
+  //   • Loan has a default disbursement_account with a populated provider_code
+  //     (422). Without it, dispatch would throw the "missing provider_code"
+  //     guard from OutflowsService.dispatch.
+  //
+  // Audit-then-state pattern (mirrors retry/abandonAttempt): one ops_audit_logs
+  // row is written in a tx, then the Disbursement create + outflow dispatch
+  // happen outside the tx. The audit row records ops intent regardless of
+  // whether the dispatch succeeds; a same-tx audit + create would be cleaner
+  // but OutflowsService.dispatch is not tx-aware (its writes need their own
+  // client). The audit captures the ops decision; the resulting Disbursement
+  // row is itself the artefact of the action and is loadable via list/getById.
+  async recreateForActiveLoan(
+    loan_id: string,
+    ctx:     OpsAuditContext,
+  ): Promise<{ disbursement_id: string }> {
+    const loan = await this.prisma.loan.findUnique({
+      where: { id: loan_id },
+      include: { disbursement_account: true },
+    });
+    if (!loan) throw new LoanNotFoundException();
+
+    if (loan.status !== LoanStatus.ACTIVE) {
+      throw new LoanNotActiveForDisbursementException({ status: loan.status });
+    }
+
+    const blocking = await this.prisma.disbursement.findFirst({
+      where: {
+        source_id: loan.id,
+        status: {
+          in: [
+            DisbursementStatus.PENDING,
+            DisbursementStatus.PROCESSING,
+            DisbursementStatus.ON_HOLD,
+          ],
+        },
+      },
+      select: { id: true, status: true },
+    });
+    if (blocking) {
+      throw new LoanHasActiveDisbursementException({
+        disbursement_id: blocking.id,
+        status:          blocking.status,
+      });
+    }
+
+    const account = loan.disbursement_account;
+    if (!account || !account.provider_code) {
+      throw new LoanDisbursementAccountRequiredException();
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.ops_audit.write(tx, {
+        ops_user_id: ctx.ops_user_id,
+        action:      OPS_ACTION.DISBURSEMENT_RECREATE,
+        target_type: OPS_TARGET_TYPE.LOAN,
+        target_id:   loan.id,
+        details: {
+          loan_status:           loan.status,
+          disbursement_account_id: account.id,
+          provider_name:         account.provider_name,
+          provider_code:         account.provider_code,
+          amount_ngn:            loan.principal_ngn.toString(),
+        },
+        request_id:  ctx.request_id,
+        ip_address:  ctx.ip_address,
+      });
+    });
+
+    const fresh = await this.disbursements.createForLoan({
+      user_id:           loan.user_id,
+      source_id:         loan.id,
+      amount:            loan.principal_ngn,
+      currency:          'NGN',
+      disbursement_rail: DisbursementRail.BANK_TRANSFER,
+      provider_name:     account.provider_name,
+      provider_code:     account.provider_code,
+      account_unique:    account.account_unique,
+      account_name:      account.account_holder_name,
+    });
+
+    await this.outflows.dispatch(fresh.id);
+
+    return { disbursement_id: fresh.id };
   }
 
   // "Abandon attempt" — the ops escape hatch for an outflow stuck in PENDING
