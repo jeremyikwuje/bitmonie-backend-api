@@ -1,10 +1,21 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Prisma } from '@prisma/client';
+import { KycIdType, type Prisma } from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { CryptoService } from '@/common/crypto/crypto.service';
-import type { CollectionProvider } from '@/modules/loans/collection.provider.interface';
+import type {
+  CollectionIdentityType,
+  CollectionProvider,
+} from '@/modules/loans/collection.provider.interface';
 import type { ProvidersConfig } from '@/config/providers.config';
+
+function mapToCollectionIdentityType(id_type: KycIdType): CollectionIdentityType | null {
+  switch (id_type) {
+    case KycIdType.BVN: return 'BVN';
+    case KycIdType.NIN: return 'NIN';
+    default: return null;
+  }
+}
 
 export interface UserRepaymentAccountSummary {
   virtual_account_no:   string;
@@ -35,11 +46,13 @@ export class UserRepaymentAccountsService {
   // Idempotent: returns the existing VA for the user, or provisions one via the
   // collection provider on first call. Triggered after tier-1 KYC verification
   // succeeds (see KycService.submitTier1) so every customer ready for a loan
-  // already has a permanent NGN VA tied to their BVN.
+  // already has a permanent NGN VA tied to their tier-1 identity (BVN or NIN).
   //
-  // Returns null when tier-1 KYC is missing or has no decryptable BVN — the
-  // caller is expected to log + retry later, never to fail the parent flow.
-  // Throws only on provider errors that the caller should propagate.
+  // Returns null when tier-1 KYC is missing, incomplete, or backed by a
+  // document type the collection rail can't anchor a VA to (passport /
+  // drivers-license). The caller is expected to log + retry later, never
+  // to fail the parent flow. Throws only on provider errors that the
+  // caller should propagate.
   //
   // Optional `on_created_in_tx` runs inside the same Prisma transaction that
   // creates the VA row — fires only on the new-VA branch, never on the
@@ -66,20 +79,49 @@ export class UserRepaymentAccountsService {
 
     const verification = await this.prisma.kycVerification.findUnique({
       where: { user_id_tier: { user_id, tier: 1 } },
-      select: { encrypted_id_number: true, legal_name: true },
+      select: {
+        encrypted_id_number: true,
+        legal_name:          true,
+        id_type:             true,
+        user: { select: { first_name: true, last_name: true } },
+      },
     });
-    if (!verification?.encrypted_id_number || !verification.legal_name) {
+    if (
+      !verification?.encrypted_id_number ||
+      !verification.legal_name ||
+      !verification.id_type ||
+      !verification.user.first_name ||
+      !verification.user.last_name
+    ) {
       this.logger.warn({ user_id }, 'ensureForUser: tier-1 KYC missing or incomplete — skipping');
       return null;
     }
 
-    const bvn = this.crypto_service.decrypt(verification.encrypted_id_number);
+    // Only BVN/NIN tier-1 verifications can back a Nigerian VA — passport
+    // / drivers-license entries (if/when added at tier-1) are rejected by
+    // the collection rail.
+    const identity_type = mapToCollectionIdentityType(verification.id_type);
+    if (!identity_type) {
+      this.logger.warn(
+        { user_id, id_type: verification.id_type },
+        'ensureForUser: tier-1 id_type does not support VA provisioning — skipping',
+      );
+      return null;
+    }
+
+    const license_number = this.crypto_service.decrypt(verification.encrypted_id_number);
     const provider_name = this.config.get<ProvidersConfig>('providers')!.active.collection;
+    // Inbound senders see virtualAccountName on their bank statement, so the
+    // customer's own first + last name is what makes the VA recognisable as
+    // theirs. legal_name (provider-returned, may include middle name and may
+    // differ in casing/order) is still passed through as customerName for
+    // PalmPay's BVN/NIN cross-check.
+    const virtual_account_name = `${verification.user.first_name} ${verification.user.last_name}`;
 
     const result = await this.collection.createVirtualAccount({
-      virtual_account_name: 'Bitmonie Loan Repayment',
-      identity_type:        'BVN',
-      license_number:       bvn,
+      virtual_account_name,
+      identity_type,
+      license_number,
       customer_name:        verification.legal_name,
       account_reference:    user_id,
     });

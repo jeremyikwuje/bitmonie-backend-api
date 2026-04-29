@@ -4,6 +4,7 @@ import * as forge from 'node-forge';
 import { Decimal } from 'decimal.js';
 import type { PalmpayConfig } from '@/config/providers.config';
 import type { DisbursementProvider } from '@/modules/disbursements/disbursement.provider.interface';
+import type { CollectionIdentityType } from '@/modules/loans/collection.provider.interface';
 import {
   PalmpayQueryBankAccountResponseSchema,
   PalmpayPayoutResponseSchema,
@@ -329,16 +330,24 @@ export class PalmpayProvider implements DisbursementProvider {
 
   async createVirtualAccount(params: {
     virtual_account_name: string;
-    identity_type: string;     // 'BVN' | 'NIN'
+    identity_type: CollectionIdentityType;
     license_number: string;    // BVN or NIN value — never logged
     customer_name: string;
     account_reference: string;
   }): Promise<{ virtual_account_no: string; virtual_account_name: string }> {
+    // PalmPay's wire enum diverges from our role-named identity_type:
+    // BVN → "personal", NIN → "personal_nin", CAC (out of scope at v1.1)
+    // → "company". Mismatched identityType/licenseNumber pairings are
+    // rejected upstream with respCode "00000008" — the bug this guard
+    // exists to prevent.
+    const identity_type_wire =
+      params.identity_type === 'BVN' ? 'personal' : 'personal_nin';
+
     const data = await this.post(
       '/api/v2/virtual/account/label/create',
       {
         virtualAccountName: params.virtual_account_name,
-        identityType:       params.identity_type,
+        identityType:       identity_type_wire,
         licenseNumber:      params.license_number,
         customerName:       params.customer_name,
         accountReference:   params.account_reference,
