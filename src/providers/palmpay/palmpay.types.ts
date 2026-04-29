@@ -93,7 +93,7 @@ export type PalmpayQueryBalanceResponse = z.infer<
 
 // ── Payout notification (outbound transfer status update) ────────────────────
 // Sent by PalmPay when a payout (disbursement) status changes.
-// orderId = our provider_reference ("{disbursement_id}:outflow:{attempt_number}")
+// orderId = our provider_reference ("outflow-{attempt_number}-{disbursement_id}")
 export const PalmpayPayoutNotificationSchema = z.object({
   orderId:      z.string(),              // our reference echoed back
   orderNo:      z.string().optional(),   // PalmPay internal transaction ID

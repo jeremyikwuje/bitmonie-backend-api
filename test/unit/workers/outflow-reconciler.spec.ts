@@ -6,7 +6,7 @@ import { DisbursementProviderName } from '@/config/disbursement.config';
 
 const OUTFLOW_ID      = 'outflow-uuid-001';
 const DISBURSEMENT_ID = 'disb-uuid-001';
-const PROVIDER_REF    = `${DISBURSEMENT_ID}:outflow:1`;
+const PROVIDER_REF    = `outflow-1-${DISBURSEMENT_ID}`;
 const NOW             = new Date('2026-04-28T16:00:00Z');
 
 function staleOutflow(overrides: Partial<{

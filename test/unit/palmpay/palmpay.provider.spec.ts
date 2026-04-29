@@ -274,13 +274,13 @@ describe('PalmpayProvider.getTransferStatus', () => {
 
   it('queries by orderId (our reference), not orderNo (PalmPay internal)', async () => {
     mock_ok({ respCode: '00000000', respMsg: 'ok', data: { orderStatus: 1 } });
-    await make_provider().getTransferStatus('disb_42:outflow:1');
+    await make_provider().getTransferStatus('outflow-1-disb_42');
 
     const body = JSON.parse(
       (global.fetch as jest.Mock).mock.calls[0][1].body as string,
     ) as { orderId?: string; orderNo?: string };
 
-    expect(body.orderId).toBe('disb_42:outflow:1');
+    expect(body.orderId).toBe('outflow-1-disb_42');
     expect(body.orderNo).toBeUndefined();
   });
 
@@ -291,11 +291,11 @@ describe('PalmpayProvider.getTransferStatus', () => {
       .spyOn((provider as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger, 'warn')
       .mockImplementation(() => undefined);
 
-    const result = await provider.getTransferStatus('disb_42:outflow:1');
+    const result = await provider.getTransferStatus('outflow-1-disb_42');
 
     expect(result.status).toBe('processing');
     expect(warn_spy).toHaveBeenCalledWith(
-      expect.objectContaining({ provider_reference: 'disb_42:outflow:1' }),
+      expect.objectContaining({ provider_reference: 'outflow-1-disb_42' }),
       expect.stringContaining('no orderStatus'),
     );
   });

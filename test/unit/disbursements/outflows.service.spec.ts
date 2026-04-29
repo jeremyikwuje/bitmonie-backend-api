@@ -53,7 +53,7 @@ const OUTFLOW_ROW = {
   user_id:            USER_ID,
   attempt_number:     1,
   provider:           'palmpay',
-  provider_reference: `${DISB_ID}:outflow:1`,
+  provider_reference: `outflow-1-${DISB_ID}`,
   provider_tx_id:     null,
   provider_response:  null,
   status:             OutflowStatus.PENDING,
@@ -130,7 +130,7 @@ describe('OutflowsService', () => {
           disbursement_id:    DISB_ID,
           user_id:            USER_ID,
           attempt_number:     1,
-          provider_reference: `${DISB_ID}:outflow:1`,
+          provider_reference: `outflow-1-${DISB_ID}`,
           status:             OutflowStatus.PENDING,
         }),
       });
@@ -257,7 +257,7 @@ describe('OutflowsService', () => {
       expect(prisma.outflow.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           attempt_number:     2,
-          provider_reference: `${DISB_ID}:outflow:2`,
+          provider_reference: `outflow-2-${DISB_ID}`,
         }),
       });
     });

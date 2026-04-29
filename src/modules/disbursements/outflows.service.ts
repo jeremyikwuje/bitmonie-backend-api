@@ -104,7 +104,7 @@ export class OutflowsService {
     disbursement: NonNullable<Awaited<ReturnType<DisbursementsService['findById']>>>,
     attempt_number: number,
   ): Promise<void> {
-    const provider_reference = `${disbursement.id}:outflow:${attempt_number}`;
+    const provider_reference = `outflow-${attempt_number}-${disbursement.id}`;
     const provider_name_value = this._resolveProviderName(disbursement.disbursement_rail);
 
     const outflow = await this.prisma.outflow.create({

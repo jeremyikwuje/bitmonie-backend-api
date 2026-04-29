@@ -14,7 +14,7 @@ import { GlobalExceptionFilter } from '@/common/filters/global-exception.filter'
 
 const DISB_ID      = 'disb-uuid-001';
 const OUTFLOW_ID   = 'outflow-uuid-001';
-const PROVIDER_REF = `${DISB_ID}:outflow:1`;
+const PROVIDER_REF = `outflow-1-${DISB_ID}`;
 
 const USER_ID  = 'user-uuid-001';
 const LOAN_ID  = 'loan-uuid-001';
@@ -253,6 +253,24 @@ describe('PalmpayWebhookController', () => {
       .expect(200);
 
     expect(provider.getTransferStatus).not.toHaveBeenCalled();
+  });
+
+  // The outflow reference format was changed from "{uuid}:outflow:{n}" to
+  // "outflow-{n}-{uuid}". Until every pre-rename outflow is terminal, the
+  // discriminator regex must still route the legacy form to the payout
+  // handler — otherwise a late webhook on an in-flight legacy row would be
+  // misclassified as a collection notification and silently dropped.
+  it('still routes the legacy ":outflow:" reference shape to the payout handler', async () => {
+    const legacy_ref = `${DISB_ID}:outflow:1`;
+    prisma.outflow.findUnique.mockResolvedValue({ ...OUTFLOW_ROW, provider_reference: legacy_ref });
+    provider.getTransferStatus.mockResolvedValue({ status: 'successful' });
+
+    await request(app.getHttpServer())
+      .post('/webhooks/palmpay')
+      .send({ ...PAYOUT_NOTIFICATION, orderId: legacy_ref })
+      .expect(200);
+
+    expect(provider.getTransferStatus).toHaveBeenCalledWith(legacy_ref);
   });
 
   // ── collection notifications — v1.1 matching flow ──────────────────────────

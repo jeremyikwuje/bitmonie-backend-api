@@ -35,9 +35,12 @@ interface HandlerOutcome {
   external_reference?: string;
 }
 
-// Our provider_reference format for outflow attempts is "{disbursement_id}:outflow:{n}".
-// The ":outflow:" infix is the discriminator between payout and collection notifications.
-const OUTFLOW_REFERENCE_PATTERN = /:outflow:\d+$/;
+// Our provider_reference format for outflow attempts is "outflow-{n}-{disbursement_id}".
+// The "outflow-" prefix discriminates payout notifications from collection notifications.
+// The legacy "{uuid}:outflow:{n}" form is also matched so in-flight rows from before the
+// rename still route correctly when PalmPay's late webhook arrives — once all
+// pre-rename outflows are terminal this branch can be dropped.
+const OUTFLOW_REFERENCE_PATTERN = /^outflow-\d+-|:outflow:\d+$/;
 
 // PalmPay requires plain-text "success" as the acknowledgement body for all webhook types.
 const PALMPAY_ACK = 'success';
@@ -117,7 +120,7 @@ export class PalmpayWebhookController {
       return PALMPAY_ACK;
     }
 
-    // Route by orderId shape: outflow references follow "{disbursement_id}:outflow:{n}".
+    // Route by orderId shape: outflow references follow "outflow-{n}-{disbursement_id}".
     // Collection (payin) notifications have no orderId field at all.
     const order_id = typeof parsed['orderId'] === 'string' ? parsed['orderId'] : '';
 
