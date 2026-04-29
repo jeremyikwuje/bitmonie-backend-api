@@ -42,6 +42,7 @@ export const SESSION_TTL_SEC           = 86_400;
 export const OPS_SESSION_TTL_SEC       = 28_800;       // 8h fixed, no sliding (docs/ops-module.md §9)
 export const OPS_CHALLENGE_TTL_SEC     = 300;          // 5min — login → verify-2fa window
 export const OPS_ENROLMENT_TTL_SEC     = 900;          // 15min — login → enrol-2fa window
+export const WEBHOOK_LOG_RETENTION_DAYS = 90;          // webhook_logs older than this get pruned by the scheduler
 
 export const REDIS_KEYS = {
   PRICE: (pair: string) => `price:${pair}`,

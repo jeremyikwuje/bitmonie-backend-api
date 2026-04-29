@@ -1,5 +1,6 @@
 import {
   Controller,
+  Headers,
   HttpCode,
   HttpStatus,
   Logger,
@@ -20,8 +21,19 @@ import {
 import { OutflowsService } from '@/modules/disbursements/outflows.service';
 import { LoansService } from '@/modules/loans/loans.service';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import {
+  WebhooksLogService,
+  WebhookOutcome,
+  type WebhookOutcomeValue,
+} from '@/modules/webhooks-log/webhooks-log.service';
 import { PrismaService } from '@/database/prisma.service';
 import { MIN_PARTIAL_REPAYMENT_NGN } from '@/common/constants';
+
+interface HandlerOutcome {
+  outcome:             WebhookOutcomeValue;
+  outcome_detail?:     string;
+  external_reference?: string;
+}
 
 // Our provider_reference format for outflow attempts is "{disbursement_id}:outflow:{n}".
 // The ":outflow:" infix is the discriminator between payout and collection notifications.
@@ -44,11 +56,12 @@ export class PalmpayWebhookController {
   private readonly logger = new Logger(PalmpayWebhookController.name);
 
   constructor(
-    private readonly provider:   PalmpayProvider,
-    private readonly outflows:   OutflowsService,
-    private readonly loans:      LoansService,
-    private readonly prisma:     PrismaService,
-    private readonly ops_alerts: OpsAlertsService,
+    private readonly provider:      PalmpayProvider,
+    private readonly outflows:      OutflowsService,
+    private readonly loans:         LoansService,
+    private readonly prisma:        PrismaService,
+    private readonly ops_alerts:    OpsAlertsService,
+    private readonly webhooks_log:  WebhooksLogService,
   ) {}
 
   @Post()
@@ -56,15 +69,23 @@ export class PalmpayWebhookController {
   @ApiOperation({ summary: 'Inbound PalmPay webhook (payout status updates and collection notifications)' })
   @ApiResponse({ status: 200, description: 'Webhook acknowledged — responds with plain text "success"' })
   @ApiResponse({ status: 401, description: 'Invalid signature' })
-  async handle(@RawBody() raw_body: Buffer): Promise<string> {
+  async handle(
+    @RawBody() raw_body: Buffer,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ): Promise<string> {
     const raw_str = raw_body.toString('utf8');
 
-    // Entrance log — proves PalmPay reached us. Absence of this line in Railway
-    // logs across an entire payout cycle means the webhook is never being
-    // delivered (likely cause: notify_url not registered on PalmPay's side, or
-    // a network/DNS issue at PalmPay → our domain). The body preview is
-    // truncated to avoid bloating logs but is long enough to identify the
-    // event type by its first JSON keys.
+    // Phase 1 — record at entry BEFORE signature verification so the row
+    // exists even if the handler throws mid-flight. record() is best-effort:
+    // a DB failure returns an empty id, and updateOutcome() no-ops on empty.
+    const log_id = await this.webhooks_log.record({
+      provider:    'palmpay',
+      http_method: 'POST',
+      http_path:   '/v1/webhooks/palmpay',
+      headers,
+      raw_body:    raw_str,
+    });
+
     this.logger.log(
       { body_length: raw_body.length, body_preview: raw_str.slice(0, 500) },
       'PalmPay webhook received',
@@ -76,6 +97,10 @@ export class PalmpayWebhookController {
         { body_preview: raw_str.slice(0, 500) },
         'PalmPay webhook signature mismatch — rejected',
       );
+      await this.webhooks_log.updateOutcome(log_id, {
+        outcome:         WebhookOutcome.SIGNATURE_INVALID,
+        signature_valid: false,
+      });
       throw new UnauthorizedException('Invalid webhook signature');
     }
 
@@ -84,6 +109,11 @@ export class PalmpayWebhookController {
       parsed = JSON.parse(raw_str) as Record<string, unknown>;
     } catch {
       this.logger.warn('PalmPay webhook body is not valid JSON');
+      await this.webhooks_log.updateOutcome(log_id, {
+        outcome:         WebhookOutcome.MALFORMED,
+        outcome_detail:  'Body is not valid JSON',
+        signature_valid: true,
+      });
       return PALMPAY_ACK;
     }
 
@@ -91,20 +121,40 @@ export class PalmpayWebhookController {
     // Collection (payin) notifications have no orderId field at all.
     const order_id = typeof parsed['orderId'] === 'string' ? parsed['orderId'] : '';
 
-    if (OUTFLOW_REFERENCE_PATTERN.test(order_id)) {
-      return this._handlePayoutNotification(parsed);
+    let outcome: HandlerOutcome;
+    try {
+      outcome = OUTFLOW_REFERENCE_PATTERN.test(order_id)
+        ? await this._handlePayoutNotification(parsed)
+        : await this._handleCollectionNotification(parsed);
+    } catch (err) {
+      // Handler threw — log so the row doesn't stay in RECEIVED, then rethrow
+      // to preserve the existing error path (NestJS will 500 / log unhandled).
+      const detail = err instanceof Error ? err.message : String(err);
+      await this.webhooks_log.updateOutcome(log_id, {
+        outcome:         WebhookOutcome.ERROR,
+        outcome_detail:  detail.slice(0, 1000),
+        signature_valid: true,
+      });
+      throw err;
     }
 
-    return this._handleCollectionNotification(parsed);
+    await this.webhooks_log.updateOutcome(log_id, {
+      outcome:            outcome.outcome,
+      outcome_detail:     outcome.outcome_detail,
+      external_reference: outcome.external_reference,
+      signature_valid:    true,
+    });
+
+    return PALMPAY_ACK;
   }
 
   // ── Payout notification (outbound transfer status update) ──────────────────
 
-  private async _handlePayoutNotification(parsed: Record<string, unknown>): Promise<string> {
+  private async _handlePayoutNotification(parsed: Record<string, unknown>): Promise<HandlerOutcome> {
     const result = PalmpayPayoutNotificationSchema.safeParse(parsed);
     if (!result.success) {
       this.logger.warn({ errors: result.error.issues }, 'PalmPay payout notification failed schema validation');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.MALFORMED, outcome_detail: 'payout schema validation failed' };
     }
 
     const payload = result.data;
@@ -114,13 +164,13 @@ export class PalmpayWebhookController {
 
     if (!outflow) {
       this.logger.warn({ provider_reference }, 'PalmPay payout webhook: outflow not found — ignoring');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'outflow not found', external_reference: provider_reference };
     }
 
     // Idempotency guard — already terminal
     if (outflow.status === OutflowStatus.SUCCESSFUL || outflow.status === OutflowStatus.FAILED) {
       this.logger.log({ provider_reference, status: outflow.status }, 'PalmPay payout webhook: already terminal — skipping');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: `outflow already terminal (${outflow.status})`, external_reference: provider_reference };
     }
 
     // Independently verify the payout status by querying PalmPay directly.
@@ -133,7 +183,7 @@ export class PalmpayWebhookController {
         { provider_reference, error: err instanceof Error ? err.message : String(err) },
         'PalmPay payout webhook: status query failed — deferring to next retry',
       );
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.DEFERRED, outcome_detail: 'status query failed', external_reference: provider_reference };
     }
 
     if (verified_status.status === 'successful') {
@@ -144,7 +194,10 @@ export class PalmpayWebhookController {
         parsed,
       );
       this.logger.log({ provider_reference }, 'Disbursement confirmed successful via status query');
-    } else if (verified_status.status === 'failed') {
+      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: 'outflow → SUCCESSFUL', external_reference: provider_reference };
+    }
+
+    if (verified_status.status === 'failed') {
       await this.outflows.handleFailure(
         outflow.id,
         outflow.disbursement_id,
@@ -152,16 +205,16 @@ export class PalmpayWebhookController {
         verified_status.failure_code ?? String(payload.orderStatus),
       );
       this.logger.warn({ provider_reference }, 'Disbursement failed (confirmed via status query)');
-    } else {
-      // Status query says still processing — webhook was premature or out-of-order.
-      // PalmPay will retry; we'll process on the next delivery once it resolves.
-      this.logger.log(
-        { provider_reference, webhook_status: payload.orderStatus },
-        'PalmPay payout webhook: status query returned processing — deferring',
-      );
+      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: 'outflow → FAILED', external_reference: provider_reference };
     }
 
-    return PALMPAY_ACK;
+    // Status query says still processing — webhook was premature or out-of-order.
+    // PalmPay will retry; we'll process on the next delivery once it resolves.
+    this.logger.log(
+      { provider_reference, webhook_status: payload.orderStatus },
+      'PalmPay payout webhook: status query returned processing — deferring',
+    );
+    return { outcome: WebhookOutcome.DEFERRED, outcome_detail: 'status query says still processing', external_reference: provider_reference };
   }
 
   // ── Collection notification (inbound virtual account payment) ──────────────
@@ -175,26 +228,27 @@ export class PalmpayWebhookController {
   //   No narration parsing (PalmPay doesn't forward it). No amount-equals-total
   //   matching (waterfall handles partial / full / overpay).
 
-  private async _handleCollectionNotification(parsed: Record<string, unknown>): Promise<string> {
+  private async _handleCollectionNotification(parsed: Record<string, unknown>): Promise<HandlerOutcome> {
     const result = PalmpayCollectionNotificationSchema.safeParse(parsed);
     if (!result.success) {
       this.logger.warn({ errors: result.error.issues }, 'PalmPay collection notification failed schema validation');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.MALFORMED, outcome_detail: 'collection schema validation failed' };
     }
 
     const payload = result.data;
+    const ext_ref = payload.orderNo;
 
     if (payload.orderStatus !== PALMPAY_ORDER_STATUS_SUCCESS) {
       this.logger.log(
         { order_no: payload.orderNo, order_status: payload.orderStatus },
         'PalmPay collection: non-success status — skipping',
       );
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: `collection orderStatus=${payload.orderStatus}`, external_reference: ext_ref };
     }
 
     if (!payload.virtualAccountNo) {
       this.logger.warn({ order_no: payload.orderNo }, 'PalmPay collection: missing virtualAccountNo');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.MALFORMED, outcome_detail: 'missing virtualAccountNo', external_reference: ext_ref };
     }
 
     const amount_ngn = new Decimal(payload.orderAmount).div(100);
@@ -205,7 +259,7 @@ export class PalmpayWebhookController {
     });
     if (!repayment_account) {
       await this._storeUnmatchedInflow(payload, parsed, amount_ngn, null, 'no_user_for_va');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'no_user_for_va', external_reference: ext_ref };
     }
 
     const user_id = repayment_account.user_id;
@@ -213,7 +267,7 @@ export class PalmpayWebhookController {
     // 2. Floor check.
     if (amount_ngn.lt(MIN_PARTIAL_REPAYMENT_NGN)) {
       await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'below_floor');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'below_floor', external_reference: ext_ref };
     }
 
     // 3. Find ACTIVE loans for this user.
@@ -224,14 +278,14 @@ export class PalmpayWebhookController {
 
     if (active_loans.length === 0) {
       await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'no_active_loans');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'no_active_loans', external_reference: ext_ref };
     }
 
     if (active_loans.length > 1) {
       // Customer has multiple ACTIVE loans — webhook can't safely guess. Inflow
       // sits unmatched; customer disambiguates via POST /v1/loans/:id/claim-inflow.
       await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'multiple_active_loans');
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'multiple_active_loans', external_reference: ext_ref };
     }
 
     // Exactly one active loan — auto-credit. We need the Inflow row to exist
@@ -260,7 +314,7 @@ export class PalmpayWebhookController {
         { order_no: payload.orderNo, error: err instanceof Error ? err.message : String(err) },
         'PalmPay collection: failed to persist Inflow — caller will retry',
       );
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.ERROR, outcome_detail: 'inflow upsert failed', external_reference: ext_ref };
     }
 
     // If the inflow was already matched (PalmPay retry after first credit),
@@ -271,7 +325,7 @@ export class PalmpayWebhookController {
         { loan_id: matched_loan.id, order_no: payload.orderNo },
         'PalmPay collection: inflow already matched — duplicate webhook, no-op',
       );
-      return PALMPAY_ACK;
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'inflow already matched (duplicate webhook)', external_reference: ext_ref };
     }
 
     try {
@@ -292,6 +346,7 @@ export class PalmpayWebhookController {
         },
         'PalmPay repayment auto-matched and credited',
       );
+      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: `loan ${matched_loan.id} → ${result.new_status}`, external_reference: ext_ref };
     } catch (err) {
       this.logger.error(
         {
@@ -315,9 +370,8 @@ export class PalmpayWebhookController {
         loan_id:         matched_loan.id,
         detail:          err instanceof Error ? err.message : String(err),
       });
+      return { outcome: WebhookOutcome.ERROR, outcome_detail: 'creditInflow failed', external_reference: ext_ref };
     }
-
-    return PALMPAY_ACK;
   }
 
   // Insert (upsert) an Inflow row that the auto-match path could not credit and

@@ -1,10 +1,11 @@
 /**
  * Scheduler Worker — standalone Node.js process (NOT NestJS).
  *
- * Runs the three non-financial periodic jobs in a single process:
- *   - loan-expiry              — every WORKER_LOAN_EXPIRY_INTERVAL_MS         (default 60s)
- *   - loan-reminder            — every WORKER_LOAN_REMINDER_INTERVAL_MS       (default 1h)
- *   - disbursement-on-hold-digest — every WORKER_DISBURSEMENT_DIGEST_INTERVAL_MS (default 24h)
+ * Runs the four non-financial periodic jobs in a single process:
+ *   - loan-expiry                 — every WORKER_LOAN_EXPIRY_INTERVAL_MS            (default 60s)
+ *   - loan-reminder               — every WORKER_LOAN_REMINDER_INTERVAL_MS          (default 1h)
+ *   - disbursement-on-hold-digest — every WORKER_DISBURSEMENT_DIGEST_INTERVAL_MS    (default 24h)
+ *   - webhook-log-prune           — every WORKER_WEBHOOK_LOG_PRUNE_INTERVAL_MS      (default 24h)
  *
  * Each cycle is the same `run*Cycle` function the standalone worker entry points
  * call — single source of truth, no duplication. Shared Prisma client, Redis
@@ -30,10 +31,12 @@ import { EMAIL_PROVIDER_CONFIG, EmailProviderName } from '@/config/email.config'
 import { runExpiryCycle, type LoanExpiryDeps } from './loan-expiry.worker';
 import { runReminderCycle, type LoanReminderDeps, type SendEmail } from './loan-reminder.worker';
 import { runDigestCycle, type DigestDeps } from './disbursement-on-hold-digest.worker';
+import { runWebhookLogPruneCycle, type WebhookLogPruneDeps } from './webhook-log-prune.worker';
 
-const LOAN_EXPIRY_INTERVAL_MS = parseInt(process.env.WORKER_LOAN_EXPIRY_INTERVAL_MS         ?? '60000',          10);
-const LOAN_REMINDER_INTERVAL_MS = parseInt(process.env.WORKER_LOAN_REMINDER_INTERVAL_MS     ?? '3600000',        10);
-const DIGEST_INTERVAL_MS        = parseInt(process.env.WORKER_DISBURSEMENT_DIGEST_INTERVAL_MS ?? String(24 * 60 * 60 * 1000), 10);
+const LOAN_EXPIRY_INTERVAL_MS         = parseInt(process.env.WORKER_LOAN_EXPIRY_INTERVAL_MS         ?? '60000',                              10);
+const LOAN_REMINDER_INTERVAL_MS       = parseInt(process.env.WORKER_LOAN_REMINDER_INTERVAL_MS       ?? '3600000',                            10);
+const DIGEST_INTERVAL_MS              = parseInt(process.env.WORKER_DISBURSEMENT_DIGEST_INTERVAL_MS ?? String(24 * 60 * 60 * 1000),         10);
+const WEBHOOK_LOG_PRUNE_INTERVAL_MS   = parseInt(process.env.WORKER_WEBHOOK_LOG_PRUNE_INTERVAL_MS   ?? String(24 * 60 * 60 * 1000),         10);
 
 function log(level: string, event: string, extra: Record<string, unknown> = {}): void {
   process.stdout.write(
@@ -97,15 +100,17 @@ async function main(): Promise<void> {
   const send_email: SendEmail = (params: TransactionalEmailParams) => email_provider.sendTransactional(params);
   const alerts = new OpsAlertsService(email_provider, new WorkerConfigService() as unknown as ConfigService);
 
-  const expiry_deps:   LoanExpiryDeps   = { prisma, redis, log: jobLogger('loan_expiry') };
-  const reminder_deps: LoanReminderDeps = { prisma, redis, send_email, log: jobLogger('loan_reminder') };
-  const digest_deps:   DigestDeps       = { prisma, redis, alerts,    log: jobLogger('disbursement_digest') };
+  const expiry_deps:   LoanExpiryDeps        = { prisma, redis, log: jobLogger('loan_expiry') };
+  const reminder_deps: LoanReminderDeps      = { prisma, redis, send_email, log: jobLogger('loan_reminder') };
+  const digest_deps:   DigestDeps            = { prisma, redis, alerts,    log: jobLogger('disbursement_digest') };
+  const prune_deps:    WebhookLogPruneDeps   = { prisma, redis, log: jobLogger('webhook_log_prune') };
 
   log('info', 'started', {
     intervals: {
-      loan_expiry_ms:         LOAN_EXPIRY_INTERVAL_MS,
-      loan_reminder_ms:       LOAN_REMINDER_INTERVAL_MS,
-      disbursement_digest_ms: DIGEST_INTERVAL_MS,
+      loan_expiry_ms:          LOAN_EXPIRY_INTERVAL_MS,
+      loan_reminder_ms:        LOAN_REMINDER_INTERVAL_MS,
+      disbursement_digest_ms:  DIGEST_INTERVAL_MS,
+      webhook_log_prune_ms:    WEBHOOK_LOG_PRUNE_INTERVAL_MS,
     },
     email_provider: EMAIL_PROVIDER_CONFIG,
   });
@@ -115,14 +120,16 @@ async function main(): Promise<void> {
   // Run each cycle once on boot, then on its own interval. Failures in one job
   // never affect the others.
   await Promise.allSettled([
-    runExpiryCycle(expiry_deps).catch((err)   => log('error', 'unhandled_error', { job: 'loan_expiry',         error: String(err) })),
-    runReminderCycle(reminder_deps).catch((err) => log('error', 'unhandled_error', { job: 'loan_reminder',     error: String(err) })),
-    runDigestCycle(digest_deps).catch((err)    => log('error', 'unhandled_error', { job: 'disbursement_digest', error: String(err) })),
+    runExpiryCycle(expiry_deps).catch((err)            => log('error', 'unhandled_error', { job: 'loan_expiry',         error: String(err) })),
+    runReminderCycle(reminder_deps).catch((err)        => log('error', 'unhandled_error', { job: 'loan_reminder',       error: String(err) })),
+    runDigestCycle(digest_deps).catch((err)            => log('error', 'unhandled_error', { job: 'disbursement_digest', error: String(err) })),
+    runWebhookLogPruneCycle(prune_deps).catch((err)    => log('error', 'unhandled_error', { job: 'webhook_log_prune',   error: String(err) })),
   ]);
 
-  schedule('loan_expiry',         LOAN_EXPIRY_INTERVAL_MS,   () => runExpiryCycle(expiry_deps));
-  schedule('loan_reminder',       LOAN_REMINDER_INTERVAL_MS, () => runReminderCycle(reminder_deps));
-  schedule('disbursement_digest', DIGEST_INTERVAL_MS,        () => runDigestCycle(digest_deps));
+  schedule('loan_expiry',         LOAN_EXPIRY_INTERVAL_MS,        () => runExpiryCycle(expiry_deps));
+  schedule('loan_reminder',       LOAN_REMINDER_INTERVAL_MS,      () => runReminderCycle(reminder_deps));
+  schedule('disbursement_digest', DIGEST_INTERVAL_MS,             () => runDigestCycle(digest_deps));
+  schedule('webhook_log_prune',   WEBHOOK_LOG_PRUNE_INTERVAL_MS,  () => runWebhookLogPruneCycle(prune_deps));
 }
 
 if (require.main === module) {

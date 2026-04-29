@@ -10,6 +10,7 @@ import { InflowsService } from '@/modules/inflows/inflows.service';
 import { LoansService } from '@/modules/loans/loans.service';
 import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
 import { OutflowsService } from '@/modules/disbursements/outflows.service';
+import { WebhooksLogService } from '@/modules/webhooks-log/webhooks-log.service';
 import { GlobalExceptionFilter } from '@/common/filters/global-exception.filter';
 
 const PAYMENT_HASH = 'pay_hash_001';
@@ -75,6 +76,7 @@ describe('BlinkWebhookController', () => {
   let provider:       MockProxy<BlinkProvider>;
   let inflows:        MockProxy<InflowsService>;
   let loans:          MockProxy<LoansService>;
+  let webhooks_log:   MockProxy<WebhooksLogService>;
   let disbursements:  MockProxy<DisbursementsService>;
   let outflows:       MockProxy<OutflowsService>;
 
@@ -84,6 +86,9 @@ describe('BlinkWebhookController', () => {
     loans         = mock<LoansService>();
     disbursements = mock<DisbursementsService>();
     outflows      = mock<OutflowsService>();
+    webhooks_log  = mock<WebhooksLogService>();
+    webhooks_log.record.mockResolvedValue('webhook-log-id');
+    webhooks_log.updateOutcome.mockResolvedValue();
 
     provider.verifyWebhookSignature.mockReturnValue(true);
     provider.isOwnAccount.mockReturnValue(true);
@@ -99,11 +104,12 @@ describe('BlinkWebhookController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [BlinkWebhookController],
       providers: [
-        { provide: BlinkProvider,       useValue: provider },
+        { provide: BlinkProvider,        useValue: provider },
         { provide: InflowsService,       useValue: inflows },
         { provide: LoansService,         useValue: loans },
         { provide: DisbursementsService, useValue: disbursements },
         { provide: OutflowsService,      useValue: outflows },
+        { provide: WebhooksLogService,   useValue: webhooks_log },
       ],
     }).compile();
 

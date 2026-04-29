@@ -734,6 +734,41 @@ model OpsSession {
   @@map("ops_sessions")
 }
 
+// One row per inbound webhook (Blink, PalmPay, …). Two-phase write:
+//   1. Insert at controller entry with outcome=RECEIVED so we have a record
+//      even if the handler crashes mid-flight.
+//   2. Update with terminal outcome + processed_at when the handler completes.
+//
+// raw_body has PII fields masked at insert per §5.8 (payerAccountNo,
+// bankAccNo, licenseNumber/BVN/NIN, etc. redacted to "****<last4>"); the
+// redacted body is still useful for triage. headers stores selected
+// non-secret headers only — never auth tokens.
+//
+// Pruning: webhook-log-prune scheduler job deletes rows older than
+// WEBHOOK_LOG_RETENTION_DAYS (default 90). Indexes are sized for the
+// "last 90 days, filter by provider and/or outcome" query shape.
+model WebhookLog {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider        String   @db.VarChar(50)
+  received_at     DateTime @default(now()) @db.Timestamptz
+  http_method     String   @db.VarChar(10)
+  http_path       String   @db.VarChar(255)
+  headers         Json?
+  raw_body        String   @db.Text
+  body_length     Int
+  signature_valid Boolean?
+  outcome         String   @db.VarChar(50)
+  outcome_detail  String?  @db.VarChar(1000)
+  processed_at    DateTime? @db.Timestamptz
+  external_reference String? @db.VarChar(255)
+
+  @@index([provider, received_at(sort: Desc)])
+  @@index([outcome, received_at(sort: Desc)])
+  @@index([external_reference])
+  @@index([received_at])
+  @@map("webhook_logs")
+}
+
 // Append-only — written in same Prisma transaction as every state-changing
 // ops action (mirror of LoanStatusLog discipline for financial state).
 model OpsAuditLog {

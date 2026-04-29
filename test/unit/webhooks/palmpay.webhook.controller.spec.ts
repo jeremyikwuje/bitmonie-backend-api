@@ -8,6 +8,7 @@ import { PalmpayProvider } from '@/providers/palmpay/palmpay.provider';
 import { OutflowsService } from '@/modules/disbursements/outflows.service';
 import { LoansService } from '@/modules/loans/loans.service';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import { WebhooksLogService } from '@/modules/webhooks-log/webhooks-log.service';
 import { PrismaService } from '@/database/prisma.service';
 import { GlobalExceptionFilter } from '@/common/filters/global-exception.filter';
 
@@ -67,18 +68,22 @@ function makePrisma() {
 
 describe('PalmpayWebhookController', () => {
   let app: INestApplication;
-  let provider:   MockProxy<PalmpayProvider>;
-  let outflows:   MockProxy<OutflowsService>;
-  let loans:      MockProxy<LoansService>;
-  let ops_alerts: MockProxy<OpsAlertsService>;
-  let prisma:     ReturnType<typeof makePrisma>;
+  let provider:     MockProxy<PalmpayProvider>;
+  let outflows:     MockProxy<OutflowsService>;
+  let loans:        MockProxy<LoansService>;
+  let ops_alerts:   MockProxy<OpsAlertsService>;
+  let webhooks_log: MockProxy<WebhooksLogService>;
+  let prisma:       ReturnType<typeof makePrisma>;
 
   beforeEach(async () => {
-    prisma     = makePrisma();
-    provider   = mock<PalmpayProvider>();
-    outflows   = mock<OutflowsService>();
-    loans      = mock<LoansService>();
-    ops_alerts = mock<OpsAlertsService>();
+    prisma       = makePrisma();
+    provider     = mock<PalmpayProvider>();
+    outflows     = mock<OutflowsService>();
+    loans        = mock<LoansService>();
+    ops_alerts   = mock<OpsAlertsService>();
+    webhooks_log = mock<WebhooksLogService>();
+    webhooks_log.record.mockResolvedValue('webhook-log-id');
+    webhooks_log.updateOutcome.mockResolvedValue();
 
     provider.verifyWebhookSignature.mockReturnValue(true);
     provider.getTransferStatus.mockResolvedValue({ status: 'successful' });
@@ -96,11 +101,12 @@ describe('PalmpayWebhookController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [PalmpayWebhookController],
       providers: [
-        { provide: PalmpayProvider,   useValue: provider },
-        { provide: OutflowsService,   useValue: outflows },
-        { provide: LoansService,      useValue: loans },
-        { provide: OpsAlertsService,  useValue: ops_alerts },
-        { provide: PrismaService,     useValue: prisma },
+        { provide: PalmpayProvider,    useValue: provider },
+        { provide: OutflowsService,    useValue: outflows },
+        { provide: LoansService,       useValue: loans },
+        { provide: OpsAlertsService,   useValue: ops_alerts },
+        { provide: PrismaService,      useValue: prisma },
+        { provide: WebhooksLogService, useValue: webhooks_log },
       ],
     }).compile();
 

@@ -20,6 +20,17 @@ import { InflowsService } from '@/modules/inflows/inflows.service';
 import { LoansService } from '@/modules/loans/loans.service';
 import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
 import { OutflowsService } from '@/modules/disbursements/outflows.service';
+import {
+  WebhooksLogService,
+  WebhookOutcome,
+  type WebhookOutcomeValue,
+} from '@/modules/webhooks-log/webhooks-log.service';
+
+interface HandlerOutcome {
+  outcome:             WebhookOutcomeValue;
+  outcome_detail?:     string;
+  external_reference?: string;
+}
 
 // Map Blink eventType prefixes to PaymentNetwork enum values.
 const EVENT_TYPE_TO_NETWORK: Record<string, PaymentNetwork> = {
@@ -39,6 +50,7 @@ export class BlinkWebhookController {
     private readonly loans:         LoansService,
     private readonly disbursements: DisbursementsService,
     private readonly outflows:      OutflowsService,
+    private readonly webhooks_log:  WebhooksLogService,
   ) {}
 
   @Post()
@@ -48,11 +60,21 @@ export class BlinkWebhookController {
   @ApiResponse({ status: 401, description: 'Invalid signature' })
   async handle(
     @RawBody() raw_body: Buffer,
+    @Headers() all_headers: Record<string, string | string[] | undefined>,
     @Headers('svix-id')        svix_id: string | undefined,
     @Headers('svix-timestamp') svix_timestamp: string | undefined,
     @Headers('svix-signature') svix_signature: string | undefined,
   ): Promise<{ received: true }> {
     const raw_str = raw_body.toString('utf8');
+
+    // Phase 1 — record at entry so the row exists even if the handler throws.
+    const log_id = await this.webhooks_log.record({
+      provider:    'blink',
+      http_method: 'POST',
+      http_path:   '/v1/webhooks/blink',
+      headers:     all_headers,
+      raw_body:    raw_str,
+    });
 
     const headers: BlinkWebhookHeaders = {
       'svix-id':        svix_id        ?? '',
@@ -62,13 +84,41 @@ export class BlinkWebhookController {
 
     if (!this.provider.verifyWebhookSignature(raw_str, JSON.stringify(headers))) {
       this.logger.warn({ svix_id }, 'Blink webhook signature mismatch — rejected');
+      await this.webhooks_log.updateOutcome(log_id, {
+        outcome:         WebhookOutcome.SIGNATURE_INVALID,
+        signature_valid: false,
+      });
       throw new UnauthorizedException('Invalid webhook signature');
     }
 
+    let outcome: HandlerOutcome;
+    try {
+      outcome = await this._processVerified(raw_str);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await this.webhooks_log.updateOutcome(log_id, {
+        outcome:         WebhookOutcome.ERROR,
+        outcome_detail:  detail.slice(0, 1000),
+        signature_valid: true,
+      });
+      throw err;
+    }
+
+    await this.webhooks_log.updateOutcome(log_id, {
+      outcome:            outcome.outcome,
+      outcome_detail:     outcome.outcome_detail,
+      external_reference: outcome.external_reference,
+      signature_valid:    true,
+    });
+
+    return { received: true };
+  }
+
+  private async _processVerified(raw_str: string): Promise<HandlerOutcome> {
     const result = BlinkWebhookPayloadSchema.safeParse(JSON.parse(raw_str));
     if (!result.success) {
       this.logger.warn({ errors: result.error.issues }, 'Blink webhook payload failed schema validation');
-      return { received: true };
+      return { outcome: WebhookOutcome.MALFORMED, outcome_detail: 'payload schema validation failed' };
     }
 
     const payload = result.data;
@@ -76,13 +126,13 @@ export class BlinkWebhookController {
     // Reject events that don't belong to our configured Blink account.
     if (!this.provider.isOwnAccount(payload.accountId)) {
       this.logger.warn({ account_id: payload.accountId }, 'Blink webhook accountId mismatch — ignoring');
-      return { received: true };
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'accountId mismatch' };
     }
 
     // Only process receive events — ignore send/outbound events.
     if (!payload.eventType.startsWith('receive.')) {
       this.logger.log({ event_type: payload.eventType }, 'Blink webhook non-receive event — skipping');
-      return { received: true };
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: `non-receive event (${payload.eventType})` };
     }
 
     const payment_hash = payload.transaction.initiationVia.paymentHash
@@ -90,7 +140,7 @@ export class BlinkWebhookController {
 
     if (!payment_hash) {
       this.logger.warn({ event_type: payload.eventType }, 'Blink webhook missing payment hash — skipping');
-      return { received: true };
+      return { outcome: WebhookOutcome.MALFORMED, outcome_detail: 'missing payment hash' };
     }
 
     const network = EVENT_TYPE_TO_NETWORK[payload.eventType] ?? PaymentNetwork.LIGHTNING;
@@ -107,19 +157,19 @@ export class BlinkWebhookController {
 
     if (!payment_request) {
       this.logger.warn({ provider_reference: payment_hash, inflow_id: inflow.id }, 'Blink inflow unmatched — stored for ops review');
-      return { received: true };
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'inflow unmatched (no payment_request)', external_reference: payment_hash };
     }
 
     if (payment_request.source_type === 'LOAN') {
       await this._handleLoanCollateral(payment_request, inflow);
-    } else {
-      this.logger.log(
-        { source_type: payment_request.source_type, source_id: payment_request.source_id },
-        'Blink inflow matched — source type not yet handled, skipping post-match actions',
-      );
+      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: `loan ${payment_request.source_id} activated`, external_reference: payment_hash };
     }
 
-    return { received: true };
+    this.logger.log(
+      { source_type: payment_request.source_type, source_id: payment_request.source_id },
+      'Blink inflow matched — source type not yet handled, skipping post-match actions',
+    );
+    return { outcome: WebhookOutcome.IGNORED, outcome_detail: `source_type ${payment_request.source_type} not handled`, external_reference: payment_hash };
   }
 
   private async _handleLoanCollateral(
