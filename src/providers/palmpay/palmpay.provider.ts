@@ -209,6 +209,22 @@ export class PalmpayProvider implements DisbursementProvider {
     // against floating-point oddities upstream.
     const amount_kobo = params.amount.times(100).toDecimalPlaces(0).toNumber();
 
+    // Verify the webhook callback URL we're handing PalmPay matches the
+    // deployed webhook controller route. Empty string here means PalmPay has
+    // nothing to call back, so the only way to learn the payout outcome is
+    // the reconciler poll. Account number is omitted from this log per §5.8;
+    // notify_url and reference are config / our own identifier — not PII.
+    this.logger.log(
+      {
+        reference:    params.reference,
+        amount_kobo,
+        currency:     params.currency,
+        bank_code:    params.provider_code,
+        notify_url:   this.config.notify_url || '(empty — webhook callback disabled)',
+      },
+      'PalmPay payout request — outbound',
+    );
+
     const data = await this.post(
       '/api/v2/merchant/payment/payout',
       {

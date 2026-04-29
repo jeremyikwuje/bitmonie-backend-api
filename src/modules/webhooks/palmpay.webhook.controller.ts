@@ -59,9 +59,23 @@ export class PalmpayWebhookController {
   async handle(@RawBody() raw_body: Buffer): Promise<string> {
     const raw_str = raw_body.toString('utf8');
 
+    // Entrance log — proves PalmPay reached us. Absence of this line in Railway
+    // logs across an entire payout cycle means the webhook is never being
+    // delivered (likely cause: notify_url not registered on PalmPay's side, or
+    // a network/DNS issue at PalmPay → our domain). The body preview is
+    // truncated to avoid bloating logs but is long enough to identify the
+    // event type by its first JSON keys.
+    this.logger.log(
+      { body_length: raw_body.length, body_preview: raw_str.slice(0, 500) },
+      'PalmPay webhook received',
+    );
+
     // PalmPay signs the full payload body — signature is embedded in the `sign` field
     if (!this.provider.verifyWebhookSignature(raw_str, '')) {
-      this.logger.warn('PalmPay webhook signature mismatch — rejected');
+      this.logger.warn(
+        { body_preview: raw_str.slice(0, 500) },
+        'PalmPay webhook signature mismatch — rejected',
+      );
       throw new UnauthorizedException('Invalid webhook signature');
     }
 
