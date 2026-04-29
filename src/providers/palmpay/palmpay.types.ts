@@ -35,8 +35,8 @@ export const PalmpayPayoutResponseSchema = z.object({
   respMsg: z.string(),
   data: z
     .object({
-      orderId: z.string().optional(),      // PalmPay internal ID
-      orderNo: z.string().optional(),      // our reference echoed back
+      orderId: z.string().optional(),      // our reference echoed back
+      orderNo: z.string().optional(),      // PalmPay internal transaction ID
       orderStatus: z.number().optional(),
       sessionId: z.string().optional(),
     })
@@ -55,8 +55,8 @@ export const PalmpayQueryPayStatusResponseSchema = z.object({
       currency: z.string().optional(),
       amount: z.number().optional(),
       fee: z.object({ fee: z.number() }).optional(),
-      orderId: z.string().optional(),      // PalmPay internal ID
-      orderNo: z.string().optional(),      // our reference
+      orderId: z.string().optional(),      // our reference echoed back
+      orderNo: z.string().optional(),      // PalmPay internal transaction ID
       orderStatus: z.number().optional(),  // 1=processing, 2=success, 3=failed
       sessionId: z.string().optional(),
       message: z.string().optional(),

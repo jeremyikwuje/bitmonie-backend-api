@@ -257,9 +257,14 @@ export class PalmpayProvider implements DisbursementProvider {
     failure_reason?: string;
     failure_code?: string;
   }> {
+    // queryPayStatus matches by either field, but our `provider_reference` is
+    // the value we sent as `orderId` on the payout request — sending it as
+    // `orderNo` (PalmPay's internal ID) makes them respond respCode=success
+    // with data=null because no row matches, and the reconciler then can't
+    // tell "not found" apart from "still in flight".
     const data = await this.post(
       '/api/v2/merchant/payment/queryPayStatus',
-      { orderNo: provider_reference },
+      { orderId: provider_reference },
       PalmpayQueryPayStatusResponseSchema,
     );
 
@@ -294,6 +299,27 @@ export class PalmpayProvider implements DisbursementProvider {
         failure_code: data.respCode,
       };
     }
+
+    // respCode=success + missing/empty data means PalmPay accepted the query
+    // but returned no transaction record. Distinct from a genuine
+    // orderStatus=1 in-flight reply — surface at warn level so a row stuck
+    // for this reason is visible in logs instead of looking like normal
+    // PROCESSING noise. Most common cause: querying with a reference PalmPay
+    // doesn't recognise (wrong field, malformed ref, or upstream lost it).
+    if (
+      data.respCode === PALMPAY_RESP_CODE_SUCCESS &&
+      (data.data == null || order_status == null)
+    ) {
+      this.logger.warn(
+        {
+          provider_reference,
+          respCode: data.respCode,
+          respMsg:  data.respMsg,
+        },
+        'PalmPay queryPayStatus returned success with no orderStatus — likely transaction not found',
+      );
+    }
+
     return { status: 'processing' };
   }
 
