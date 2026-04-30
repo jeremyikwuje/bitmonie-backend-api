@@ -25,6 +25,13 @@ export const MIN_LOAN_NGN              = new Decimal('10000');
 export const MAX_SELFSERVE_LOAN_NGN    = new Decimal('10000000');
 export const MIN_PARTIAL_REPAYMENT_NGN = new Decimal('10000');
 
+// Tolerance applied when auto-matching a multi-loan inflow against current
+// outstanding (see CLAUDE.md §5.7a smart-match step). Outstanding accrues
+// sub-naira interest fractions every day, so an exact-equality check would
+// nearly never hit. ₦0.50 absorbs accrual dust without being permissive
+// enough to coalesce two genuinely different loans.
+export const INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN = new Decimal('0.50');
+
 export const MAX_DISBURSEMENT_ACCOUNTS_PER_KIND = 5;
 export const MAX_LOAN_DURATION_DAYS    = 90;
 export const MIN_LOAN_DURATION_DAYS    = 1;

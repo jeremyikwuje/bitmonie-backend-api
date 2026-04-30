@@ -218,15 +218,28 @@ export class PalmpayCollectionVaWebhookController {
       return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'no_active_loans', external_reference: ext_ref };
     }
 
-    if (active_loans.length > 1) {
-      // Customer has multiple ACTIVE loans — webhook can't safely guess.
-      // Inflow sits unmatched; customer disambiguates via
-      // POST /v1/loans/:id/claim-inflow.
-      await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'multiple_active_loans');
-      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'multiple_active_loans', external_reference: ext_ref };
+    // Loan selection:
+    //   - exactly one ACTIVE   → trivially that loan
+    //   - 2+ ACTIVE            → smart-match: pick the loan whose current
+    //     outstanding equals the inflow amount (within ₦0.50 tolerance for
+    //     accrual fractions). Tiebreaker on multiple matches: oldest by
+    //     created_at. No match → unmatched, customer self-serves via the
+    //     stack-of-cash-rolls UX (GET /v1/inflows/unmatched + apply).
+    let matched_loan_id: string;
+    if (active_loans.length === 1) {
+      matched_loan_id = active_loans[0]!.id;
+    } else {
+      const smart_match = await this.loans.findActiveLoanMatchingOutstanding(user_id, amount_ngn);
+      if (!smart_match) {
+        await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'multiple_active_loans');
+        return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'multiple_active_loans', external_reference: ext_ref };
+      }
+      this.logger.log(
+        { user_id, order_no: payload.orderNo, loan_id: smart_match.loan_id, tiebreaker: smart_match.tiebreaker, amount_ngn: amount_ngn.toFixed(2) },
+        'PalmPay collection: smart-matched amount to ACTIVE loan with equal outstanding',
+      );
+      matched_loan_id = smart_match.loan_id;
     }
-
-    const matched_loan = active_loans[0]!;
 
     // Independently re-query PalmPay before crediting. Webhook signature proves
     // the message came from PalmPay; the re-query proves PalmPay's own books
@@ -312,7 +325,7 @@ export class PalmpayCollectionVaWebhookController {
     // Idempotency on duplicate webhook delivery — Inflow already credited.
     if (inflow.is_matched) {
       this.logger.log(
-        { loan_id: matched_loan.id, order_no: payload.orderNo },
+        { loan_id: matched_loan_id, order_no: payload.orderNo },
         'PalmPay collection: inflow already matched — duplicate webhook, no-op',
       );
       return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'inflow already matched (duplicate webhook)', external_reference: ext_ref };
@@ -321,13 +334,13 @@ export class PalmpayCollectionVaWebhookController {
     try {
       const credit = await this.loans.creditInflow({
         inflow_id:    inflow.id,
-        loan_id:      matched_loan.id,
+        loan_id:      matched_loan_id,
         amount_ngn,
         match_method: 'AUTO_AMOUNT',
       });
       this.logger.log(
         {
-          loan_id:        matched_loan.id,
+          loan_id:        matched_loan_id,
           order_no:       payload.orderNo,
           amount_ngn:     amount_ngn.toFixed(2),
           new_status:     credit.new_status,
@@ -336,11 +349,11 @@ export class PalmpayCollectionVaWebhookController {
         },
         'PalmPay repayment auto-matched and credited',
       );
-      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: `loan ${matched_loan.id} → ${credit.new_status}`, external_reference: ext_ref };
+      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: `loan ${matched_loan_id} → ${credit.new_status}`, external_reference: ext_ref };
     } catch (err) {
       this.logger.error(
         {
-          loan_id:    matched_loan.id,
+          loan_id:    matched_loan_id,
           inflow_id:  inflow.id,
           order_no:   payload.orderNo,
           error:      err instanceof Error ? err.message : String(err),
@@ -356,7 +369,7 @@ export class PalmpayCollectionVaWebhookController {
         virtual_account: payload.virtualAccountNo,
         payer_name:      payload.payerAccountName,
         payer_account:   payload.payerAccountNo,
-        loan_id:         matched_loan.id,
+        loan_id:         matched_loan_id,
         detail:          err instanceof Error ? err.message : String(err),
       });
       return { outcome: WebhookOutcome.ERROR, outcome_detail: 'creditInflow failed', external_reference: ext_ref };

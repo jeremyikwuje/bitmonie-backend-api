@@ -199,11 +199,14 @@ export class LoansController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Credit a recent unmatched repayment inflow to this loan',
+    summary: '[DEPRECATED] Credit the most recent unmatched repayment inflow to this loan',
+    deprecated: true,
     description:
-      'For when the customer has multiple ACTIVE loans and the webhook could not auto-match. ' +
-      'Searches the most recent unmatched NGN inflow for this user (≥ N10,000, within 24h) ' +
-      'and credits it via the waterfall. Idempotency-Key header required.',
+      'DEPRECATED — use GET /v1/inflows/unmatched + POST /v1/inflows/:inflow_id/apply ' +
+      'instead, which lets the customer pick which specific inflow to apply.\n\n' +
+      'This endpoint is kept for backwards compatibility. It searches the most recent unmatched ' +
+      'NGN inflow for the user (≥ N10,000, within 24h) and applies it to the chosen loan via ' +
+      'the standard waterfall. Idempotency-Key header required.',
   })
   @ApiResponse({ status: 200, description: 'Inflow claimed and credited' })
   @ApiResponse({ status: 404, description: 'Loan not found, or no unmatched inflow in window' })

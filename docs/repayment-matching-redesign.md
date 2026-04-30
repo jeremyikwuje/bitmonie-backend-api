@@ -330,8 +330,15 @@ Sibling routes:
       Zero → Inflow(is_matched=false, reason='no_active_loans'), alert ops.
  8. Auto-match decision:
       - Exactly ONE ACTIVE loan → continue.
-      - Multiple ACTIVE loans → Inflow(is_matched=false, reason='multiple_active_loans'),
-        prompt customer via claim-inflow endpoint. Do not auto-guess.
+      - Multiple ACTIVE loans → **smart-match step**:
+          For each ACTIVE loan, compute current total outstanding via
+          AccrualService.compute(...). Pick loans whose outstanding equals
+          the inflow amount within ±₦0.50 (INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN
+          — absorbs sub-naira accrual fractions).
+          - Exactly one such loan → continue with that loan.
+          - Multiple such loans → tiebreaker: oldest by Loan.created_at.
+          - No matches → Inflow(is_matched=false, reason='multiple_active_loans'),
+            customer self-serves via the inflows surface (§7).
  9. Defence-in-depth: re-query PalmPay (PalmpayProvider.getCollectionOrderStatus)
     using the webhook's orderNo. Only proceed when:
       a. status == 'successful', AND
@@ -560,47 +567,76 @@ New worker `workers/loan-reminder.worker.ts`. Ticks hourly. For each ACTIVE loan
 
 ---
 
-## 10. Claim-inflow endpoint
+## 10. Inflows surface — "stack of cash rolls"
 
-Needed whenever a customer has 2+ ACTIVE loans and sends a repayment. The webhook can't disambiguate, so the Inflow sits unmatched until the customer (or ops) explicitly claims it.
+When a webhook can't auto-credit (multi-active without a smart-match, or no ACTIVE loan at receipt time), the Inflow is persisted unmatched. The customer self-serves via two endpoints — no ops involvement.
 
-### 10.1 Endpoint
+### 10.1 List unmatched inflows
 
 ```
-POST /v1/loans/:id/claim-inflow
+GET /v1/inflows/unmatched
 Auth: SessionGuard
-Idempotency-Key required.
-
-Request body: (empty — or optionally { "inflow_id": "uuid" } to claim a specific inflow)
 
 Response 200:
 {
-  "claimed":       true,
-  "repayment_id":  "uuid",
-  "amount_ngn":    "50000.00",
-  "loan_status":   "ACTIVE",       // or "REPAID" if the claim closed the loan
-  "outstanding_ngn": "450000.00"
+  "items": [
+    {
+      "id":              "inf_uuid",
+      "amount_ngn":      "10130.00",
+      "received_at":     "2026-04-30T12:00:07Z",
+      "payer_name":      "JEREMIAH SUCCEED IKWUJE",
+      "payer_bank_name": "OPay",
+      "received_via":    "9931107760",
+      "status":          "CLAIMABLE"        // or "BELOW_MINIMUM" for sub-N10k inflows
+    }
+  ]
+}
+```
+
+Filter: `user_id = current_user AND is_matched = false AND currency = 'NGN' AND source_type IS NULL` and exclude any with `provider_response.bitmonie_unmatched_reason ∈ {requery_mismatch, requery_unconfirmed, credit_failed}` (those are PalmPay-untrusted; ops territory).
+
+### 10.2 Apply a specific inflow to a loan
+
+```
+POST /v1/inflows/:inflow_id/apply
+Auth: SessionGuard
+Idempotency-Key required.
+
+Request body: { "loan_id": "uuid" }
+
+Response 200:
+{
+  "loan_id":             "uuid",
+  "new_status":          "ACTIVE",          // or "REPAID" if the apply closed the loan
+  "applied_to_custody":  "350.00",
+  "applied_to_interest": "1500.00",
+  "applied_to_principal": "8280.00",
+  "overpay_ngn":         "0.00",
+  "outstanding_ngn":     "491720.00"
 }
 ```
 
 Behavior:
-- Auth: the loan must belong to the authenticated user.
-- Find the most recent unmatched Inflow for this user where:
-  - `amount_ngn ≥ N10,000` (floor)
-  - `amount_ngn ≤ outstanding(loan).total_outstanding_ngn + overpay_tolerance` — actually, allow any amount ≥ floor; waterfall handles the math.
-  - `created_at ≥ now − 24h` (don't let stale Inflows haunt claims)
-  - `is_matched = false`, `source_type IS NULL`
-- If none found → 404 with `NoUnmatchedInflowException`.
-- If exactly one candidate → credit it via `creditInflowToLoan(..., match_method='CUSTOMER_CLAIM')`.
-- If multiple candidates → return the most recent and claim it. Log INFO.
+- Inflow must exist, belong to the authenticated user, currency=NGN, `is_matched=false`, and not be in an untrusted state.
+- Loan must belong to the authenticated user and be ACTIVE.
+- **Floor bypassed** — the floor exists to keep auto-matching from acting on tiny accidental transfers; that doesn't apply when the customer themselves directs the apply. Customer can apply a ₦1,000 inflow to a loan if they choose.
+- Credits via `creditInflow(..., match_method='CUSTOMER_CLAIM', skip_floor: true)`.
 
-### 10.2 Ops override
+### 10.3 Legacy claim-inflow (deprecated)
 
-Admin-only endpoint (out of this v1.1 slice; document intent):
+```
+POST /v1/loans/:id/claim-inflow
+```
+
+Still works for backwards compat. Now reimplemented on top of `applyInflowToLoan` — finds the most recent unmatched inflow for the user (≥₦10k, within 24h) and applies it to the chosen loan. Marked `deprecated: true` in OpenAPI; remove in v1.2.
+
+### 10.4 Ops override (deferred to v1.2)
+
+Admin-only endpoint, not built yet:
 ```
 POST /v1/admin/inflows/:inflow_id/claim-to-loan/:loan_id
 ```
-Same credit logic but bypasses the 24h window and the auth-user check. For when the customer calls in with a stale transfer.
+Same credit logic but bypasses the auth-user check. For unusual triage cases that can't be self-served (e.g., wrong-user attribution).
 
 ---
 

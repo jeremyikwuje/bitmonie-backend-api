@@ -56,32 +56,38 @@ import { MIN_PARTIAL_REPAYMENT_NGN } from '@/common/constants';
 const log = new Logger('replay-dropped-palmpay-collections');
 
 interface CliArgs {
-  apply:    boolean;
-  force:    boolean;
-  help:     boolean;
-  limit:    number | null;
-  order_no: string | null;
-  since:    string | null;
+  apply:         boolean;
+  force:         boolean;
+  help:          boolean;
+  alert_ops:     boolean;
+  skip_requery:  boolean;
+  limit:         number | null;
+  order_no:      string | null;
+  since:         string | null;
 }
 
 function parseArgs(): CliArgs {
   const argv = process.argv.slice(2);
   const args: CliArgs = {
-    apply:    false,
-    force:    false,
-    help:     false,
-    limit:    null,
-    order_no: null,
-    since:    null,
+    apply:        false,
+    force:        false,
+    help:         false,
+    alert_ops:    false,
+    skip_requery: false,
+    limit:        null,
+    order_no:     null,
+    since:        null,
   };
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
-      case '--apply':    args.apply = true; break;
-      case '--force':    args.force = true; break;
+      case '--apply':        args.apply = true; break;
+      case '--force':        args.force = true; break;
+      case '--alert-ops':    args.alert_ops = true; break;
+      case '--skip-requery': args.skip_requery = true; break;
       case '--help':
-      case '-h':         args.help = true; break;
+      case '-h':             args.help = true; break;
       case '--limit': {
         const v = argv[i + 1];
         if (!v) throw new Error('--limit requires a value');
@@ -122,8 +128,20 @@ Usage:
   pnpm ops:replay-dropped-collections [-- <flags>]
 
 Flags:
-  --apply              Actually credit the loans (default is dry-run).
+  --apply              Actually persist Inflows / credit loans (default dry-run).
   --force              Skip the interactive confirmation when --apply is set.
+  --alert-ops          Page ops via OpsAlertsService for each persisted unmatched
+                       Inflow (off by default — replays are operator-driven, so
+                       paging the same operator who is running the script is noise).
+  --skip-requery       Skip the live PalmPay order-query call. Use this when
+                       running from a non-prod IP (PalmPay's outbound API
+                       allowlists production only). Trust justification:
+                       candidates are already filtered to signature_valid=true,
+                       meaning each row was PalmPay-signed and verified at
+                       original receipt — the live re-query is defence-in-depth
+                       and not strictly required for already-verified historical
+                       rows. The live controller still re-queries on every
+                       fresh webhook; this flag affects ONLY the replay path.
   --limit N            Cap the batch size at N webhook_logs rows.
   --order-no <id>      Restrict to a single PalmPay orderNo.
   --since <YYYY-MM-DD> Only inspect rows received on/after this UTC date.
@@ -203,13 +221,72 @@ interface ReplayOutcome {
   amount_ngn?:   string;
 }
 
+type UnmatchedReason =
+  | 'no_user_for_va'
+  | 'below_floor'
+  | 'no_active_loans'
+  | 'multiple_active_loans';
+
+// Mirror of the live controller's _storeUnmatchedInflow — upserts an Inflow
+// row tagged with the unmatched reason so ops can see it in standard tooling
+// and the customer (in the multiple_active_loans case) can disambiguate via
+// POST /v1/loans/:id/claim-inflow. Idempotent on provider_reference @unique.
+async function storeUnmatchedInflow(params: {
+  prisma:           PrismaService;
+  ops_alerts:       OpsAlertsService;
+  payload:          PalmpayCollectionNotification;
+  raw:              Record<string, unknown>;
+  amount_ngn:       Decimal;
+  user_id:          string | null;
+  reason:           UnmatchedReason;
+  log_id:           string;
+  alert_ops:        boolean;
+}): Promise<void> {
+  const { prisma, ops_alerts, payload, raw, amount_ngn, user_id, reason, log_id, alert_ops } = params;
+
+  await prisma.inflow.upsert({
+    where:  { provider_reference: payload.orderNo },
+    create: {
+      user_id,
+      asset:              'NGN',
+      amount:             amount_ngn,
+      currency:           'NGN',
+      network:            PaymentNetwork.BANK_TRANSFER,
+      receiving_address:  payload.virtualAccountNo ?? '',
+      provider_reference: payload.orderNo,
+      is_matched:         false,
+      provider_response:  {
+        ...raw,
+        bitmonie_unmatched_reason:     reason,
+        bitmonie_replayed_from_log_id: log_id,
+      } as never,
+    },
+    update: {},
+  });
+
+  if (alert_ops) {
+    await ops_alerts.alertUnmatchedInflow({
+      reason,
+      provider:        'palmpay',
+      order_no:        payload.orderNo,
+      amount_ngn:      amount_ngn.toFixed(2),
+      user_id,
+      virtual_account: payload.virtualAccountNo,
+      payer_name:      payload.payerAccountName,
+      payer_account:   payload.payerAccountNo,
+    });
+  }
+}
+
 async function replayOne(
-  prisma:     PrismaService,
-  provider:   PalmpayProvider,
-  loans:      LoansService,
-  ops_alerts: OpsAlertsService,
-  candidate:  Candidate,
-  apply:      boolean,
+  prisma:        PrismaService,
+  provider:      PalmpayProvider,
+  loans:         LoansService,
+  ops_alerts:    OpsAlertsService,
+  candidate:     Candidate,
+  apply:         boolean,
+  alert_ops:     boolean,
+  skip_requery:  boolean,
 ): Promise<ReplayOutcome> {
   let parsed: Record<string, unknown>;
   try {
@@ -246,18 +323,40 @@ async function replayOne(
 
   const amount_ngn = new Decimal(payload.orderAmount).div(100);
 
-  // Match user → ACTIVE loan, same logic as the live controller.
+  // Match user → ACTIVE loan, same logic as the live controller. Each
+  // unmatched branch persists an Inflow row on --apply (mirroring live
+  // controller behaviour) so ops can see these in standard tooling and the
+  // customer can use claim-inflow on multiple_active_loans rows.
+  const persistTag = (reason: UnmatchedReason, user_id: string | null) =>
+    apply
+      ? `(persisted) ${reason}`
+      : `(dry-run) would persist as ${reason}${user_id ? '' : ' (no user_id)'}`;
+
   const repayment_account = await prisma.userRepaymentAccount.findUnique({
     where: { virtual_account_no: payload.virtualAccountNo },
   });
   if (!repayment_account) {
-    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: 'no_user_for_va', amount_ngn: amount_ngn.toFixed(2) };
+    if (apply) {
+      await storeUnmatchedInflow({
+        prisma, ops_alerts, payload, raw: parsed,
+        amount_ngn, user_id: null, reason: 'no_user_for_va',
+        log_id: candidate.log_id, alert_ops,
+      });
+    }
+    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: persistTag('no_user_for_va', null), amount_ngn: amount_ngn.toFixed(2) };
   }
 
   const user_id = repayment_account.user_id;
 
   if (amount_ngn.lt(MIN_PARTIAL_REPAYMENT_NGN)) {
-    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: 'below_floor', amount_ngn: amount_ngn.toFixed(2) };
+    if (apply) {
+      await storeUnmatchedInflow({
+        prisma, ops_alerts, payload, raw: parsed,
+        amount_ngn, user_id, reason: 'below_floor',
+        log_id: candidate.log_id, alert_ops,
+      });
+    }
+    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: persistTag('below_floor', user_id), amount_ngn: amount_ngn.toFixed(2) };
   }
 
   const active_loans = await prisma.loan.findMany({
@@ -266,45 +365,78 @@ async function replayOne(
   });
 
   if (active_loans.length === 0) {
-    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: 'no_active_loans', amount_ngn: amount_ngn.toFixed(2) };
-  }
-  if (active_loans.length > 1) {
-    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: 'multiple_active_loans (use claim-inflow)', amount_ngn: amount_ngn.toFixed(2) };
+    if (apply) {
+      await storeUnmatchedInflow({
+        prisma, ops_alerts, payload, raw: parsed,
+        amount_ngn, user_id, reason: 'no_active_loans',
+        log_id: candidate.log_id, alert_ops,
+      });
+    }
+    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: persistTag('no_active_loans', user_id), amount_ngn: amount_ngn.toFixed(2) };
   }
 
-  const matched_loan = active_loans[0]!;
+  // Loan selection mirrors the live controller (CLAUDE.md §5.7a):
+  //   exactly one ACTIVE   → that loan
+  //   2+ ACTIVE            → smart-match: pick the loan whose current
+  //     outstanding equals the inflow amount (within ₦0.50). Tiebreaker
+  //     on multiple matches: oldest by created_at. No match → unmatched
+  //     (multiple_active_loans), customer self-serves.
+  let matched_loan: { id: string };
+  if (active_loans.length === 1) {
+    matched_loan = active_loans[0]!;
+  } else {
+    const smart_match = await loans.findActiveLoanMatchingOutstanding(user_id, amount_ngn);
+    if (!smart_match) {
+      if (apply) {
+        await storeUnmatchedInflow({
+          prisma, ops_alerts, payload, raw: parsed,
+          amount_ngn, user_id, reason: 'multiple_active_loans',
+          log_id: candidate.log_id, alert_ops,
+        });
+      }
+      return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'unmatched', detail: `${persistTag('multiple_active_loans', user_id)} — customer disambiguates via POST /v1/inflows/:inflow_id/apply`, amount_ngn: amount_ngn.toFixed(2) };
+    }
+    matched_loan = { id: smart_match.loan_id };
+  }
 
   // Live re-query — same defence-in-depth the new controller applies.
-  let verified: Awaited<ReturnType<typeof provider.getCollectionOrderStatus>>;
-  try {
-    verified = await provider.getCollectionOrderStatus(payload.orderNo);
-  } catch (err) {
-    return {
-      log_id:   candidate.log_id,
-      order_no: payload.orderNo,
-      decision: 'requery_failed',
-      detail:   err instanceof Error ? err.message : String(err),
-    };
-  }
+  // --skip-requery bypasses this for replays from non-prod IPs (PalmPay
+  // allowlists prod only). Trust justification: candidates are already
+  // filtered to signature_valid=true, so each row was PalmPay-signed and
+  // verified at original receipt; the live re-query is defence-in-depth
+  // and not strictly required for already-verified historical rows.
+  if (!skip_requery) {
+    let verified: Awaited<ReturnType<typeof provider.getCollectionOrderStatus>>;
+    try {
+      verified = await provider.getCollectionOrderStatus(payload.orderNo);
+    } catch (err) {
+      return {
+        log_id:   candidate.log_id,
+        order_no: payload.orderNo,
+        decision: 'requery_failed',
+        detail:   err instanceof Error ? err.message : String(err),
+      };
+    }
 
-  if (verified.status !== 'successful') {
-    return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'mismatch', detail: `requery_status=${verified.status}` };
-  }
-  if (verified.amount_kobo == null || verified.amount_kobo !== payload.orderAmount) {
-    return {
-      log_id:   candidate.log_id,
-      order_no: payload.orderNo,
-      decision: 'mismatch',
-      detail:   `amount_kobo webhook=${payload.orderAmount} requery=${verified.amount_kobo ?? 'null'}`,
-    };
-  }
-  if (verified.virtual_account_no && verified.virtual_account_no !== payload.virtualAccountNo) {
-    return {
-      log_id:   candidate.log_id,
-      order_no: payload.orderNo,
-      decision: 'mismatch',
-      detail:   `va webhook=${payload.virtualAccountNo} requery=${verified.virtual_account_no}`,
-    };
+    if (verified.status !== 'successful') {
+      return { log_id: candidate.log_id, order_no: payload.orderNo, decision: 'mismatch', detail: `requery_status=${verified.status}` };
+    }
+    if (verified.amount_kobo == null || verified.amount_kobo !== payload.orderAmount) {
+      return {
+        log_id:   candidate.log_id,
+        order_no: payload.orderNo,
+        decision: 'mismatch',
+        detail:   `amount_kobo webhook=${payload.orderAmount} requery=${verified.amount_kobo ?? 'null'}`,
+      };
+    }
+    if (verified.virtual_account_no && verified.virtual_account_no !== payload.virtualAccountNo) {
+      return {
+        log_id:   candidate.log_id,
+        order_no: payload.orderNo,
+        decision: 'mismatch',
+        detail:   `va webhook=${payload.virtualAccountNo} requery=${verified.virtual_account_no}`,
+      };
+    }
   }
 
   if (!apply) {
@@ -433,7 +565,7 @@ async function main(): Promise<void> {
 
   const outcomes: ReplayOutcome[] = [];
   for (const candidate of candidates) {
-    const outcome = await replayOne(prisma, provider, loans, ops_alerts, candidate, args.apply);
+    const outcome = await replayOne(prisma, provider, loans, ops_alerts, candidate, args.apply, args.alert_ops, args.skip_requery);
     outcomes.push(outcome);
     log.log(
       `${outcome.decision.padEnd(18)} | order=${outcome.order_no ?? '(unparsed)'} | ` +

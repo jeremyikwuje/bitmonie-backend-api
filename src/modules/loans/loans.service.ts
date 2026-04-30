@@ -25,6 +25,7 @@ import {
 import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from './price-quote.provider.interface';
 import {
   COLLATERAL_TOPUP_EXPIRY_SEC,
+  INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN,
   LoanReasonCodes,
   MIN_PARTIAL_REPAYMENT_NGN,
   REDIS_KEYS,
@@ -33,7 +34,9 @@ import {
   AddCollateralAlreadyPendingException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
+  InflowAlreadyMatchedException,
   InflowBelowFloorException,
+  InflowNotFoundException,
   LoanDisabledException,
   LoanDisbursementAccountRequiredException,
   LoanNotActiveException,
@@ -410,8 +413,14 @@ export class LoansService {
     loan_id:      string;
     amount_ngn:   Decimal;
     match_method: MatchMethod;
+    // Bypass the MIN_PARTIAL_REPAYMENT_NGN floor when the customer is
+    // explicitly applying a specific inflow they already own (the
+    // "stack of cash rolls" UX). The floor exists to keep auto-matching
+    // from acting on tiny accidental transfers — that rationale doesn't
+    // apply when the customer themselves directs the apply.
+    skip_floor?:  boolean;
   }): Promise<CreditInflowResult> {
-    if (params.amount_ngn.lt(MIN_PARTIAL_REPAYMENT_NGN)) {
+    if (!params.skip_floor && params.amount_ngn.lt(MIN_PARTIAL_REPAYMENT_NGN)) {
       throw new InflowBelowFloorException({
         received_ngn: params.amount_ngn.toFixed(2),
         floor_ngn:    MIN_PARTIAL_REPAYMENT_NGN.toFixed(2),
@@ -719,12 +728,166 @@ export class LoansService {
 
     if (!candidate) throw new NoUnmatchedInflowException();
 
-    return this.creditInflow({
-      inflow_id:    candidate.id,
-      loan_id,
-      amount_ngn:   new Decimal(candidate.amount.toString()),
-      match_method: 'CUSTOMER_CLAIM',
+    return this.applyInflowToLoan(user_id, candidate.id, loan_id);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // applyInflowToLoan
+  //
+  // Customer-explicit "stack of cash rolls" claim — the customer picks one of
+  // their unmatched inflows and applies it to one of their ACTIVE loans.
+  // Surfaces the inflow list via GET /v1/inflows/unmatched; this endpoint is
+  // the apply action.
+  //
+  // Validation:
+  //   - Inflow must exist, belong to user, currency=NGN, and be unmatched.
+  //   - Inflow must NOT carry an "untrusted" reason marker
+  //     (requery_mismatch / requery_unconfirmed / credit_failed) — those are
+  //     ops-only triage states, not customer-claimable.
+  //   - Loan must belong to user and be in a creditable state (ACTIVE; REPAID
+  //     short-circuits inside creditInflow as a no-op).
+  //
+  // Floor: bypassed (skip_floor: true). The customer sent the money and is
+  // directing it explicitly — no auto-match noise risk.
+  // ─────────────────────────────────────────────────────────────────────────
+  async applyInflowToLoan(
+    user_id:   string,
+    inflow_id: string,
+    loan_id:   string,
+  ): Promise<CreditInflowResult> {
+    const loan = await this.prisma.loan.findFirst({ where: { id: loan_id, user_id } });
+    if (!loan) throw new LoanNotFoundException();
+    if (loan.status !== LoanStatus.ACTIVE) {
+      throw new LoanNotActiveException({ status: loan.status });
+    }
+
+    const inflow = await this.prisma.inflow.findFirst({
+      where: { id: inflow_id, user_id, currency: 'NGN' },
     });
+    if (!inflow) throw new InflowNotFoundException();
+
+    if (inflow.is_matched) {
+      throw new InflowAlreadyMatchedException({
+        matched_at: inflow.matched_at?.toISOString(),
+        source_id:  inflow.source_id ?? undefined,
+      });
+    }
+
+    // Untrusted-state guard: persisted Inflows whose PalmPay re-query failed
+    // or disagreed must not auto-apply via the customer path. Ops handles them.
+    const reason = (inflow.provider_response as { bitmonie_unmatched_reason?: string } | null)
+      ?.bitmonie_unmatched_reason;
+    if (reason === 'requery_mismatch' || reason === 'requery_unconfirmed' || reason === 'credit_failed') {
+      throw new InflowNotFoundException();
+    }
+
+    return this.creditInflow({
+      inflow_id,
+      loan_id,
+      amount_ngn:   new Decimal(inflow.amount.toString()),
+      match_method: 'CUSTOMER_CLAIM',
+      skip_floor:   true,
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // findActiveLoanMatchingOutstanding
+  //
+  // Smart-match for the multi-ACTIVE-loan branch of the collection webhook
+  // (CLAUDE.md §5.7a). When a user has 2+ ACTIVE loans, the webhook can't
+  // safely auto-credit by user — but if exactly one of those loans has a
+  // current outstanding equal to the inflow amount (within a tight tolerance
+  // for daily accrual fractions), that's almost certainly the loan the
+  // customer is paying off. If multiple loans match, oldest by created_at
+  // wins (deterministic tiebreaker; customer can still dispute).
+  //
+  // Returns null when no loan's outstanding matches — the caller falls back
+  // to the unmatched / claim-inflow path.
+  // ─────────────────────────────────────────────────────────────────────────
+  async findActiveLoanMatchingOutstanding(
+    user_id:    string,
+    amount_ngn: Decimal,
+  ): Promise<{ loan_id: string; tiebreaker: 'unique' | 'oldest' } | null> {
+    const active_loans = await this.prisma.loan.findMany({
+      where:   { user_id, status: LoanStatus.ACTIVE },
+      include: { repayments: { orderBy: { created_at: 'asc' } } },
+      orderBy: { created_at: 'asc' },
+    });
+
+    if (active_loans.length === 0) return null;
+
+    const now = new Date();
+    const matches: Array<{ id: string; created_at: Date }> = [];
+
+    for (const loan of active_loans) {
+      const outstanding = this.accrual.compute({
+        loan,
+        repayments: loan.repayments.map(this._toAccrualRepayment),
+        as_of:      now,
+      });
+      const diff = outstanding.total_outstanding_ngn.minus(amount_ngn).abs();
+      if (diff.lte(INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN)) {
+        matches.push({ id: loan.id, created_at: loan.created_at });
+      }
+    }
+
+    if (matches.length === 0) return null;
+    if (matches.length === 1) return { loan_id: matches[0]!.id, tiebreaker: 'unique' };
+
+    // Multiple loans with matching outstanding — extremely unlikely in
+    // practice (would need two loans with the same principal, custody, and
+    // accrual state to within 50 kobo). Oldest wins; customer can dispute.
+    matches.sort((a, b) => a.created_at.getTime() - b.created_at.getTime());
+    return { loan_id: matches[0]!.id, tiebreaker: 'oldest' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // listUnmatchedInflowsForUser
+  //
+  // Backs GET /v1/inflows/unmatched — the customer's "stack of cash rolls"
+  // view. Returns NGN inflows for the user that are unmatched and trusted
+  // (untrusted reason markers gate them out per applyInflowToLoan rules so
+  // the list and the apply path agree on what's claimable).
+  // ─────────────────────────────────────────────────────────────────────────
+  async listUnmatchedInflowsForUser(user_id: string): Promise<Array<{
+    id:                string;
+    amount_ngn:        string;
+    received_at:       Date;
+    payer_name:        string | null;
+    payer_bank_name:   string | null;
+    received_via:      string;            // virtual account number the funds landed in
+    status:            'CLAIMABLE' | 'BELOW_MINIMUM';
+  }>> {
+    const rows = await this.prisma.inflow.findMany({
+      where:   { user_id, currency: 'NGN', is_matched: false, source_type: null },
+      orderBy: { created_at: 'desc' },
+    });
+
+    type ProviderResponse = {
+      payerAccountName?:           string;
+      payerBankName?:              string;
+      bitmonie_unmatched_reason?:  string;
+    } | null;
+
+    return rows
+      .filter((row) => {
+        const r = (row.provider_response as ProviderResponse)?.bitmonie_unmatched_reason;
+        return r !== 'requery_mismatch' && r !== 'requery_unconfirmed' && r !== 'credit_failed';
+      })
+      .map((row) => {
+        const pr           = row.provider_response as ProviderResponse;
+        const amount       = new Decimal(row.amount.toString());
+        const below_floor  = amount.lt(MIN_PARTIAL_REPAYMENT_NGN);
+        return {
+          id:              row.id,
+          amount_ngn:      amount.toFixed(2),
+          received_at:     row.created_at,
+          payer_name:      pr?.payerAccountName ?? null,
+          payer_bank_name: pr?.payerBankName    ?? null,
+          received_via:    row.receiving_address,
+          status:          below_floor ? 'BELOW_MINIMUM' as const : 'CLAIMABLE' as const,
+        };
+      });
   }
 
   private async _resolveDefaultAccount(user_id: string, account_id?: string) {

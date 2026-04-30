@@ -310,9 +310,10 @@ describe('PalmpayCollectionVaWebhookController', () => {
     expect(loans.creditInflow).not.toHaveBeenCalled();
   });
 
-  it('writes unmatched inflow with reason "multiple_active_loans" when user has 2+ ACTIVE loans', async () => {
+  it('writes unmatched "multiple_active_loans" when user has 2+ ACTIVE loans AND smart-match finds none', async () => {
     prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
     prisma.loan.findMany.mockResolvedValue([{ id: LOAN_ID }, { id: 'loan-uuid-002' }] as never);
+    loans.findActiveLoanMatchingOutstanding.mockResolvedValue(null);
 
     await request(app.getHttpServer())
       .post('/webhooks/palmpay/collection/va')
@@ -327,6 +328,33 @@ describe('PalmpayCollectionVaWebhookController', () => {
       }),
     );
     expect(loans.creditInflow).not.toHaveBeenCalled();
+  });
+
+  it('auto-credits via smart-match when user has 2+ ACTIVE loans AND one outstanding equals the inflow', async () => {
+    prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
+    prisma.loan.findMany.mockResolvedValue([{ id: LOAN_ID }, { id: 'loan-uuid-002' }] as never);
+    loans.findActiveLoanMatchingOutstanding.mockResolvedValue({
+      loan_id:    'loan-uuid-002',
+      tiebreaker: 'unique',
+    });
+    prisma.inflow.upsert.mockResolvedValue({ id: 'inflow-uuid-001', is_matched: false } as never);
+
+    await request(app.getHttpServer())
+      .post('/webhooks/palmpay/collection/va')
+      .send(COLLECTION_NOTIFICATION)
+      .expect(200);
+
+    expect(loans.findActiveLoanMatchingOutstanding).toHaveBeenCalledWith(USER_ID, expect.anything());
+    expect(loans.creditInflow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        loan_id:      'loan-uuid-002',  // smart-match's pick, not active_loans[0]
+        match_method: 'AUTO_AMOUNT',
+      }),
+    );
+    // Did NOT persist as unmatched.
+    const upsert_calls = prisma.inflow.upsert.mock.calls as unknown as Array<[{ create: { is_matched: boolean } }]>;
+    expect(upsert_calls.every((c) => c[0].create.is_matched === false)).toBe(true);
+    expect(upsert_calls.length).toBe(1);
   });
 
   it('auto-credits via creditInflow with AUTO_AMOUNT when user has exactly one ACTIVE loan', async () => {

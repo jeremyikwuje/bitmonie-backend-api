@@ -212,6 +212,30 @@ export class NoUnmatchedInflowException extends BitmonieException {
   }
 }
 
+export class InflowNotFoundException extends BitmonieException {
+  constructor() {
+    super(
+      'INFLOW_NOT_FOUND',
+      'Inflow not found, or does not belong to you.',
+      HttpStatus.NOT_FOUND,
+    );
+  }
+}
+
+export class InflowAlreadyMatchedException extends BitmonieException {
+  constructor(context?: { matched_at?: string; source_id?: string }) {
+    const details: BitmonieErrorDetail[] = [];
+    if (context?.matched_at) details.push({ field: 'matched_at', issue: context.matched_at });
+    if (context?.source_id)  details.push({ field: 'source_id',  issue: context.source_id });
+    super(
+      'INFLOW_ALREADY_MATCHED',
+      'This inflow has already been applied to a loan.',
+      HttpStatus.CONFLICT,
+      details.length > 0 ? details : undefined,
+    );
+  }
+}
+
 export class RepaymentAccountNotReadyException extends BitmonieException {
   constructor() {
     super(

@@ -194,11 +194,23 @@ Matching flow:
 1. Reject if `orderStatus != PALMPAY_COLLECTION_STATUS_SUCCESS`.
 2. Resolve user from `virtualAccountNo` → `UserRepaymentAccount.user_id`. No match → unmatched (`no_user_for_va`).
 3. Floor check: `amount < MIN_PARTIAL_REPAYMENT_NGN` → unmatched (`below_floor`).
-4. Find user's ACTIVE loans. Zero → unmatched (`no_active_loans`). Multiple → unmatched (`multiple_active_loans`) — customer disambiguates via `POST /v1/loans/:id/claim-inflow`.
-5. Exactly one ACTIVE loan → **independently re-query PalmPay** via `PalmpayProvider.getCollectionOrderStatus(orderNo)` before crediting. Same verify-before-act discipline as payouts (`getTransferStatus`). Webhook signature alone is not sufficient — the platform query is the authoritative source. Re-query must confirm `status='successful'` AND amount + virtualAccountNo match the webhook payload. Mismatch → unmatched (`requery_mismatch`), ops paged. Transient (`status='unknown'` or throw) → defer; PalmPay retries.
+4. Find user's ACTIVE loans:
+   - Zero → unmatched (`no_active_loans`).
+   - Exactly one → that's the loan.
+   - Multiple → **smart-match**: `LoansService.findActiveLoanMatchingOutstanding(user_id, amount_ngn)`. Compute current outstanding for each ACTIVE loan via `AccrualService.compute(...)`; pick the loan whose total outstanding equals the inflow amount within `INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN` (₦0.50 — absorbs sub-naira accrual fractions). Tiebreaker on multiple matches: oldest by `Loan.created_at`. No match → unmatched (`multiple_active_loans`); customer self-serves via the inflows surface (§5.7c).
+5. Independently re-query PalmPay via `PalmpayProvider.getCollectionOrderStatus(orderNo)` before crediting. Same verify-before-act discipline as payouts (`getTransferStatus`). Webhook signature alone is not sufficient — the platform query is the authoritative source. Re-query must confirm `status='successful'` AND amount + virtualAccountNo match the webhook payload. Mismatch → unmatched (`requery_mismatch`), ops paged. Transient (`status='unknown'` or throw) → defer; PalmPay retries.
 6. Re-query passes → upsert Inflow (idempotent on `provider_reference`), then `LoansService.creditInflow({ match_method: 'AUTO_AMOUNT' })`. Skip if Inflow was already matched (duplicate webhook).
 
-**No narration parsing**, **no amount-equals-total matching** — waterfall handles partial / full / overpay automatically.
+**No narration parsing.** Amount-equals-outstanding is used **only** as a multi-loan disambiguation tiebreaker in step 4 — never as the primary signal — and only against current outstanding (not original total). The standard waterfall still handles partial / full / overpay credit application; this is purely about *which* loan to apply to when the user has 2+.
+
+### 5.7c Inflows surface (the "stack of cash rolls" UX)
+
+Customers self-serve unmatched inflows via two endpoints (no ops involvement, no admin):
+
+- `GET  /v1/inflows/unmatched` — lists the customer's unmatched NGN inflows (their pending IOUs). Each row carries `status: 'CLAIMABLE' | 'BELOW_MINIMUM'`. Untrusted inflows (PalmPay re-query disagreement, `credit_failed`, `requery_unconfirmed`) are gated out — those stay ops-only.
+- `POST /v1/inflows/:inflow_id/apply` body `{ loan_id }` — credits the chosen inflow against the chosen ACTIVE loan via the standard waterfall. **Bypasses the `MIN_PARTIAL_REPAYMENT_NGN` floor** because the floor's "avoid auto-matching tiny accidental transfers" rationale doesn't apply when the customer themselves directs the apply. `match_method='CUSTOMER_CLAIM'`. Idempotency-Key required.
+
+The legacy `POST /v1/loans/:id/claim-inflow` endpoint is **deprecated** but still works — it now delegates to `applyInflowToLoan` with the most-recent qualifying inflow.
 
 ### 5.7b Add-collateral
 

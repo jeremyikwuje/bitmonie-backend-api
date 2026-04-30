@@ -27,7 +27,9 @@ import {
   AddCollateralAlreadyPendingException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
+  InflowAlreadyMatchedException,
   InflowBelowFloorException,
+  InflowNotFoundException,
   LoanDisabledException,
   LoanDisbursementAccountRequiredException,
   LoanInvalidTransitionException,
@@ -141,6 +143,7 @@ function make_prisma() {
     inflow: {
       update:    jest.fn().mockResolvedValue({}),
       findFirst: jest.fn().mockResolvedValue(null),
+      findMany:  jest.fn().mockResolvedValue([]),
     },
     $queryRaw: jest.fn().mockResolvedValue([{ id: LOAN_ID }]),
     $transaction: jest.fn().mockImplementation(
@@ -911,6 +914,243 @@ describe('LoansService', () => {
       await service.claimInflow(USER_ID, LOAN_ID);
 
       expect(captured_match_method).toBe('CUSTOMER_CLAIM');
+    });
+  });
+
+  // ── findActiveLoanMatchingOutstanding ──────────────────────────────────────
+
+  describe('findActiveLoanMatchingOutstanding', () => {
+    function loanWithPrincipal(id: string, principal: string, days_ago: number) {
+      const collateral_received_at = new Date(Date.now() - days_ago * 86400_000);
+      return {
+        ...(DB_LOAN as Record<string, unknown>),
+        id,
+        status:                 LoanStatus.ACTIVE,
+        principal_ngn:          new Decimal(principal),
+        origination_fee_ngn:    new Decimal('0'),
+        daily_custody_fee_ngn:  new Decimal('0'),  // simplify: only principal + interest contribute
+        daily_interest_rate_bps: 0,                 // outstanding == principal exactly
+        collateral_received_at,
+        repayments:             [],
+        created_at:             collateral_received_at,
+      };
+    }
+
+    it('returns null when user has no ACTIVE loans', async () => {
+      prisma.loan.findMany.mockResolvedValue([]);
+      const result = await service.findActiveLoanMatchingOutstanding(USER_ID, new Decimal('50000'));
+      expect(result).toBeNull();
+    });
+
+    it('returns null when no loan outstanding matches the amount', async () => {
+      prisma.loan.findMany.mockResolvedValue([
+        loanWithPrincipal('loan-A', '100000', 5),
+        loanWithPrincipal('loan-B', '200000', 3),
+      ] as never);
+      const result = await service.findActiveLoanMatchingOutstanding(USER_ID, new Decimal('50000'));
+      expect(result).toBeNull();
+    });
+
+    it('returns the unique loan when exactly one outstanding matches', async () => {
+      prisma.loan.findMany.mockResolvedValue([
+        loanWithPrincipal('loan-A', '100000', 5),
+        loanWithPrincipal('loan-B', '50000',  3),
+      ] as never);
+      const result = await service.findActiveLoanMatchingOutstanding(USER_ID, new Decimal('50000'));
+      expect(result).toEqual({ loan_id: 'loan-B', tiebreaker: 'unique' });
+    });
+
+    it('returns the oldest loan when multiple outstandings match (created_at tiebreaker)', async () => {
+      prisma.loan.findMany.mockResolvedValue([
+        loanWithPrincipal('loan-A-older',  '50000', 10),
+        loanWithPrincipal('loan-B-newer',  '50000', 1),
+      ] as never);
+      const result = await service.findActiveLoanMatchingOutstanding(USER_ID, new Decimal('50000'));
+      expect(result).toEqual({ loan_id: 'loan-A-older', tiebreaker: 'oldest' });
+    });
+
+    it('absorbs sub-naira accrual fractions within ₦0.50 tolerance', async () => {
+      // Outstanding will compute to 50000.40; inflow is 50000.00 — within 0.50 tolerance.
+      const loan = loanWithPrincipal('loan-A', '50000.40', 1);
+      prisma.loan.findMany.mockResolvedValue([loan] as never);
+      const result = await service.findActiveLoanMatchingOutstanding(USER_ID, new Decimal('50000'));
+      expect(result).toEqual({ loan_id: 'loan-A', tiebreaker: 'unique' });
+    });
+
+    it('rejects matches outside ₦0.50 tolerance', async () => {
+      const loan = loanWithPrincipal('loan-A', '50001', 1);
+      prisma.loan.findMany.mockResolvedValue([loan] as never);
+      const result = await service.findActiveLoanMatchingOutstanding(USER_ID, new Decimal('50000'));
+      expect(result).toBeNull();
+    });
+  });
+
+  // ── applyInflowToLoan ──────────────────────────────────────────────────────
+
+  describe('applyInflowToLoan', () => {
+    const INFLOW_ID = 'inflow-uuid-001';
+    function activeLoan() {
+      return {
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                 LoanStatus.ACTIVE,
+        collateral_received_at: new Date(Date.now() - 5 * 86400_000),
+        repayments:             [],
+      };
+    }
+    function unmatchedInflow(overrides: Record<string, unknown> = {}) {
+      return {
+        id:                 INFLOW_ID,
+        user_id:            USER_ID,
+        currency:           'NGN',
+        amount:             new Decimal('50000'),
+        is_matched:         false,
+        matched_at:         null,
+        source_type:        null,
+        source_id:          null,
+        provider_response:  null,
+        ...overrides,
+      };
+    }
+
+    it('throws LoanNotFoundException when loan does not belong to user', async () => {
+      prisma.loan.findFirst.mockResolvedValue(null);
+      await expect(service.applyInflowToLoan(USER_ID, INFLOW_ID, LOAN_ID))
+        .rejects.toThrow(LoanNotFoundException);
+    });
+
+    it('throws LoanNotActiveException when loan is not ACTIVE', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status: LoanStatus.LIQUIDATED,
+      } as never);
+      await expect(service.applyInflowToLoan(USER_ID, INFLOW_ID, LOAN_ID))
+        .rejects.toThrow(LoanNotActiveException);
+    });
+
+    it('throws InflowNotFoundException when inflow does not belong to user', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue(null);
+      await expect(service.applyInflowToLoan(USER_ID, INFLOW_ID, LOAN_ID))
+        .rejects.toThrow(InflowNotFoundException);
+    });
+
+    it('throws InflowAlreadyMatchedException when inflow is_matched', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue(unmatchedInflow({
+        is_matched: true,
+        matched_at: new Date(),
+      }) as never);
+      await expect(service.applyInflowToLoan(USER_ID, INFLOW_ID, LOAN_ID))
+        .rejects.toThrow(InflowAlreadyMatchedException);
+    });
+
+    it('treats requery_mismatch inflow as untrusted (404)', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue(unmatchedInflow({
+        provider_response: { bitmonie_unmatched_reason: 'requery_mismatch' },
+      }) as never);
+      await expect(service.applyInflowToLoan(USER_ID, INFLOW_ID, LOAN_ID))
+        .rejects.toThrow(InflowNotFoundException);
+    });
+
+    it('treats requery_unconfirmed inflow as untrusted (404)', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue(unmatchedInflow({
+        provider_response: { bitmonie_unmatched_reason: 'requery_unconfirmed' },
+      }) as never);
+      await expect(service.applyInflowToLoan(USER_ID, INFLOW_ID, LOAN_ID))
+        .rejects.toThrow(InflowNotFoundException);
+    });
+
+    it('credits below-floor inflows on the explicit-claim path (skip_floor=true)', async () => {
+      prisma.loan.findFirst.mockResolvedValue(activeLoan() as never);
+      prisma.inflow.findFirst.mockResolvedValue(unmatchedInflow({
+        amount: new Decimal('1000'),  // below MIN_PARTIAL_REPAYMENT_NGN
+      }) as never);
+
+      let captured_match_method: string | undefined;
+      let captured_amount: string | undefined;
+      prisma.$transaction.mockImplementationOnce(
+        async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn({
+            loan: {
+              findUniqueOrThrow: jest.fn().mockResolvedValue(activeLoan()),
+              update:            jest.fn().mockResolvedValue({}),
+            },
+            loanRepayment: {
+              create: jest.fn().mockImplementation((args: { data: { match_method: string; amount_ngn: { toFixed: () => string } } }) => {
+                captured_match_method = args.data.match_method;
+                captured_amount = args.data.amount_ngn.toFixed();
+                return Promise.resolve({});
+              }),
+            },
+            inflow:        { update: jest.fn().mockResolvedValue({}) },
+            loanStatusLog: { create: jest.fn().mockResolvedValue({}) },
+            $queryRaw:     jest.fn().mockResolvedValue([{ id: LOAN_ID }]),
+          }),
+      );
+
+      await service.applyInflowToLoan(USER_ID, INFLOW_ID, LOAN_ID);
+
+      expect(captured_match_method).toBe('CUSTOMER_CLAIM');
+      expect(captured_amount).toBe('1000');  // floor was bypassed
+    });
+  });
+
+  // ── listUnmatchedInflowsForUser ────────────────────────────────────────────
+
+  describe('listUnmatchedInflowsForUser', () => {
+    function rawInflow(overrides: Record<string, unknown>) {
+      return {
+        id:                 'inflow-1',
+        user_id:            USER_ID,
+        currency:           'NGN',
+        amount:             new Decimal('50000'),
+        is_matched:         false,
+        source_type:        null,
+        receiving_address:  '9012345678',
+        provider_response:  { payerAccountName: 'Ada Obi', payerBankName: 'GTBank' },
+        created_at:         new Date('2026-04-30T12:00:00Z'),
+        ...overrides,
+      };
+    }
+
+    it('returns CLAIMABLE for inflows above the floor', async () => {
+      prisma.inflow.findMany = jest.fn().mockResolvedValue([rawInflow({ amount: new Decimal('50000') })]);
+      const result = await service.listUnmatchedInflowsForUser(USER_ID);
+      expect(result).toHaveLength(1);
+      expect(result[0]!.status).toBe('CLAIMABLE');
+      expect(result[0]!.amount_ngn).toBe('50000.00');
+      expect(result[0]!.payer_name).toBe('Ada Obi');
+      expect(result[0]!.payer_bank_name).toBe('GTBank');
+      expect(result[0]!.received_via).toBe('9012345678');
+    });
+
+    it('returns BELOW_MINIMUM for inflows under N10,000', async () => {
+      prisma.inflow.findMany = jest.fn().mockResolvedValue([rawInflow({ amount: new Decimal('1000') })]);
+      const result = await service.listUnmatchedInflowsForUser(USER_ID);
+      expect(result[0]!.status).toBe('BELOW_MINIMUM');
+    });
+
+    it('excludes untrusted inflows (requery_mismatch, requery_unconfirmed, credit_failed)', async () => {
+      prisma.inflow.findMany = jest.fn().mockResolvedValue([
+        rawInflow({ id: 'inf-trusted',     provider_response: {} }),
+        rawInflow({ id: 'inf-mismatch',    provider_response: { bitmonie_unmatched_reason: 'requery_mismatch' } }),
+        rawInflow({ id: 'inf-unconfirmed', provider_response: { bitmonie_unmatched_reason: 'requery_unconfirmed' } }),
+        rawInflow({ id: 'inf-credit-fail', provider_response: { bitmonie_unmatched_reason: 'credit_failed' } }),
+      ]);
+      const result = await service.listUnmatchedInflowsForUser(USER_ID);
+      expect(result.map((r) => r.id)).toEqual(['inf-trusted']);
+    });
+
+    it('queries scoped to user, NGN, unmatched, source_type=null, ordered by created_at desc', async () => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      prisma.inflow.findMany = findMany;
+      await service.listUnmatchedInflowsForUser(USER_ID);
+      expect(findMany).toHaveBeenCalledWith({
+        where:   { user_id: USER_ID, currency: 'NGN', is_matched: false, source_type: null },
+        orderBy: { created_at: 'desc' },
+      });
     });
   });
 });
