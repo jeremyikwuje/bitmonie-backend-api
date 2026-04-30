@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DisbursementStatus, OutflowStatus } from '@prisma/client';
+import { DisbursementStatus, DisbursementType, OutflowStatus } from '@prisma/client';
+import Decimal from 'decimal.js';
 import { PrismaService } from '@/database/prisma.service';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import {
   DisbursementNotFoundException,
   DisbursementNotOnHoldException,
@@ -18,6 +20,7 @@ export class OutflowsService {
     private readonly disbursements: DisbursementsService,
     private readonly router: DisbursementRouter,
     private readonly ops_alerts: OpsAlertsService,
+    private readonly loan_notifications: LoanNotificationsService,
   ) {}
 
   async dispatch(disbursement_id: string): Promise<void> {
@@ -72,6 +75,21 @@ export class OutflowsService {
       },
     });
     await this.disbursements.markSuccessful(disbursement_id);
+
+    // Customer "funds disbursed" email — only for LOAN-sourced disbursements.
+    // The webhook controller's already-terminal idempotency guard ensures we
+    // reach this line at most once per disbursement-success transition.
+    const fresh = await this.disbursements.findById(disbursement_id);
+    if (fresh && fresh.source_type === DisbursementType.LOAN) {
+      await this.loan_notifications.notifyLoanDisbursed({
+        loan_id:        fresh.source_id,
+        user_id:        fresh.user_id,
+        amount_ngn:     new Decimal(fresh.amount.toString()),
+        bank_name:      fresh.provider_name,
+        account_unique: fresh.account_unique,
+        account_name:   fresh.account_name,
+      });
+    }
   }
 
   // Async-failure path (provider webhook reports a previously-PROCESSING

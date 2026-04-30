@@ -24,6 +24,7 @@ import { OutflowsService } from '@/modules/disbursements/outflows.service';
 import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
 import { DisbursementRouter } from '@/modules/disbursements/disbursement-router.service';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import { PalmpayProvider } from '@/providers/palmpay/palmpay.provider';
 import { StubDisbursementProvider } from '@/providers/stub/stub-disbursement.provider';
 import { MailgunProvider } from '@/providers/mailgun/mailgun.provider';
@@ -270,8 +271,10 @@ async function main(): Promise<void> {
   const prisma_as_service = prisma as unknown as PrismaService;
   const router        = new DisbursementRouter(providers);
   const disbursements = new DisbursementsService(prisma_as_service);
-  const opsAlerts     = new OpsAlertsService(buildEmailProvider(), new WorkerConfigService() as unknown as ConfigService);
-  const outflows      = new OutflowsService(prisma_as_service, disbursements, router, opsAlerts);
+  const email_provider = buildEmailProvider();
+  const opsAlerts     = new OpsAlertsService(email_provider, new WorkerConfigService() as unknown as ConfigService);
+  const loanNotifications = new LoanNotificationsService(email_provider, prisma_as_service);
+  const outflows      = new OutflowsService(prisma_as_service, disbursements, router, opsAlerts, loanNotifications);
 
   const deps: ReconcilerDeps = { prisma, redis, outflows, providers, log: defaultLog };
 

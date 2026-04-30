@@ -11,6 +11,7 @@ import { OutflowsService } from '@/modules/disbursements/outflows.service';
 import { DisbursementsService } from '@/modules/disbursements/disbursements.service';
 import { DisbursementRouter } from '@/modules/disbursements/disbursement-router.service';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import {
   DisbursementNotFoundException,
   DisbursementNotOnHoldException,
@@ -85,6 +86,7 @@ describe('OutflowsService', () => {
   let router: MockProxy<DisbursementRouter>;
   let provider: MockProxy<DisbursementProvider>;
   let ops_alerts: MockProxy<OpsAlertsService>;
+  let loan_notifications: MockProxy<LoanNotificationsService>;
   let prisma: ReturnType<typeof make_prisma>;
 
   beforeEach(async () => {
@@ -93,6 +95,7 @@ describe('OutflowsService', () => {
     router = mock<DisbursementRouter>();
     provider = mock<DisbursementProvider>();
     ops_alerts = mock<OpsAlertsService>();
+    loan_notifications = mock<LoanNotificationsService>();
 
     router.forRoute.mockReturnValue(provider);
     disbursements_service.findById.mockResolvedValue(DISBURSEMENT as never);
@@ -113,6 +116,7 @@ describe('OutflowsService', () => {
         { provide: DisbursementsService,  useValue: disbursements_service },
         { provide: DisbursementRouter,    useValue: router },
         { provide: OpsAlertsService,      useValue: ops_alerts },
+        { provide: LoanNotificationsService, useValue: loan_notifications },
       ],
     }).compile();
 
