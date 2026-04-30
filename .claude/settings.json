@@ -39,7 +39,15 @@
       "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('test/postman/bitmonie.postman_collection.json','utf8'\\)\\); console.log\\('JSON valid'\\)\")",
       "Bash(echo \"EXIT=$?\")",
       "Bash(git mv *)",
-      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('test/postman/bitmonie.postman_collection.json', 'utf8'\\)\\); console.log\\('valid JSON'\\)\")"
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('test/postman/bitmonie.postman_collection.json', 'utf8'\\)\\); console.log\\('valid JSON'\\)\")",
+      "Bash(git revert *)",
+      "Bash(grep -rn \"outflow:\\\\${\\\\|outflow:'\\\\|outflow:\\\\\"\\\\|provider_reference.*split\\\\|split.*provider_reference\\\\|split\\(':'\\)\" /Users/jeremy/source/apps/bitmonie/src /Users/jeremy/source/apps/bitmonie/test /Users/jeremy/source/apps/bitmonie/workers --include=\"*.ts\")",
+      "Bash(awk '{print $NF}')",
+      "Bash(xargs -I {} stat -f \"%Sm %N\" -t \"%Y-%m-%d %H:%M:%S\" {})",
+      "Bash(awk -F= '/^MAILGUN_DOMAIN=/ {print \"MAILGUN_DOMAIN length:\", length\\($2\\), \"value_starts_with:\", substr\\($2, 1, 3\\)} /^MAILGUN_REGION=/ {print \"MAILGUN_REGION:\", $2} /^MAILGUN_FROM_ADDRESS=/ {print \"MAILGUN_FROM_ADDRESS:\", $2}' /Users/jeremy/source/apps/bitmonie/.env)",
+      "Bash(awk -F= '/^MAILGUN_DOMAIN=/ {n=length\\($2\\); for \\(i=1; i<=n; i++\\) {c=substr\\($2,i,1\\); if \\(c ~ /[a-zA-Z0-9.-]/\\) printf \"%s\", c; else printf \"[\\\\\\\\x%02x]\", ord\\(c\\)} print \"\"} function ord\\(c\\) {return sprintf\\(\"%d\", index\\(\" !\\\\\"#$%&'\\\\''\\(\\)*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\\\\\\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\", c\\) + 31\\)}' /Users/jeremy/source/apps/bitmonie/.env)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(echo \"TSC_EXIT=$?\")"
     ],
     "additionalDirectories": [
       "/private/tmp"

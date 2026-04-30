@@ -148,42 +148,50 @@ async function findCandidates(
   args: CliArgs,
 ): Promise<Candidate[]> {
   // Two ways a row could have been silently dropped:
-  //   - outcome_detail like 'collection orderStatus=%' (the gate that fired).
-  //   - signature_valid=true, no external_reference set, AND the body parses
-  //     as a collection notification with orderStatus=1 (defensive — covers
-  //     any pre-outcome-tracking deliveries).
-  // Start with the precise outcome_detail path; broaden only if needed.
-  const since_filter = args.since ? `AND received_at >= '${args.since}'::timestamptz` : '';
-  const order_filter = args.order_no
-    ? `AND external_reference = '${args.order_no.replace(/'/g, "''")}'`
-    : '';
-  const limit_filter = args.limit ? `LIMIT ${args.limit}` : '';
+  //   - outcome_detail like 'collection orderStatus=%' (the precise gate that
+  //     fired before the orderStatus fix).
+  //   - outcome=IGNORED with outcome_detail='collection schema validation
+  //     failed' (defensive — covers any pre-fix payload that didn't pass
+  //     schema for unrelated reasons).
+  // Typed findMany rather than $queryRawUnsafe so dynamic args can't slip
+  // bad SQL through and the result shape is compile-time enforced.
+  const rows = await prisma.webhookLog.findMany({
+    where: {
+      provider:        'palmpay',
+      signature_valid: true,
+      http_path:       {
+        in: [
+          '/v1/webhooks/palmpay',                // legacy single-endpoint era
+          '/v1/webhooks/palmpay/collection',     // collection-split era (pre-rename)
+          '/v1/webhooks/palmpay/collection/va',  // current
+        ],
+      },
+      OR: [
+        { outcome_detail: { startsWith: 'collection orderStatus=' } },
+        { AND: [{ outcome: 'IGNORED' }, { outcome_detail: 'collection schema validation failed' }] },
+      ],
+      ...(args.since    ? { received_at:        { gte: new Date(args.since) } } : {}),
+      ...(args.order_no ? { external_reference: args.order_no }                  : {}),
+    },
+    orderBy: { received_at: 'asc' },
+    ...(args.limit ? { take: args.limit } : {}),
+    select: {
+      id:             true,
+      received_at:    true,
+      raw_body:       true,
+      outcome:        true,
+      outcome_detail: true,
+    },
+  });
 
-  const rows = await prisma.$queryRawUnsafe<Candidate[]>(`
-    SELECT id AS log_id,
-           received_at,
-           raw_body,
-           outcome,
-           outcome_detail
-      FROM webhook_logs
-     WHERE provider = 'palmpay'
-       AND signature_valid = true
-       AND http_path IN (
-            '/v1/webhooks/palmpay',                    -- legacy single-endpoint era
-            '/v1/webhooks/palmpay/collection',         -- collection-split era (pre-rename)
-            '/v1/webhooks/palmpay/collection/va'       -- current
-       )
-       AND (
-            outcome_detail LIKE 'collection orderStatus=%'
-         OR (outcome = 'IGNORED' AND outcome_detail = 'collection schema validation failed')
-       )
-       ${since_filter}
-       ${order_filter}
-     ORDER BY received_at ASC
-     ${limit_filter}
-  `);
-
-  return rows;
+  // Map id → log_id so the rest of the script keeps using its existing field name.
+  return rows.map((r): Candidate => ({
+    log_id:         r.id,
+    received_at:    r.received_at,
+    raw_body:       r.raw_body,
+    outcome:        r.outcome,
+    outcome_detail: r.outcome_detail,
+  }));
 }
 
 interface ReplayOutcome {
@@ -267,7 +275,7 @@ async function replayOne(
   const matched_loan = active_loans[0]!;
 
   // Live re-query — same defence-in-depth the new controller applies.
-  let verified;
+  let verified: Awaited<ReturnType<typeof provider.getCollectionOrderStatus>>;
   try {
     verified = await provider.getCollectionOrderStatus(payload.orderNo);
   } catch (err) {
@@ -443,6 +451,13 @@ async function main(): Promise<void> {
 }
 
 void main().catch((err) => {
-  log.error('FAILED:', err);
+  // console.error preserves multi-line Prisma errors; Nest's Logger.error
+  // truncates them at the first newline so the actual reason hides.
+  console.error('FAILED:', err);
+  if (err && typeof err === 'object') {
+    const e = err as { code?: unknown; meta?: unknown };
+    if (e.code !== undefined) console.error('  code:', e.code);
+    if (e.meta !== undefined) console.error('  meta:', JSON.stringify(e.meta, null, 2));
+  }
   process.exit(1);
 });
