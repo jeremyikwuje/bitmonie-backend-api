@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
 import {
+  Equals,
+  IsBoolean,
   IsInt,
   IsNumber,
   IsOptional,
@@ -24,6 +25,17 @@ export class CheckoutLoanDto {
   @Min(MIN_LOAN_DURATION_DAYS)
   @Max(MAX_LOAN_DURATION_DAYS)
   duration_days!: number;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'Customer confirms they have read and accept the loan terms — principal, origination fee, ' +
+      'amount-to-receive (net of origination), and the projected total to repay. Must be true; ' +
+      'rejected with 400 otherwise. Stamped on the Loan row as terms_accepted_at.',
+  })
+  @IsBoolean()
+  @Equals(true, { message: 'You must accept the loan terms to proceed.' })
+  terms_accepted!: boolean;
 
   @ApiPropertyOptional({ description: 'Specific disbursement account ID (uses default if omitted)' })
   @IsOptional()

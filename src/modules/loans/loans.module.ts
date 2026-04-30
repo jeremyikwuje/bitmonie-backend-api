@@ -4,6 +4,8 @@ import { PrismaService } from '@/database/prisma.service';
 import { RedisModule } from '@/database/redis.module';
 import { PriceFeedModule } from '@/modules/price-feed/price-feed.module';
 import { PaymentRequestsModule } from '@/modules/payment-requests/payment-requests.module';
+import { UserRepaymentAccountsModule } from '@/modules/user-repayment-accounts/user-repayment-accounts.module';
+import { LoanNotificationsModule } from '@/modules/loan-notifications/loan-notifications.module';
 import { BlinkModule } from '@/providers/blink/blink.module';
 import { BlinkProvider } from '@/providers/blink/blink.provider';
 import type { ProvidersConfig } from '@/config/providers.config';
@@ -29,7 +31,15 @@ function pickCollateralProvider(config: ConfigService, blink: BlinkProvider) {
 }
 
 @Module({
-  imports: [PriceFeedModule, PaymentRequestsModule, BlinkModule, ConfigModule, RedisModule],
+  imports: [
+    PriceFeedModule,
+    PaymentRequestsModule,
+    UserRepaymentAccountsModule,
+    LoanNotificationsModule,
+    BlinkModule,
+    ConfigModule,
+    RedisModule,
+  ],
   controllers: [LoansController],
   providers: [
     PrismaService,

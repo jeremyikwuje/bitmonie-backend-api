@@ -46,6 +46,12 @@ export interface CalculatorResult {
   projected_custody_ngn:     Decimal;      // daily_custody × duration
   projected_total_ngn:       Decimal;      // principal + origination + projected_interest + projected_custody
 
+  // Disclosure (FCCPC / CBN consumer-protection — see docs/repayment-matching-redesign.md)
+  amount_to_receive_ngn:        Decimal;   // principal − origination — what hits the customer's bank
+  amount_to_repay_estimate_ngn: Decimal;   // principal + projected_interest + projected_custody
+                                           // — what the customer pays back over the chosen term
+                                           // (estimate; actual interest + custody accrue daily)
+
   // Display-only thresholds (UI shows "liquidation if BTC drops to X")
   // Not stored on Loan — liquidation monitor recomputes against live outstanding.
   initial_liquidation_rate_ngn: Decimal;
@@ -94,6 +100,18 @@ export class CalculatorService {
       .plus(projected_interest_ngn)
       .plus(projected_custody_ngn);
 
+    // ── Disclosure (net disbursement + estimated repayment) ────────────────
+    // amount_to_receive   = principal − origination (origination is netted at
+    //                       disbursement; customer never pays it back).
+    // amount_to_repay     = principal + projected_interest + projected_custody
+    //                       — origination is NOT in this number; it was already
+    //                       collected via the spread between disbursed and
+    //                       repaid. Estimate only — interest/custody accrue daily.
+    const amount_to_receive_ngn        = principal_ngn.minus(origination_fee_ngn);
+    const amount_to_repay_estimate_ngn = principal_ngn
+      .plus(projected_interest_ngn)
+      .plus(projected_custody_ngn);
+
     // ── Display-only thresholds — based on principal alone at day 0 ────────
     const sat_decimal = new Decimal(collateral_amount_sat.toString());
     const initial_liquidation_rate_ngn = principal_ngn.mul(LIQUIDATION_THRESHOLD).div(sat_decimal);
@@ -114,6 +132,9 @@ export class CalculatorService {
       projected_interest_ngn,
       projected_custody_ngn,
       projected_total_ngn,
+
+      amount_to_receive_ngn,
+      amount_to_repay_estimate_ngn,
 
       initial_liquidation_rate_ngn,
       initial_alert_rate_ngn,

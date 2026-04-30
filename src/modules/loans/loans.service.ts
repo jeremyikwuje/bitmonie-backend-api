@@ -40,7 +40,10 @@ import {
   LoanNotFoundException,
   NoUnmatchedInflowException,
   PendingLoanAlreadyExistsException,
+  RepaymentAccountNotReadyException,
 } from '@/common/errors/bitmonie.errors';
+import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import type { CheckoutLoanDto } from './dto/checkout-loan.dto';
 
 const CLAIM_INFLOW_WINDOW_MS  = 24 * 60 * 60 * 1000;
@@ -57,13 +60,15 @@ export interface CheckoutLoanResult {
   receiving_address:      string;
   expires_at:             Date;
   fee_breakdown: {
-    origination_fee_ngn:    string;
-    daily_custody_fee_ngn:  string;
-    daily_interest_rate_bps: number;
-    projected_interest_ngn: string;
-    projected_custody_ngn:  string;
-    projected_total_ngn:    string;
-    duration_days:          number;
+    origination_fee_ngn:          string;
+    daily_custody_fee_ngn:        string;
+    daily_interest_rate_bps:      number;
+    projected_interest_ngn:       string;
+    projected_custody_ngn:        string;
+    projected_total_ngn:          string;
+    amount_to_receive_ngn:        string;
+    amount_to_repay_estimate_ngn: string;
+    duration_days:                number;
   };
 }
 
@@ -86,6 +91,24 @@ export interface CollateralTopUpResult {
   expires_at:         Date;
 }
 
+export interface RepaymentInstructionsResult {
+  loan_id: string;
+  outstanding: {
+    principal_ngn:         string;
+    accrued_interest_ngn:  string;
+    accrued_custody_ngn:   string;
+    total_outstanding_ngn: string;
+    days_elapsed:          number;
+  };
+  repayment_account: {
+    virtual_account_no:   string;
+    virtual_account_name: string;
+    bank_name:            string;
+    provider:             string;
+  };
+  minimum_partial_repayment_ngn: string;
+}
+
 @Injectable()
 export class LoansService {
   constructor(
@@ -101,6 +124,8 @@ export class LoansService {
     private readonly collateral_provider: CollateralProvider,
     @Inject(REDIS_CLIENT)
     private readonly redis: Redis,
+    private readonly user_repayment_accounts: UserRepaymentAccountsService,
+    private readonly notifications: LoanNotificationsService,
   ) {}
 
   async checkoutLoan(user: User, dto: CheckoutLoanDto): Promise<CheckoutLoanResult> {
@@ -149,6 +174,9 @@ export class LoansService {
             sat_ngn_rate_at_creation:   calc.sat_ngn_rate_at_creation,
             collateral_release_address: dto.collateral_release_address,
             status:                     LoanStatus.PENDING_COLLATERAL,
+            // DTO validation has already enforced dto.terms_accepted === true.
+            // Stamp the moment of acceptance for the consumer-protection audit.
+            terms_accepted_at:          new Date(),
             due_at,
           },
         });
@@ -190,6 +218,22 @@ export class LoansService {
     }
 
     const bolt11 = payment_request_record.payment_request ?? '';
+
+    // Customer-facing "loan created — awaiting collateral" email. Errors are
+    // swallowed inside the notifications service so a flaky email provider
+    // can never break checkout.
+    await this.notifications.notifyLoanCreated({
+      loan_id:                      loan.id,
+      user_id:                      user.id,
+      principal_ngn:                dto.principal_decimal,
+      origination_fee_ngn:          calc.origination_fee_ngn,
+      amount_to_receive_ngn:        calc.amount_to_receive_ngn,
+      amount_to_repay_estimate_ngn: calc.amount_to_repay_estimate_ngn,
+      collateral_amount_sat:        calc.collateral_amount_sat,
+      duration_days:                dto.duration_days,
+      expires_at:                   payment_request_record.expires_at,
+    });
+
     return {
       loan_id:               loan.id,
       collateral_amount_sat: calc.collateral_amount_sat,
@@ -198,13 +242,15 @@ export class LoansService {
       receiving_address:     payment_request_record.receiving_address,
       expires_at:            payment_request_record.expires_at,
       fee_breakdown: {
-        origination_fee_ngn:     calc.origination_fee_ngn.toFixed(2),
-        daily_custody_fee_ngn:   calc.daily_custody_fee_ngn.toFixed(2),
-        daily_interest_rate_bps: calc.daily_interest_rate_bps,
-        projected_interest_ngn:  calc.projected_interest_ngn.toFixed(2),
-        projected_custody_ngn:   calc.projected_custody_ngn.toFixed(2),
-        projected_total_ngn:     calc.projected_total_ngn.toFixed(2),
-        duration_days:           dto.duration_days,
+        origination_fee_ngn:          calc.origination_fee_ngn.toFixed(2),
+        daily_custody_fee_ngn:        calc.daily_custody_fee_ngn.toFixed(2),
+        daily_interest_rate_bps:      calc.daily_interest_rate_bps,
+        projected_interest_ngn:       calc.projected_interest_ngn.toFixed(2),
+        projected_custody_ngn:        calc.projected_custody_ngn.toFixed(2),
+        projected_total_ngn:          calc.projected_total_ngn.toFixed(2),
+        amount_to_receive_ngn:        calc.amount_to_receive_ngn.toFixed(2),
+        amount_to_repay_estimate_ngn: calc.amount_to_repay_estimate_ngn.toFixed(2),
+        duration_days:                dto.duration_days,
       },
     };
   }
@@ -243,6 +289,50 @@ export class LoansService {
       where:   { user_id },
       orderBy: { created_at: 'desc' },
     });
+  }
+
+  // Customer-facing repayment instructions: tells the user where to send NGN
+  // and how much they currently owe. Only meaningful while the loan is ACTIVE
+  // — once REPAID/EXPIRED/LIQUIDATED/CANCELLED, repayments would land
+  // unmatched (`no_active_loans`) and page ops, so we hard-reject here.
+  //
+  // The repayment VA is per-user (one permanent VA tied to BVN/NIN), shared
+  // across every loan. ensureForUser is idempotent — read-only when the VA
+  // exists, self-healing if a previous KYC-time provisioning attempt failed.
+  async getRepaymentInstructions(
+    user_id: string,
+    loan_id: string,
+  ): Promise<RepaymentInstructionsResult> {
+    const loan = await this.prisma.loan.findFirst({
+      where:   { id: loan_id, user_id },
+      include: { repayments: { orderBy: { created_at: 'asc' } } },
+    });
+    if (!loan) throw new LoanNotFoundException();
+    if (loan.status !== LoanStatus.ACTIVE) {
+      throw new LoanNotActiveException({ status: loan.status });
+    }
+
+    const va = await this.user_repayment_accounts.ensureForUser(user_id);
+    if (!va) throw new RepaymentAccountNotReadyException();
+
+    const outstanding = this.accrual.compute({
+      loan,
+      repayments: loan.repayments.map(this._toAccrualRepayment),
+      as_of: new Date(),
+    });
+
+    return {
+      loan_id: loan.id,
+      outstanding: {
+        principal_ngn:         outstanding.principal_ngn.toFixed(2),
+        accrued_interest_ngn:  outstanding.accrued_interest_ngn.toFixed(2),
+        accrued_custody_ngn:   outstanding.accrued_custody_ngn.toFixed(2),
+        total_outstanding_ngn: outstanding.total_outstanding_ngn.toFixed(2),
+        days_elapsed:          outstanding.days_elapsed,
+      },
+      repayment_account: va.summary,
+      minimum_partial_repayment_ngn: new Decimal(MIN_PARTIAL_REPAYMENT_NGN).toFixed(2),
+    };
   }
 
   async cancelLoan(user_id: string, loan_id: string): Promise<void> {
@@ -288,6 +378,15 @@ export class LoansService {
         reason_code:  LoanReasonCodes.COLLATERAL_CONFIRMED,
       });
     });
+
+    // Fired only when the transition from PENDING_COLLATERAL → ACTIVE actually
+    // committed — duplicate Blink webhooks throw inside `transition()` (forward-
+    // only invariant, CLAUDE.md §5.4) before reaching this line, so the email
+    // sends at most once per loan activation.
+    await this.notifications.notifyCollateralReceived({
+      loan_id,
+      user_id: loan.user_id,
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -319,7 +418,25 @@ export class LoansService {
       });
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    // The tx returns BOTH the public result and a notification receipt so we
+    // can email the customer AFTER commit. Receipt stays null on the idempotent
+    // already-REPAID branch so we don't double-email a duplicate webhook. We
+    // mutate-via-let-in-closure would lose its type to `never` after async
+    // narrowing, so the return-tuple form is the type-safe pattern.
+    type RepaymentReceipt = {
+      user_id:              string;
+      applied_to_custody:   Decimal;
+      applied_to_interest:  Decimal;
+      applied_to_principal: Decimal;
+      overpay_ngn:          Decimal;
+      outstanding_ngn:      Decimal;
+      is_fully_repaid:      boolean;
+    };
+
+    const { result, receipt } = await this.prisma.$transaction<{
+      result:  CreditInflowResult;
+      receipt: RepaymentReceipt | null;
+    }>(async (tx) => {
       // Lock the loan row for the duration of this transaction.
       const locked = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT id FROM loans WHERE id = ${params.loan_id}::uuid FOR UPDATE
@@ -334,13 +451,16 @@ export class LoansService {
       // Idempotent: a duplicate-processing attempt against a terminal loan is a no-op.
       if (loan.status === LoanStatus.REPAID) {
         return {
-          loan_id:              loan.id,
-          new_status:           loan.status,
-          applied_to_custody:   '0.00',
-          applied_to_interest:  '0.00',
-          applied_to_principal: '0.00',
-          overpay_ngn:          '0.00',
-          outstanding_ngn:      '0.00',
+          result: {
+            loan_id:              loan.id,
+            new_status:           loan.status,
+            applied_to_custody:   '0.00',
+            applied_to_interest:  '0.00',
+            applied_to_principal: '0.00',
+            overpay_ngn:          '0.00',
+            outstanding_ngn:      '0.00',
+          },
+          receipt: null,
         };
       }
 
@@ -437,15 +557,46 @@ export class LoansService {
       }
 
       return {
-        loan_id:              params.loan_id,
-        new_status:           is_fully_repaid ? LoanStatus.REPAID : LoanStatus.ACTIVE,
-        applied_to_custody:   applied_to_custody.toFixed(2),
-        applied_to_interest:  applied_to_interest.toFixed(2),
-        applied_to_principal: applied_to_principal.toFixed(2),
-        overpay_ngn:          overpay_ngn.toFixed(2),
-        outstanding_ngn:      Decimal.max(new_outstanding_total, 0).toFixed(2),
+        result: {
+          loan_id:              params.loan_id,
+          new_status:           is_fully_repaid ? LoanStatus.REPAID : LoanStatus.ACTIVE,
+          applied_to_custody:   applied_to_custody.toFixed(2),
+          applied_to_interest:  applied_to_interest.toFixed(2),
+          applied_to_principal: applied_to_principal.toFixed(2),
+          overpay_ngn:          overpay_ngn.toFixed(2),
+          outstanding_ngn:      Decimal.max(new_outstanding_total, 0).toFixed(2),
+        },
+        receipt: {
+          user_id:              loan.user_id,
+          applied_to_custody,
+          applied_to_interest,
+          applied_to_principal,
+          overpay_ngn,
+          outstanding_ngn:      Decimal.max(new_outstanding_total, 0),
+          is_fully_repaid,
+        },
       };
     });
+
+    // Customer receipt — fired only when an actual repayment was applied
+    // (receipt stays null on the idempotent already-REPAID branch). Detailed
+    // breakdown so the customer sees exactly what their money cleared and
+    // whether the loan is now closed.
+    if (receipt) {
+      await this.notifications.notifyRepayment({
+        loan_id:              result.loan_id,
+        user_id:              receipt.user_id,
+        amount_paid_ngn:      params.amount_ngn,
+        applied_to_custody:   receipt.applied_to_custody,
+        applied_to_interest:  receipt.applied_to_interest,
+        applied_to_principal: receipt.applied_to_principal,
+        overpay_ngn:          receipt.overpay_ngn,
+        outstanding_ngn:      receipt.outstanding_ngn,
+        is_fully_repaid:      receipt.is_fully_repaid,
+      });
+    }
+
+    return result;
   }
 
   // ─────────────────────────────────────────────────────────────────────────

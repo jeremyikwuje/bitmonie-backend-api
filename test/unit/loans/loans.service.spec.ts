@@ -14,6 +14,8 @@ import { CalculatorService } from '@/modules/loans/calculator.service';
 import { AccrualService } from '@/modules/loans/accrual.service';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
 import { PaymentRequestsService } from '@/modules/payment-requests/payment-requests.service';
+import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from '@/modules/loans/price-quote.provider.interface';
 import {
   COLLATERAL_PROVIDER,
@@ -32,6 +34,7 @@ import {
   LoanNotActiveException,
   LoanNotFoundException,
   NoUnmatchedInflowException,
+  RepaymentAccountNotReadyException,
 } from '@/common/errors/bitmonie.errors';
 
 const USER_ID   = 'user-uuid-001';
@@ -165,14 +168,17 @@ describe('LoansService', () => {
   let payment_requests: MockProxy<PaymentRequestsService>;
   let price_quote: MockProxy<PriceQuoteProvider>;
   let collateral_provider: MockProxy<CollateralProvider>;
+  let user_repayment_accounts: MockProxy<UserRepaymentAccountsService>;
+  let loan_notifications: MockProxy<LoanNotificationsService>;
   let redis: { set: jest.Mock; get: jest.Mock; del: jest.Mock };
 
   const SAT_RATE     = new Decimal('0.97');
   const BTC_USD_RATE = new Decimal('65000');
 
   const CHECKOUT_DTO = {
-    principal_ngn:  300_000,
-    duration_days:  7,
+    principal_ngn:    300_000,
+    duration_days:    7,
+    terms_accepted:   true,
     principal_decimal: new Decimal('300000'),
   } as never;
 
@@ -183,7 +189,19 @@ describe('LoansService', () => {
     payment_requests    = mock<PaymentRequestsService>();
     price_quote         = mock<PriceQuoteProvider>();
     collateral_provider = mock<CollateralProvider>();
+    user_repayment_accounts = mock<UserRepaymentAccountsService>();
+    loan_notifications  = mock<LoanNotificationsService>();
     redis               = { set: jest.fn().mockResolvedValue('OK'), get: jest.fn(), del: jest.fn() };
+
+    user_repayment_accounts.ensureForUser.mockResolvedValue({
+      summary: {
+        virtual_account_no:   '9012345678',
+        virtual_account_name: 'Ada Obi',
+        bank_name:            'PalmPay',
+        provider:             'palmpay',
+      },
+      created: false,
+    });
 
     price_feed.getCurrentRate.mockResolvedValue({ rate_buy: SAT_RATE, rate_sell: SAT_RATE });
     price_quote.getBtcUsdRate.mockResolvedValue(BTC_USD_RATE);
@@ -207,6 +225,8 @@ describe('LoansService', () => {
         { provide: PRICE_QUOTE_PROVIDER,   useValue: price_quote },
         { provide: COLLATERAL_PROVIDER,    useValue: collateral_provider },
         { provide: REDIS_CLIENT,           useValue: redis },
+        { provide: UserRepaymentAccountsService, useValue: user_repayment_accounts },
+        { provide: LoanNotificationsService,     useValue: loan_notifications },
       ],
     }).compile();
 
@@ -301,14 +321,31 @@ describe('LoansService', () => {
       expect(result.receiving_address).toBe('pay_hash_001');
       expect(result.expires_at).toBeInstanceOf(Date);
       expect(result.fee_breakdown).toMatchObject({
-        origination_fee_ngn:     expect.any(String),
-        daily_custody_fee_ngn:   expect.any(String),
-        daily_interest_rate_bps: 30,
-        projected_interest_ngn:  expect.any(String),
-        projected_custody_ngn:   expect.any(String),
-        projected_total_ngn:     expect.any(String),
-        duration_days:           7,
+        origination_fee_ngn:          expect.any(String),
+        daily_custody_fee_ngn:        expect.any(String),
+        daily_interest_rate_bps:      30,
+        projected_interest_ngn:       expect.any(String),
+        projected_custody_ngn:        expect.any(String),
+        projected_total_ngn:          expect.any(String),
+        amount_to_receive_ngn:        expect.any(String),
+        amount_to_repay_estimate_ngn: expect.any(String),
+        duration_days:                7,
       });
+      // Disclosure: principal 300_000 − origination 1_500 = 298_500 to receive.
+      expect(result.fee_breakdown.amount_to_receive_ngn).toBe('298500.00');
+    });
+
+    it('stamps terms_accepted_at on loan.create — proves consumer-protection consent', async () => {
+      await service.checkoutLoan(ACTIVE_USER, CHECKOUT_DTO);
+
+      const tx_fn = prisma.$transaction.mock.calls[0][0];
+      const tx = {
+        loan:          { create: jest.fn().mockResolvedValue(DB_LOAN), update: jest.fn() },
+        loanStatusLog: { create: jest.fn().mockResolvedValue({}) },
+      };
+      await tx_fn(tx);
+      const { data } = tx.loan.create.mock.calls[0][0];
+      expect(data.terms_accepted_at).toBeInstanceOf(Date);
     });
 
     it('uses rate_sell (not rate_buy) for collateral calculation', async () => {
@@ -342,6 +379,69 @@ describe('LoansService', () => {
     it('throws LoanNotFoundException when loan does not belong to user', async () => {
       prisma.loan.findFirst.mockResolvedValue(null);
       await expect(service.getLoan(USER_ID, 'other-loan')).rejects.toThrow(LoanNotFoundException);
+    });
+  });
+
+  // ── getRepaymentInstructions ──────────────────────────────────────────────────
+
+  describe('getRepaymentInstructions', () => {
+    const ACTIVE_LOAN = {
+      ...(DB_LOAN as object),
+      status:                 LoanStatus.ACTIVE,
+      // 1 hour ago — unambiguously day 1 (ceilDays rounds anything in (0, 24h] up to 1).
+      collateral_received_at: new Date(Date.now() - 60 * 60 * 1000),
+      repayments:             [],
+    } as never;
+
+    it('throws LoanNotFoundException when loan does not belong to user', async () => {
+      prisma.loan.findFirst.mockResolvedValue(null);
+      await expect(service.getRepaymentInstructions(USER_ID, LOAN_ID))
+        .rejects.toThrow(LoanNotFoundException);
+    });
+
+    it('throws LoanNotActiveException when loan is not ACTIVE', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as object),
+        status: LoanStatus.PENDING_COLLATERAL,
+        repayments: [],
+      } as never);
+      await expect(service.getRepaymentInstructions(USER_ID, LOAN_ID))
+        .rejects.toThrow(LoanNotActiveException);
+    });
+
+    it('throws RepaymentAccountNotReadyException when ensureForUser returns null', async () => {
+      prisma.loan.findFirst.mockResolvedValue(ACTIVE_LOAN);
+      user_repayment_accounts.ensureForUser.mockResolvedValueOnce(null);
+      await expect(service.getRepaymentInstructions(USER_ID, LOAN_ID))
+        .rejects.toThrow(RepaymentAccountNotReadyException);
+    });
+
+    it('returns VA, outstanding, and minimum partial repayment floor', async () => {
+      prisma.loan.findFirst.mockResolvedValue(ACTIVE_LOAN);
+      const result = await service.getRepaymentInstructions(USER_ID, LOAN_ID);
+
+      expect(result.loan_id).toBe(LOAN_ID);
+      expect(result.repayment_account).toEqual({
+        virtual_account_no:   '9012345678',
+        virtual_account_name: 'Ada Obi',
+        bank_name:            'PalmPay',
+        provider:             'palmpay',
+      });
+      expect(result.minimum_partial_repayment_ngn).toBe('10000.00');
+      // Outstanding shape — values come from AccrualService (real, not mocked).
+      expect(result.outstanding).toEqual(expect.objectContaining({
+        principal_ngn:         expect.any(String),
+        accrued_interest_ngn:  expect.any(String),
+        accrued_custody_ngn:   expect.any(String),
+        total_outstanding_ngn: expect.any(String),
+        days_elapsed:          expect.any(Number),
+      }));
+      // Day-1 of a N300k principal at 30 bps → N900 interest, plus N300/day custody.
+      expect(result.outstanding.principal_ngn).toBe('300000.00');
+      expect(result.outstanding.accrued_interest_ngn).toBe('900.00');
+      expect(result.outstanding.accrued_custody_ngn).toBe('300.00');
+      expect(result.outstanding.total_outstanding_ngn).toBe('301200.00');
+      expect(result.outstanding.days_elapsed).toBe(1);
     });
   });
 

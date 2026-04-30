@@ -212,6 +212,16 @@ export class NoUnmatchedInflowException extends BitmonieException {
   }
 }
 
+export class RepaymentAccountNotReadyException extends BitmonieException {
+  constructor() {
+    super(
+      'REPAYMENT_ACCOUNT_NOT_READY',
+      'Your repayment account is not yet provisioned. Please contact support.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
 // ── DISBURSEMENT ACCOUNTS ───────────────────────────────────────
 
 export class DisbursementAccountNameMismatchException extends BitmonieException {

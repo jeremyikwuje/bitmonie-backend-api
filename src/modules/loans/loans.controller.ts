@@ -93,6 +93,10 @@ export class LoansController {
       projected_custody_ngn:        result.projected_custody_ngn.toFixed(2),
       projected_total_ngn:          result.projected_total_ngn.toFixed(2),
 
+      // Disclosure — what the customer's bank receives vs. what they pay back
+      amount_to_receive_ngn:        result.amount_to_receive_ngn.toFixed(2),
+      amount_to_repay_estimate_ngn: result.amount_to_repay_estimate_ngn.toFixed(2),
+
       // UI display (these move daily once accrual starts)
       initial_liquidation_rate_ngn: result.initial_liquidation_rate_ngn.toFixed(6),
       initial_alert_rate_ngn:       result.initial_alert_rate_ngn.toFixed(6),
@@ -167,6 +171,27 @@ export class LoansController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.loans.createCollateralTopUp(user.id, id);
+  }
+
+  @Get(':id/repayment-instructions')
+  @UseGuards(SessionGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get NGN repayment instructions for an ACTIVE loan',
+    description:
+      'Returns the user\'s permanent NGN virtual account (where to send a bank transfer), ' +
+      'the live outstanding breakdown, and the minimum partial-repayment floor. ' +
+      'Repayments apply via custody → interest → principal waterfall.',
+  })
+  @ApiResponse({ status: 200, description: 'Repayment account + outstanding returned' })
+  @ApiResponse({ status: 404, description: 'Loan not found' })
+  @ApiResponse({ status: 409, description: 'Loan not ACTIVE' })
+  @ApiResponse({ status: 422, description: 'Repayment account not yet provisioned' })
+  async getRepaymentInstructions(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.loans.getRepaymentInstructions(user.id, id);
   }
 
   @Post(':id/claim-inflow')

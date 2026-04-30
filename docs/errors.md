@@ -124,5 +124,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 | `AUTH_OTP_MAX_ATTEMPTS` | 429 | Too many OTP attempts |
 | `AUTH_2FA_REQUIRED` | 401 | Login requires TOTP code |
 | `IDEMPOTENCY_CONFLICT` | 409 | Duplicate Idempotency-Key in flight |
+| `REPAYMENT_ACCOUNT_NOT_READY` | 422 | User's permanent NGN repayment VA hasn't been provisioned yet (KYC tier-1 incomplete or backed by a non-supportable id type) |
 
 Add new codes here before using them in code.

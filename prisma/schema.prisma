@@ -523,6 +523,13 @@ model Loan {
 
   due_at DateTime @db.Timestamptz
 
+  // Stamped at checkout when the customer ticks the loan-terms checkbox in
+  // the DTO. Required for FCCPC / CBN consumer-protection disclosure: proves
+  // we obtained explicit consent to the disclosed fee breakdown (principal,
+  // origination, amount-to-receive, amount-to-repay) before contract
+  // formation. Existing rows backfill from created_at via migration.
+  terms_accepted_at DateTime @db.Timestamptz
+
   created_at DateTime @default(now()) @db.Timestamptz
   updated_at DateTime @updatedAt @db.Timestamptz
 

@@ -138,6 +138,31 @@ describe('CalculatorService — projections', () => {
   });
 });
 
+// ── Disclosure (net disbursement + repayment estimate) ────────────────────────
+
+describe('CalculatorService — disclosure', () => {
+  it('amount_to_receive_ngn = principal − origination', () => {
+    const result = calculate();
+    // 500_000 − 2,500 = 497,500
+    expect(result.amount_to_receive_ngn).toEqual(new Decimal('497500'));
+  });
+
+  it('amount_to_repay_estimate_ngn = principal + projected_interest + projected_custody (origination NOT included — netted upfront)', () => {
+    const result = calculate();
+    // 500_000 + 45,000 + 18,000 = 563,000
+    expect(result.amount_to_repay_estimate_ngn).toEqual(new Decimal('563000'));
+  });
+
+  it('repay − receive = origination + interest + custody (true cost of credit)', () => {
+    const result = calculate();
+    const true_cost = result.amount_to_repay_estimate_ngn.minus(result.amount_to_receive_ngn);
+    const all_fees  = result.origination_fee_ngn
+      .plus(result.projected_interest_ngn)
+      .plus(result.projected_custody_ngn);
+    expect(true_cost).toEqual(all_fees);
+  });
+});
+
 // ── Collateral sizing + initial USD ───────────────────────────────────────────
 
 describe('CalculatorService — collateral sizing', () => {
