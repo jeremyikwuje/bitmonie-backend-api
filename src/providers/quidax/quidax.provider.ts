@@ -5,11 +5,6 @@ import { QuidaxResponseSchema } from './quidax.types';
 
 const SATS_PER_BTC = new Decimal('100000000');
 
-const SLUG_TO_PAIR: Record<string, AssetPair> = {
-  BTCNGN: AssetPair.BTC_NGN,
-  USDTNGN: AssetPair.USDT_NGN,
-};
-
 export class QuidaxProvider implements PriceFeedProvider {
   constructor(private readonly config: { api_key: string; base_url: string }) {}
 
@@ -30,34 +25,28 @@ export class QuidaxProvider implements PriceFeedProvider {
       throw new Error(`Price feed response validation failed: ${parsed.error.message}`);
     }
 
-    const results: RateResult[] = [];
     const fetched_at = new Date();
+    const { btcngn, usdtngn } = parsed.data.data;
 
-    for (const [slug, pair_data] of Object.entries(parsed.data.data)) {
-      const pair = SLUG_TO_PAIR[slug.toUpperCase()];
-      if (!pair) continue;
-
-      results.push({
-        pair,
-        rate_buy: new Decimal(pair_data.ticker.sell),
-        rate_sell: new Decimal(pair_data.ticker.buy),
+    return [
+      {
+        pair: AssetPair.BTC_NGN,
+        rate_buy: new Decimal(btcngn.ticker.sell),
+        rate_sell: new Decimal(btcngn.ticker.buy),
         fetched_at,
-      });
-
-      if (pair === AssetPair.BTC_NGN) {
-        results.push({
-          pair: AssetPair.SAT_NGN,
-          rate_buy: new Decimal(pair_data.ticker.sell).div(SATS_PER_BTC),
-          rate_sell: new Decimal(pair_data.ticker.buy).div(SATS_PER_BTC),
-          fetched_at,
-        });
-      }
-    }
-
-    if (results.length === 0) {
-      throw new Error('Price feed returned no usable rate pairs');
-    }
-
-    return results;
+      },
+      {
+        pair: AssetPair.SAT_NGN,
+        rate_buy: new Decimal(btcngn.ticker.sell).div(SATS_PER_BTC),
+        rate_sell: new Decimal(btcngn.ticker.buy).div(SATS_PER_BTC),
+        fetched_at,
+      },
+      {
+        pair: AssetPair.USDT_NGN,
+        rate_buy: new Decimal(usdtngn.ticker.sell),
+        rate_sell: new Decimal(usdtngn.ticker.buy),
+        fetched_at,
+      },
+    ];
   }
 }

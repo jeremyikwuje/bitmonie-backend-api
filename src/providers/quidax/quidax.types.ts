@@ -26,7 +26,17 @@ export const TradingPairSchema = z.object({
   ticker: TickerSchema,
 });
 
-export const QuidaxDataSchema = z.record(z.string(), TradingPairSchema);
+// Quidax /markets/tickers/ returns every listed market — including illiquid
+// pairs (qdxngn, btcghs, shibusdt, ...) that occasionally quote "0". Validate
+// only the pairs we consume; anything else passes through unread. Strictness
+// on btcngn / usdtngn is intentional — a zero or malformed quote on either is
+// a real upstream incident and should kill the cycle.
+export const QuidaxDataSchema = z
+  .object({
+    btcngn: TradingPairSchema,
+    usdtngn: TradingPairSchema,
+  })
+  .passthrough();
 
 export const QuidaxResponseSchema = z.object({
   status: z.literal('success'),

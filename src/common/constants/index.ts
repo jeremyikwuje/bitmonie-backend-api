@@ -39,8 +39,8 @@ export const COLLATERAL_TOPUP_EXPIRY_SEC   = 1800;
 // path while still bounding customer-visible delay.
 export const OUTFLOW_PROCESSING_STALE_SEC  = 300;
 export const DISBURSEMENT_NAME_MATCH_THRESHOLD = 0.85;
-export const PRICE_FEED_STALE_MS       = 120_000;
-export const PRICE_CACHE_TTL_SEC       = 90;
+export const PRICE_FEED_STALE_MS       = 600_000;
+export const PRICE_CACHE_TTL_SEC       = 600;
 export const SATS_PER_BTC              = new Decimal('100000000');
 export const ALERT_COOLDOWN_SEC        = 86_400;
 export const IDEMPOTENCY_TTL_SEC       = 86_400;

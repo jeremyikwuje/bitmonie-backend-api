@@ -41,7 +41,7 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 | `kyc` | BVN/NIN verification — required before first loan; provisions the user's permanent NGN repayment VA on tier-1 success |
 | `user-repayment-accounts` | One permanent PalmPay virtual account per user (tied to BVN), reused across every loan |
 | `disbursement-accounts` | Add/remove/default payout destinations (BANK / MOBILE_MONEY / CRYPTO_ADDRESS) — max 5 per kind; name-matched against User row first, KYC legal_name fallback |
-| `price-feed` | SAT/NGN, BTC/NGN, USDT/NGN — polled every 30s |
+| `price-feed` | SAT/NGN, BTC/NGN, USDT/NGN — polled every 5 min |
 | `loans` | Full loan lifecycle: checkout → collateral → disbursement → accrual → partial / full repayment → release. Includes `add-collateral` (top-up) and `claim-inflow` (customer disambiguation) endpoints |
 | `payment-requests` | Customer-facing collateral payment instructions (initial loan collateral) |
 | `inflows` | Every incoming payment, matched or not |
@@ -473,8 +473,8 @@ LOAN_GRACE_PERIOD_DAYS       = 7
 
 MAX_DISBURSEMENT_ACCOUNTS_PER_KIND = 5         // per (user, kind)
 DISBURSEMENT_NAME_MATCH_THRESHOLD  = 0.85
-PRICE_FEED_STALE_MS          = 120_000         // 2 minutes
-PRICE_CACHE_TTL_SEC          = 90
+PRICE_FEED_STALE_MS          = 600_000         // 10 minutes (one missed cycle of headroom over 5min cadence)
+PRICE_CACHE_TTL_SEC          = 600             // 10 minutes
 COLLATERAL_INVOICE_EXPIRY_SEC = 1800           // 30 minutes (initial loan collateral invoice)
 COLLATERAL_TOPUP_EXPIRY_SEC   = 1800           // 30 minutes (add-collateral invoice)
 ALERT_COOLDOWN_SEC           = 86_400          // 24 hours (liquidation alert dedupe)

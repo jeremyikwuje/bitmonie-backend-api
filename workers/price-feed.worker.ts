@@ -12,10 +12,10 @@ import Decimal from 'decimal.js';
 import { QuidaxProvider } from '@/providers/quidax/quidax.provider';
 import { RATE_MARKUP_PERCENT } from '@/common/constants';
 
-const PRICE_CACHE_TTL_SEC = 90;
-const STALE_ALERT_THRESHOLD_MS = 5 * 60 * 1_000;
+const PRICE_CACHE_TTL_SEC = 600;
+const STALE_ALERT_THRESHOLD_MS = 15 * 60 * 1_000;
 
-const WORKER_INTERVAL_MS = parseInt(process.env.WORKER_PRICE_FEED_INTERVAL_MS ?? '30000', 10);
+const WORKER_INTERVAL_MS = parseInt(process.env.WORKER_PRICE_FEED_INTERVAL_MS ?? '300000', 10);
 const INTERNAL_ALERT_EMAIL = process.env.INTERNAL_ALERT_EMAIL ?? 'ops@bitmonie.com';
 const DATABASE_URL = process.env.DATABASE_URL;
 const REDIS_URL = process.env.REDIS_URL;

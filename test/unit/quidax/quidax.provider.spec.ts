@@ -112,20 +112,38 @@ describe('QuidaxProvider.fetchRates', () => {
     await expect(make_provider().fetchRates()).rejects.toThrow('validation failed');
   });
 
-  it('throws when response contains no recognised pairs', async () => {
-    mock_ok({ status: 'success', data: { unknownpair: { ticker: { buy: '1.0', sell: '1.0' } } } });
-    await expect(make_provider().fetchRates()).rejects.toThrow('no usable rate pairs');
+  it('throws when btcngn is missing entirely', async () => {
+    mock_ok({ status: 'success', data: { usdtngn: { ticker: { buy: '1590.0', sell: '1610.0' } } } });
+    await expect(make_provider().fetchRates()).rejects.toThrow('validation failed');
   });
 
-  it('ignores unknown pairs without throwing', async () => {
+  it('throws when usdtngn is missing entirely', async () => {
+    mock_ok({ status: 'success', data: { btcngn: { ticker: { buy: '97000000.0', sell: '98000000.0' } } } });
+    await expect(make_provider().fetchRates()).rejects.toThrow('validation failed');
+  });
+
+  // Regression: Quidax /markets/tickers/ returns every listed market, including
+  // illiquid pairs that quote "0". Validating the whole record strictly tanked
+  // the cycle (461 consecutive failures in prod). Unknown pairs must pass
+  // through unread regardless of their values.
+  it('ignores unknown pairs even when they carry zero / non-positive ticker values', async () => {
     mock_ok({
       status: 'success',
       data: {
-        btcngn: { ticker: { buy: '97000000.0', sell: '98000000.0' } },
-        xrpngn: { ticker: { buy: '500.0', sell: '510.0' } }, // unknown — skipped
+        btcngn:    { ticker: { buy: '97000000.0', sell: '98000000.0' } },
+        usdtngn:   { ticker: { buy: '1590.0', sell: '1610.0' } },
+        qdxusdt:   { ticker: { buy: '0', sell: '0' } },
+        qdxngn:    { ticker: { buy: '0', sell: '0' } },
+        btcghs:    { ticker: { buy: '0', sell: '0' } },
+        shibusdt:  { ticker: { buy: '0', sell: '0' } },
+        xyousdt:   { ticker: { buy: '0', sell: '0' } },
       },
     });
+
     const rates = await make_provider().fetchRates();
-    expect(rates.every((r) => r.pair !== ('XRPNGN' as AssetPair))).toBe(true);
+
+    expect(rates.map((r) => r.pair).sort()).toEqual(
+      [AssetPair.BTC_NGN, AssetPair.SAT_NGN, AssetPair.USDT_NGN].sort(),
+    );
   });
 });
