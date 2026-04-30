@@ -4,14 +4,22 @@ import { EMAIL_PROVIDER, type EmailProvider } from '@/modules/auth/email.provide
 import type { AppConfig } from '@/config/app.config';
 
 // Reasons accepted by alertUnmatchedInflow — must stay in sync with the
-// UnmatchedReason union in palmpay.webhook.controller.ts. (Co-located by intent
-// since these are the only producers + consumers.)
+// UnmatchedReason union in palmpay-collection-va.webhook.controller.ts.
+// (Co-located by intent since these are the only producers + consumers.)
+//
+// requery_unconfirmed → PalmPay's order-query couldn't confirm settlement
+//                       (status='unknown' or transient query failure).
+// requery_mismatch    → PalmPay's order-query confirmed an order but the
+//                       amount or virtual-account fields disagreed with the
+//                       webhook payload. Treat as untrusted; do not credit.
 export type UnmatchedInflowReason =
   | 'no_user_for_va'
   | 'below_floor'
   | 'no_active_loans'
   | 'multiple_active_loans'
-  | 'credit_failed';
+  | 'credit_failed'
+  | 'requery_unconfirmed'
+  | 'requery_mismatch';
 
 export interface UnmatchedInflowAlertParams {
   reason:           UnmatchedInflowReason;
@@ -274,6 +282,8 @@ const REASON_LABELS: Record<UnmatchedInflowReason, string> = {
   no_active_loans:       'User has no ACTIVE loans',
   multiple_active_loans: 'User has multiple ACTIVE loans (claim path required)',
   credit_failed:         'creditInflow threw — investigate stack trace',
+  requery_unconfirmed:   'PalmPay order-query did not confirm settlement',
+  requery_mismatch:      'PalmPay order-query disagreed with webhook (amount or VA)',
 };
 
 function escapeHtml(s: string): string {

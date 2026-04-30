@@ -26,7 +26,6 @@ function make_config(overrides: Partial<PalmpayConfig> = {}): PalmpayConfig {
     public_key:  TEST_PUB_PEM,
     webhook_pub_key: TEST_PUB_PEM,
     base_url: 'https://open-gw-prod.palmpay-inc.com',
-    notify_url: 'https://bitmonie.com/v1/webhooks/disbursement',
     webhook_ip_allowlist: [],
     ...overrides,
   };

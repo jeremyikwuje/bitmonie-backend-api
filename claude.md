@@ -177,12 +177,26 @@ Verify signature on the **raw request body** before any parsing. Mismatch → 40
 
 ### 5.7a NGN repayment matching (PalmPay collection webhook)
 
-PalmPay's dedicated VA endpoint issues **permanent** virtual accounts tied to BVN, and **does not forward bank-transfer narration** on the deposit notification. Matching flow:
+PalmPay's dedicated VA endpoint issues **permanent** virtual accounts tied to BVN, and **does not forward bank-transfer narration** on the deposit notification.
 
-1. Resolve user from `virtualAccountNo` → `UserRepaymentAccount.user_id`. No match → unmatched (`no_user_for_va`).
-2. Floor check: `amount < MIN_PARTIAL_REPAYMENT_NGN` → unmatched (`below_floor`).
-3. Find user's ACTIVE loans. Zero → unmatched (`no_active_loans`). Multiple → unmatched (`multiple_active_loans`) — customer disambiguates via `POST /v1/loans/:id/claim-inflow`.
-4. Exactly one ACTIVE loan → upsert Inflow (idempotent on `provider_reference`), then `LoansService.creditInflow({ match_method: 'AUTO_AMOUNT' })`. Skip if Inflow was already matched (duplicate webhook).
+**One PalmPay webhook controller per role**, each behind its own URL so the merchant dashboard targets controllers individually and a misrouted payload becomes a 4xx instead of a silent drop:
+
+- `POST /v1/webhooks/palmpay/payout`               → `PalmpayPayoutWebhookController` (outbound transfer status)
+- `POST /v1/webhooks/palmpay/collection/va`        → `PalmpayCollectionVaWebhookController` (loan repayments via virtual account)
+- `POST /v1/webhooks/palmpay/collection/universal` → reserved for PalmPay Checkout (multi-method payin) — not yet implemented
+
+Configure each URL separately in the PalmPay merchant dashboard. Pointing the VA collection callback at the payout URL drops every repayment because the schemas + status enums differ.
+
+**`orderStatus` divergence.** Collection notifications use `1=success / 2=failed`. Payouts use `1=processing / 2=success / 3=failed`. Always use `PALMPAY_COLLECTION_STATUS_SUCCESS` (=1) on a collection payload — the constant is in `src/providers/palmpay/palmpay.types.ts`. Reusing `PALMPAY_ORDER_STATUS_SUCCESS` (=2) on a collection payload silently drops every successful repayment.
+
+Matching flow:
+
+1. Reject if `orderStatus != PALMPAY_COLLECTION_STATUS_SUCCESS`.
+2. Resolve user from `virtualAccountNo` → `UserRepaymentAccount.user_id`. No match → unmatched (`no_user_for_va`).
+3. Floor check: `amount < MIN_PARTIAL_REPAYMENT_NGN` → unmatched (`below_floor`).
+4. Find user's ACTIVE loans. Zero → unmatched (`no_active_loans`). Multiple → unmatched (`multiple_active_loans`) — customer disambiguates via `POST /v1/loans/:id/claim-inflow`.
+5. Exactly one ACTIVE loan → **independently re-query PalmPay** via `PalmpayProvider.getCollectionOrderStatus(orderNo)` before crediting. Same verify-before-act discipline as payouts (`getTransferStatus`). Webhook signature alone is not sufficient — the platform query is the authoritative source. Re-query must confirm `status='successful'` AND amount + virtualAccountNo match the webhook payload. Mismatch → unmatched (`requery_mismatch`), ops paged. Transient (`status='unknown'` or throw) → defer; PalmPay retries.
+6. Re-query passes → upsert Inflow (idempotent on `provider_reference`), then `LoansService.creditInflow({ match_method: 'AUTO_AMOUNT' })`. Skip if Inflow was already matched (duplicate webhook).
 
 **No narration parsing**, **no amount-equals-total matching** — waterfall handles partial / full / overpay automatically.
 
@@ -315,7 +329,7 @@ src/
 - Each provider module exports its concrete class.
 - Feature modules import the provider module and bind via DI token.
 - Never call a provider SDK directly from a service — always inject through the interface.
-- **Webhook controllers are named by provider** (`blink.webhook.controller.ts`, `palmpay.webhook.controller.ts`), not by business role. Reason: signature verification and payload parsing are provider-specific; the business purpose is encoded in `payment_request.source_type` and resolved after ingestion. A single provider endpoint can serve multiple business flows (loan collateral, offramp deposit, etc.) by branching on `source_type`.
+- **Webhook controllers are named by provider** (`blink.webhook.controller.ts`, `palmpay-payout.webhook.controller.ts`, `palmpay-collection-va.webhook.controller.ts`), not by business role. Reason: signature verification and payload parsing are provider-specific; the business purpose is encoded in `payment_request.source_type` and resolved after ingestion. A single provider endpoint can serve multiple business flows (loan collateral, offramp deposit, etc.) by branching on `source_type`. When a provider exposes multiple distinct webhook *roles* (PalmPay's payout vs collection differ in payload shape, status enum, and verification API), give each role its own controller + URL leaf under the provider's namespace (e.g. `/webhooks/palmpay/payout`, `/webhooks/palmpay/collection/va`).
 - Any disbursement provider is only called from `OutflowsService` — never from anywhere else.
 - **HTTP endpoint paths for webhooks use the provider name** (`/webhooks/blink`, `/webhooks/palmpay`). The "no provider names" rule in §5.2 applies to DB columns, Prisma fields, and TypeScript variables — not to URL paths, where the provider identity is the correct discriminator for routing inbound HTTP calls.
 

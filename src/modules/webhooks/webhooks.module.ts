@@ -10,7 +10,8 @@ import { WebhooksLogModule } from '@/modules/webhooks-log/webhooks-log.module';
 import { BlinkModule } from '@/providers/blink/blink.module';
 import { PalmpayModule } from '@/providers/palmpay/palmpay.module';
 import { BlinkWebhookController } from './blink.webhook.controller';
-import { PalmpayWebhookController } from './palmpay.webhook.controller';
+import { PalmpayPayoutWebhookController } from './palmpay-payout.webhook.controller';
+import { PalmpayCollectionVaWebhookController } from './palmpay-collection-va.webhook.controller';
 
 @Module({
   imports: [
@@ -24,7 +25,11 @@ import { PalmpayWebhookController } from './palmpay.webhook.controller';
     OpsAlertsModule,
     WebhooksLogModule,
   ],
-  controllers: [BlinkWebhookController, PalmpayWebhookController],
+  controllers: [
+    BlinkWebhookController,
+    PalmpayPayoutWebhookController,
+    PalmpayCollectionVaWebhookController,
+  ],
   providers: [PrismaService],
 })
 export class WebhooksModule {}

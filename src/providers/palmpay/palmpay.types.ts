@@ -1,10 +1,33 @@
 import { z } from 'zod';
 
-// orderStatus numeric codes used across query-pay-status and webhook
-// 1 = Processing, 2 = Success, 3 = Failed
-export const PALMPAY_ORDER_STATUS_SUCCESS    = 2;
-export const PALMPAY_ORDER_STATUS_FAILED     = 3;
-export const PALMPAY_RESP_CODE_SUCCESS       = '00000000';
+// orderStatus numeric codes — semantics DIVERGE between payout and collection.
+//
+// Payout / queryPayStatus (outbound transfer):
+//   1 = Processing, 2 = Success, 3 = Failed
+//
+// Collection / virtual-account payin notification (inbound customer transfer):
+//   1 = Success, 2 = Failed (the "processing" state never reaches the merchant —
+//                            PalmPay only fires the webhook once funds have
+//                            settled into the VA)
+//
+// Reusing PALMPAY_ORDER_STATUS_SUCCESS (=2) on a collection payload silently
+// drops every successful repayment. Always use PALMPAY_COLLECTION_STATUS_SUCCESS
+// (=1) on a collection payload.
+export const PALMPAY_ORDER_STATUS_SUCCESS      = 2;   // payout success
+export const PALMPAY_ORDER_STATUS_FAILED       = 3;   // payout failed
+export const PALMPAY_COLLECTION_STATUS_SUCCESS = 1;   // collection success (DO NOT use on payouts)
+export const PALMPAY_COLLECTION_STATUS_FAILED  = 2;   // collection failed
+export const PALMPAY_RESP_CODE_SUCCESS         = '00000000';
+
+// Hardcoded payout callback URL passed to PalmPay as the `notifyUrl` field on
+// every payout request. Pinned to the production host so the URL cannot drift
+// from the controller path it must match (PalmpayPayoutWebhookController →
+// /v1/webhooks/palmpay/payout). Dev runs the stub provider so it never reaches
+// here; staging hitting this URL ends up at the prod controller, which logs
+// the unknown orderId and ignores it — harmless. If you ever need a per-env
+// callback, swap this back to `config.notify_url` rather than overloading the
+// constant with environment logic.
+export const PALMPAY_PAYOUT_NOTIFY_URL = 'https://bitmonie-api.monierate.xyz/v1/webhooks/palmpay/payout';
 
 // ── Query bank account ────────────────────────────────────────────────────────
 
@@ -143,12 +166,13 @@ export type PalmpayPayoutNotification = z.infer<typeof PalmpayPayoutNotification
 //
 // Key fields:
 //   orderAmount  — amount in CENTS (100 = 1 NGN); divide by 100 to get NGN
+//   orderStatus  — 1 = Success, 2 = Failed (different from payout — see top of file)
 //   accountReference — the reference we set on the virtual account; used to
 //                      match the inbound payment to a loan or offramp order
 //   sign         — optional; verify with platform public key when present
 export const PalmpayCollectionNotificationSchema = z.object({
   orderNo:           z.string(),              // PalmPay platform order number
-  orderStatus:       z.number(),             // Virtual account order status
+  orderStatus:       z.number(),             // Virtual account order status (1=success, 2=failed)
   createdTime:       z.number(),             // Order create time (Unix ms)
   updateTime:        z.number(),             // Order update time (Unix ms)
   currency:          z.string(),             // NGN
@@ -161,10 +185,50 @@ export const PalmpayCollectionNotificationSchema = z.object({
   virtualAccountName: z.string().optional(), // Our virtual account name (if applicable)
   accountReference:  z.string().optional(),  // Our reference set on the virtual account
   sessionId:         z.string().optional(),  // Channel response params (not always present)
+  appId:             z.string().optional(),  // Echoed back by PalmPay
   sign:              z.string().optional(),  // RSA signature — verify when present
 });
 
 export type PalmpayCollectionNotification = z.infer<typeof PalmpayCollectionNotificationSchema>;
+
+// ── Query collection (payin) order ────────────────────────────────────────────
+// Defence-in-depth: before crediting an inbound webhook to a customer's loan
+// we re-query PalmPay directly with the orderNo so we never act on a webhook
+// claim alone. Same verify-before-act discipline used on the payout side
+// (queryPayStatus) — if the platform doesn't confirm the order is settled, we
+// don't credit. Returns CENTS (matching the webhook's orderAmount), so the
+// caller divides by 100 to compare against NGN.
+//
+// Endpoint: PalmPay's merchant docs list this under the virtual-account /
+// collection / payin module. The exact path varies by tenant — confirm against
+// the merchant's docs portal before pointing at production. Path constants
+// live on the provider so a swap is one-line.
+export const PalmpayQueryCollectionOrderResponseSchema = z.object({
+  respCode: z.string(),
+  respMsg:  z.string(),
+  data: z
+    .object({
+      orderNo:           z.string().optional(),  // PalmPay platform order number
+      orderStatus:       z.number().optional(),  // 1=success, 2=failed (collection scheme)
+      currency:          z.string().optional(),
+      orderAmount:       z.number().optional(),  // CENTS — divide by 100 for NGN
+      virtualAccountNo:  z.string().optional(),
+      payerAccountNo:    z.string().optional(),
+      payerAccountName:  z.string().optional(),
+      payerBankName:     z.string().optional(),
+      sessionId:         z.string().optional(),
+      createdTime:       z.number().optional(),
+      updateTime:        z.number().optional(),
+      reference:         z.string().optional(),
+      accountReference:  z.string().optional(),
+      message:           z.string().optional(),
+    })
+    .nullish(),
+});
+
+export type PalmpayQueryCollectionOrderResponse = z.infer<
+  typeof PalmpayQueryCollectionOrderResponseSchema
+>;
 
 // ── Create virtual account ────────────────────────────────────────────────────
 // Used for loan repayments: creates a PalmPay-assigned NGN virtual bank account

@@ -305,26 +305,49 @@ Validation unchanged: min/max principal, min/max duration (1–90). Min loan sta
 
 ### 5.1 Webhook path (PalmPay collection notification)
 
+Endpoint: **POST /v1/webhooks/palmpay/collection/va** — one path per PalmPay
+webhook role so the merchant dashboard targets each controller individually
+and a misrouted payload becomes a 4xx instead of a silent drop.
+
+Sibling routes:
+
+- `POST /v1/webhooks/palmpay/payout`               — outbound transfer status
+- `POST /v1/webhooks/palmpay/collection/universal` — reserved for PalmPay
+  Checkout (multi-method payin) — not yet implemented
+
 ```
-1. Verify signature (raw body) → 401 on mismatch.
-2. Parse payload via PalmpayCollectionNotificationSchema.
-3. Reject if orderStatus != SUCCESS.
-4. Resolve user: virtual_account_no → UserRepaymentAccount.user_id.
-   No match → Inflow(is_matched=false, reason='no_user_for_va'), alert ops.
-5. amount_ngn = orderAmount / 100.
-6. Floor check: amount_ngn < N10,000
-     → Inflow(is_matched=false, reason='below_floor'), alert ops. Return ACK.
-7. Find ACTIVE loans for this user.
-     Zero → Inflow(is_matched=false, reason='no_active_loans'), alert ops.
-8. Auto-match decision:
-     - Exactly ONE ACTIVE loan → auto-credit (match_method='AUTO_AMOUNT').
-     - Multiple ACTIVE loans → Inflow(is_matched=false, reason='multiple_active_loans'),
-       prompt customer via claim-inflow endpoint. Do not auto-guess.
-9. Credit: see §5.2.
-10. Respond with PalmPay ACK.
+ 1. Verify signature (raw body) → 401 on mismatch.
+ 2. Parse payload via PalmpayCollectionNotificationSchema.
+ 3. Reject if orderStatus != PALMPAY_COLLECTION_STATUS_SUCCESS (=1).
+    NOTE: collection scheme uses 1=success / 2=failed. This DIVERGES from
+    payouts (where 2=success). Reusing the payout enum drops every repayment.
+ 4. Resolve user: virtual_account_no → UserRepaymentAccount.user_id.
+    No match → Inflow(is_matched=false, reason='no_user_for_va'), alert ops.
+ 5. amount_ngn = orderAmount / 100.
+ 6. Floor check: amount_ngn < N10,000
+      → Inflow(is_matched=false, reason='below_floor'), alert ops. Return ACK.
+ 7. Find ACTIVE loans for this user.
+      Zero → Inflow(is_matched=false, reason='no_active_loans'), alert ops.
+ 8. Auto-match decision:
+      - Exactly ONE ACTIVE loan → continue.
+      - Multiple ACTIVE loans → Inflow(is_matched=false, reason='multiple_active_loans'),
+        prompt customer via claim-inflow endpoint. Do not auto-guess.
+ 9. Defence-in-depth: re-query PalmPay (PalmpayProvider.getCollectionOrderStatus)
+    using the webhook's orderNo. Only proceed when:
+      a. status == 'successful', AND
+      b. queried amount_kobo == webhook orderAmount (no tolerance), AND
+      c. queried virtualAccountNo == webhook virtualAccountNo.
+    Outcomes:
+      - Throw / 'unknown' → defer; PalmPay will redeliver.
+      - 'failed'           → Inflow(is_matched=false, reason='requery_mismatch'),
+                             alert ops, no credit.
+      - Field mismatch     → Inflow(is_matched=false, reason='requery_mismatch'),
+                             alert ops, no credit.
+10. Auto-credit (match_method='AUTO_AMOUNT'). See §5.2.
+11. Respond with PalmPay ACK.
 ```
 
-No narration parsing anywhere. No amount-equals-total matching. "Does the customer have one active loan?" is the only auto-match signal.
+No narration parsing anywhere. No amount-equals-total matching. "Does the customer have one active loan, AND does PalmPay's own order record confirm the funds settled with this amount on this VA?" is the auto-match condition.
 
 ### 5.2 Credit transaction (atomic)
 

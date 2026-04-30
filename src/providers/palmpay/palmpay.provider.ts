@@ -11,10 +11,14 @@ import {
   PalmpayQueryPayStatusResponseSchema,
   PalmpayQueryBalanceResponseSchema,
   PalmpayQueryBankListResponseSchema,
+  PalmpayQueryCollectionOrderResponseSchema,
   PalmpayCreateVirtualAccountResponseSchema,
   PALMPAY_RESP_CODE_SUCCESS,
   PALMPAY_ORDER_STATUS_SUCCESS,
   PALMPAY_ORDER_STATUS_FAILED,
+  PALMPAY_COLLECTION_STATUS_SUCCESS,
+  PALMPAY_COLLECTION_STATUS_FAILED,
+  PALMPAY_PAYOUT_NOTIFY_URL,
 } from './palmpay.types';
 
 // PalmPay's createVirtualAccount response does not include the host bank's
@@ -300,18 +304,17 @@ export class PalmpayProvider implements DisbursementProvider {
     // against floating-point oddities upstream.
     const amount_kobo = params.amount.times(100).toDecimalPlaces(0).toNumber();
 
-    // Verify the webhook callback URL we're handing PalmPay matches the
-    // deployed webhook controller route. Empty string here means PalmPay has
-    // nothing to call back, so the only way to learn the payout outcome is
-    // the reconciler poll. Account number is omitted from this log per §5.8;
-    // notify_url and reference are config / our own identifier — not PII.
+    // Account number is omitted from this log per §5.8; notify_url and
+    // reference are not PII. notify_url is pinned to the prod controller in
+    // PALMPAY_PAYOUT_NOTIFY_URL — kept in the log so a dashboard/code drift
+    // surfaces in the outbound trace.
     this.logger.log(
       {
         reference:    params.reference,
         amount_kobo,
         currency:     params.currency,
         bank_code:    params.provider_code,
-        notify_url:   this.config.notify_url || '(empty — webhook callback disabled)',
+        notify_url:   PALMPAY_PAYOUT_NOTIFY_URL,
       },
       'PalmPay payout request — outbound',
     );
@@ -325,7 +328,7 @@ export class PalmpayProvider implements DisbursementProvider {
         payeeBankCode: params.provider_code,
         payeeBankAccNo: params.account_unique,
         payeeName: params.account_name ?? '',
-        notifyUrl: this.config.notify_url,
+        notifyUrl: PALMPAY_PAYOUT_NOTIFY_URL,
         remark: params.narration,
       },
       PalmpayPayoutResponseSchema,
@@ -412,6 +415,81 @@ export class PalmpayProvider implements DisbursementProvider {
     }
 
     return { status: 'processing' };
+  }
+
+  // ── getCollectionOrderStatus ──────────────────────────────────────────────
+  // Defence-in-depth re-query of an inbound payin order. Called from the
+  // collection webhook BEFORE we credit a customer's loan, so we never act on
+  // a webhook claim alone — same verify-before-act discipline as the payout
+  // path's getTransferStatus(). PalmPay's webhook signature already proves
+  // the payload originated with PalmPay, but this guards against:
+  //   1. signed-but-stale replays an attacker mirrors back at us;
+  //   2. provider-side races where the webhook fires before settlement;
+  //   3. tenant-side bugs where the platform mis-flags an order as success.
+  //
+  // Returns CENTS in `amount_kobo` so
+  // the caller does the divide-by-100 once with Decimal.
+  async getCollectionOrderStatus(order_no: string): Promise<{
+    status:           'successful' | 'failed' | 'unknown';
+    amount_kobo?:     number;
+    currency?:        string;
+    virtual_account_no?: string;
+    payer_account_name?: string;
+    failure_reason?:  string;
+  }> {
+    const data = await this.post(
+      '/api/v2/virtual/order/detail',
+      { orderNo: order_no },
+      PalmpayQueryCollectionOrderResponseSchema,
+    );
+
+    const order_status = data.data?.orderStatus;
+
+    // PalmPay payin query responses don't echo the payer account number — we
+    // log payer name (already non-PII per redaction rules) and the status
+    // payload so a stuck row is debuggable.
+    this.logger.log(
+      {
+        order_no,
+        respCode:    data.respCode,
+        respMsg:     data.respMsg,
+        orderStatus: order_status,
+        orderAmount: data.data?.orderAmount,
+        currency:    data.data?.currency,
+        sessionId:   data.data?.sessionId,
+      },
+      'PalmPay queryCollectionOrder response',
+    );
+
+    if (data.respCode !== PALMPAY_RESP_CODE_SUCCESS) {
+      // respCode != 00000000 means PalmPay couldn't query the order at all
+      // (auth, signing, transient). Don't treat as "failed" — the upstream
+      // webhook claim is unverified. Caller defers and PalmPay will retry.
+      return { status: 'unknown', failure_reason: `${data.respCode} ${data.respMsg}` };
+    }
+
+    if (order_status === PALMPAY_COLLECTION_STATUS_SUCCESS) {
+      return {
+        status:               'successful',
+        amount_kobo:          data.data?.orderAmount,
+        currency:             data.data?.currency,
+        virtual_account_no:   data.data?.virtualAccountNo,
+        payer_account_name:   data.data?.payerAccountName,
+      };
+    }
+
+    if (order_status === PALMPAY_COLLECTION_STATUS_FAILED) {
+      return { status: 'failed', failure_reason: data.data?.message };
+    }
+
+    // respCode=success + missing orderStatus or unrecognised code → don't act.
+    // Distinct from a definitive "failed" so the caller can defer rather than
+    // page ops.
+    this.logger.warn(
+      { order_no, respCode: data.respCode, orderStatus: order_status },
+      'PalmPay queryCollectionOrder returned success with no recognised orderStatus — treating as unknown',
+    );
+    return { status: 'unknown' };
   }
 
   // ── createVirtualAccount ──────────────────────────────────────────────────

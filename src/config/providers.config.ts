@@ -29,7 +29,6 @@ export interface PalmpayConfig {
   public_key: string;       // PEM RSA public key   — uploaded to PalmPay dashboard; not used in code at runtime
   webhook_pub_key: string;  // PEM RSA public key   — PalmPay platform key, verifies inbound webhook signatures
   base_url: string;
-  notify_url: string;       // URL PalmPay POSTs disbursement status updates to
   webhook_ip_allowlist: string[];
 }
 
@@ -116,7 +115,6 @@ export default registerAs('providers', (): ProvidersConfig => ({
     public_key:          process.env.PALMPAY_PUBLIC_KEY          ?? '',
     webhook_pub_key:     process.env.PALMPAY_WEBHOOK_PUB_KEY     ?? '',
     base_url:            process.env.PALMPAY_BASE_URL            ?? 'https://open-gw-prod.palmpay-inc.com',
-    notify_url:          process.env.PALMPAY_NOTIFY_URL          ?? '',
     webhook_ip_allowlist: splitCsv(process.env.PALMPAY_WEBHOOK_IP_ALLOWLIST),
   },
   qoreid: {

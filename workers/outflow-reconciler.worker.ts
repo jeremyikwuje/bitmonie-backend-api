@@ -240,7 +240,6 @@ function buildProviderMap(prisma: PrismaClient): Map<string, DisbursementProvide
     public_key:           process.env.PALMPAY_PUBLIC_KEY            ?? '',
     webhook_pub_key:      process.env.PALMPAY_WEBHOOK_PUB_KEY       ?? '',
     base_url:             process.env.PALMPAY_BASE_URL              ?? 'https://open-gw-prod.palmpay-inc.com',
-    notify_url:           process.env.PALMPAY_NOTIFY_URL            ?? '',
     webhook_ip_allowlist: (process.env.PALMPAY_WEBHOOK_IP_ALLOWLIST ?? '')
       .split(',').map((s) => s.trim()).filter((s) => s.length > 0),
   });
