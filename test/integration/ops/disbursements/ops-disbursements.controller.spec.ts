@@ -3,6 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { createHash } from 'crypto';
+import Decimal from 'decimal.js';
 import type { Prisma } from '@prisma/client';
 
 import { OpsDisbursementsController } from '@/modules/ops/disbursements/ops-disbursements.controller';
@@ -417,7 +418,9 @@ describe('OpsDisbursementsController (integration)', () => {
         id: LOAN_ID,
         user_id: 'user-001',
         status: 'ACTIVE',
-        principal_ngn: { toString: () => '300000' },
+        // ceil(300_000 / 100_000) × 500 = 1_500
+        principal_ngn:       new Decimal('300000'),
+        origination_fee_ngn: new Decimal('1500'),
         disbursement_account: {
           id: 'acct-001',
           provider_name: 'GTBank',
@@ -468,6 +471,12 @@ describe('OpsDisbursementsController (integration)', () => {
           account_name:   'Ada Obi',
         }),
       );
+      // Net disbursement: 300_000 principal − 1_500 origination = 298_500
+      const create_call = disbursements.createForLoan.mock.calls[0][0] as { amount: Decimal };
+      expect(create_call.amount.toString()).toBe('298500');
+      // Audit row records the same netted amount.
+      const audit_data = tx.opsAuditLog.create.mock.calls[0][0].data;
+      expect(audit_data.details.amount_ngn).toBe('298500');
       expect(outflows.dispatch).toHaveBeenCalledWith(NEW_DISB_ID);
     });
 

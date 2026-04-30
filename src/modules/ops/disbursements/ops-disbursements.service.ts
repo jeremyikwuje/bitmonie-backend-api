@@ -228,6 +228,10 @@ export class OpsDisbursementsService {
       throw new LoanDisbursementAccountRequiredException();
     }
 
+    // Net disbursement — origination fee is collected as the spread between
+    // what's sent and what's repaid. Mirrors blink.webhook.controller.ts.
+    const disburse_amount = loan.principal_ngn.minus(loan.origination_fee_ngn);
+
     await this.prisma.$transaction(async (tx) => {
       await this.ops_audit.write(tx, {
         ops_user_id: ctx.ops_user_id,
@@ -239,7 +243,7 @@ export class OpsDisbursementsService {
           disbursement_account_id: account.id,
           provider_name:         account.provider_name,
           provider_code:         account.provider_code,
-          amount_ngn:            loan.principal_ngn.toString(),
+          amount_ngn:            disburse_amount.toString(),
         },
         request_id:  ctx.request_id,
         ip_address:  ctx.ip_address,
@@ -249,7 +253,7 @@ export class OpsDisbursementsService {
     const fresh = await this.disbursements.createForLoan({
       user_id:           loan.user_id,
       source_id:         loan.id,
-      amount:            loan.principal_ngn,
+      amount:            disburse_amount,
       currency:          'NGN',
       disbursement_rail: DisbursementRail.BANK_TRANSFER,
       provider_name:     account.provider_name,

@@ -98,6 +98,8 @@ describe('BlinkWebhookController', () => {
       user_id:                 USER_ID,
       disbursement_account_id: 'acct-uuid-001',
       disbursement_account:    DISBURSEMENT_ACCOUNT,
+      principal_ngn:           new Decimal('500000'),
+      origination_fee_ngn:     new Decimal('2500'),
     } as never);
     disbursements.createForLoan.mockResolvedValue({ id: DISB_ID } as never);
 
@@ -178,6 +180,18 @@ describe('BlinkWebhookController', () => {
     expect(loans.activateLoan).toHaveBeenCalledWith(LOAN_ID, expect.any(Date));
     expect(disbursements.createForLoan).toHaveBeenCalled();
     expect(outflows.dispatch).toHaveBeenCalledWith(DISB_ID);
+  });
+
+  it('nets origination fee from the disbursement amount (principal − origination)', async () => {
+    await request(app.getHttpServer())
+      .post('/webhooks/blink')
+      .set(SVIX_HEADERS)
+      .send(VALID_RAW_BODY)
+      .expect(200);
+
+    // principal_ngn 500_000 − origination_fee_ngn 2_500 = 497_500
+    const call = disbursements.createForLoan.mock.calls[0][0] as { amount: Decimal };
+    expect(call.amount.toString()).toBe('497500');
   });
 
   it('skips loan actions when source_type is not LOAN (future offramp flow)', async () => {

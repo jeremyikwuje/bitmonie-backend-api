@@ -181,10 +181,16 @@ export class BlinkWebhookController {
 
     const loan = await this.loans.getLoan(payment_request.user_id, loan_id);
 
+    // Net disbursement: customer receives principal − origination_fee. The
+    // origination fee is collected as the spread between what we send out
+    // and what they repay. Accrual + repayment waterfall stay on full
+    // principal_ngn — origination is NOT a separate outstanding bucket.
+    const disburse_amount = loan.principal_ngn.minus(loan.origination_fee_ngn);
+
     const disbursement = await this.disbursements.createForLoan({
       user_id:           loan.user_id,
       source_id:         loan.id,
-      amount:            loan.principal_ngn,
+      amount:            disburse_amount,
       currency:          'NGN',
       disbursement_rail: DisbursementRail.BANK_TRANSFER,
       provider_name:     (loan.disbursement_account as never as { provider_name: string }).provider_name,
