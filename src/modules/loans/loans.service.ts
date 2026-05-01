@@ -45,6 +45,7 @@ import {
   LoanNotFoundException,
   NoUnmatchedInflowException,
   PendingLoanAlreadyExistsException,
+  ReleaseAddressAlreadySetException,
   RepaymentAccountNotReadyException,
 } from '@/common/errors/bitmonie.errors';
 import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
@@ -359,18 +360,39 @@ export class LoansService {
     });
   }
 
+  // Customer-facing setter — first-set-only. Once a release address is on the
+  // loan, the customer cannot change it. This closes a real attack vector:
+  // a compromised customer account swapping the address moments before the
+  // release fires would silently siphon collateral. If the customer typo'd
+  // their address at checkout / first-set, they contact support and ops
+  // adjusts it server-side (no customer-facing endpoint for the change path).
+  //
+  // Allowed transitions on this endpoint:
+  //   NULL    → value   (initial set; customer didn't enter at checkout, or is
+  //                      entering it now after the loan went REPAID)
+  // Rejected:
+  //   value   → value   (any change attempt — even setting the same value)
+  //   value   → NULL    (clearing — disallowed)
+  //   *       → *       (after release_at is set — bound to the actual send)
   async setReleaseAddress(user_id: string, loan_id: string, address: string): Promise<void> {
     const loan = await this.prisma.loan.findFirst({ where: { id: loan_id, user_id } });
     if (!loan) throw new LoanNotFoundException();
 
     // Once collateral has been released, the address is permanently bound to
-    // that send — changing it would mislead the loan history. Refuse silently
-    // with a clear 409. Customer can still see what was sent in the timeline.
+    // that send. Refuse with the more specific exception so the customer
+    // sees a clearer "already released" message rather than the generic
+    // "already set".
     if (loan.collateral_released_at !== null) {
       throw new CollateralAlreadyReleasedException({
         released_at: loan.collateral_released_at.toISOString(),
         reference:   loan.collateral_release_reference ?? undefined,
       });
+    }
+
+    // First-set-only guard. Any value already in the column means the
+    // customer has committed; further changes go through ops.
+    if (loan.collateral_release_address !== null) {
+      throw new ReleaseAddressAlreadySetException();
     }
 
     await this.prisma.loan.update({
@@ -379,12 +401,10 @@ export class LoansService {
     });
 
     // Clear any prior "release failed" alert dedupe so the worker retries
-    // immediately with the new address. The customer changing their address
-    // is the most common signal that whatever was wrong (typo, wrong wallet)
-    // is now fixed — no point making them wait the full 24h for the alert
-    // window to expire before the worker tries again. If the loan isn't
-    // REPAID yet, this is a no-op.
-    if (loan.status === LoanStatus.REPAID && loan.collateral_released_at === null) {
+    // immediately with the freshly-set address. By definition the dedupe
+    // wouldn't exist yet (no prior send attempt without an address), but
+    // the del is cheap and keeps the post-condition clean.
+    if (loan.status === LoanStatus.REPAID) {
       try {
         await this.redis.del(REDIS_KEYS.COLLATERAL_RELEASE_ALERTED(loan_id));
       } catch (err) {

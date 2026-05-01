@@ -251,6 +251,16 @@ export class CollateralAlreadyReleasedException extends BitmonieException {
   }
 }
 
+export class ReleaseAddressAlreadySetException extends BitmonieException {
+  constructor() {
+    super(
+      'RELEASE_ADDRESS_ALREADY_SET',
+      'Release address has already been set for this loan and cannot be changed. Contact support if you entered the wrong address.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class CollateralReleaseNotEligibleException extends BitmonieException {
   constructor(reason: string) {
     super(

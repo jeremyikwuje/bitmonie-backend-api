@@ -38,6 +38,7 @@ import {
   LoanNotActiveException,
   LoanNotFoundException,
   NoUnmatchedInflowException,
+  ReleaseAddressAlreadySetException,
   RepaymentAccountNotReadyException,
 } from '@/common/errors/bitmonie.errors';
 
@@ -519,12 +520,12 @@ describe('LoansService', () => {
       expect(prisma.loan.update).not.toHaveBeenCalled();
     });
 
-    it('clears the release-alert dedupe key when address is updated on a REPAID loan with NULL released_at', async () => {
+    it('clears the release-alert dedupe key when address is set on a REPAID loan with NULL released_at + NULL prior address', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
         status:                       LoanStatus.REPAID,
         collateral_released_at:       null,
-        collateral_release_address:   'old@addr.sv',
+        collateral_release_address:   null,    // first-set-only — must be NULL to set
       } as never);
 
       await service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv');
@@ -532,6 +533,50 @@ describe('LoansService', () => {
       expect(redis.del).toHaveBeenCalledWith(
         expect.stringContaining(`collateral_release:alerted:${LOAN_ID}`),
       );
+    });
+
+    it('refuses to CHANGE an existing address (value → different value)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                     LoanStatus.ACTIVE,
+        collateral_release_address: 'old@addr.sv',
+        collateral_released_at:     null,
+      } as never);
+
+      await expect(
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv'),
+      ).rejects.toThrow(ReleaseAddressAlreadySetException);
+
+      expect(prisma.loan.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to RE-SET the same address (value → same value)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                     LoanStatus.ACTIVE,
+        collateral_release_address: 'ada@blink.sv',
+        collateral_released_at:     null,
+      } as never);
+
+      await expect(
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'ada@blink.sv'),
+      ).rejects.toThrow(ReleaseAddressAlreadySetException);
+
+      expect(prisma.loan.update).not.toHaveBeenCalled();
+    });
+
+    it('post-release exception takes precedence over already-set (clearer customer-facing message)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                       LoanStatus.REPAID,
+        collateral_release_address:   'ada@blink.sv',
+        collateral_released_at:       new Date('2026-01-01T00:00:00Z'),
+        collateral_release_reference: 'ref',
+      } as never);
+
+      await expect(
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv'),
+      ).rejects.toThrow(CollateralAlreadyReleasedException);
     });
 
     it('does NOT clear dedupe key when loan is not REPAID (no-op for ACTIVE / PENDING)', async () => {
