@@ -21,6 +21,7 @@ function makeLoan(overrides: Record<string, unknown> = {}) {
     collateral_release_address:  ADDRESS,
     collateral_released_at:      null,
     collateral_release_reference: null,
+    repayments:                  [{ amount_ngn: '566000.00' }],
     ...overrides,
   };
 }
@@ -86,7 +87,8 @@ describe('CollateralReleaseService', () => {
     expect(provider.sendToLightningAddress).toHaveBeenCalledWith({
       address:    ADDRESS,
       amount_sat: BigInt(515464),
-      memo:       expect.stringContaining(LOAN_ID),
+      // Customer-facing trace string: human prefix + total NGN repaid + 8-char short ID.
+      memo:       'Bitmonie collateral released — ₦566,000.00 loan (LOANUUID) paid',
     });
   });
 

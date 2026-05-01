@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { LoanStatus, StatusTrigger } from '@prisma/client';
+import { Decimal } from 'decimal.js';
 import type Redis from 'ioredis';
 import { PrismaService } from '@/database/prisma.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
@@ -61,9 +62,15 @@ export class CollateralReleaseService {
   ) {}
 
   // Memo we send to Blink alongside the SAT — visible in the customer's
-  // Lightning wallet ledger as the human-readable description.
-  private buildMemo(loan_id: string): string {
-    return `Bitmonie loan ${loan_id} — collateral release`;
+  // Lightning wallet ledger as the human-readable description. We include
+  // the total NGN repaid plus the 8-char short-form loan ID (same format
+  // used in customer emails) so the customer can trace this exact release
+  // back to a specific loan from their wallet history alone.
+  private buildMemo(loan_id: string, total_repaid_ngn: Decimal): string {
+    const sid = loan_id.replace(/-/g, '').slice(0, 8).toUpperCase();
+    const [whole, frac = '00'] = total_repaid_ngn.toFixed(2).split('.');
+    const grouped = (whole ?? '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `Bitmonie collateral released — ₦${grouped}.${frac} loan (${sid}) paid`;
   }
 
   async releaseForLoan(loan_id: string): Promise<ReleaseResult> {
@@ -86,6 +93,11 @@ export class CollateralReleaseService {
           collateral_release_address:  true,
           collateral_released_at:      true,
           collateral_release_reference: true,
+          // Used to build the wallet memo so the customer can trace this
+          // SAT release to a specific NGN repayment from their wallet
+          // history alone. Repayment count is bounded (one per matched
+          // inflow) — no pagination concern in practice.
+          repayments: { select: { amount_ngn: true } },
         },
       });
 
@@ -105,6 +117,11 @@ export class CollateralReleaseService {
         return { status: 'not_eligible', reason: 'no_release_address' };
       }
 
+      const total_repaid_ngn = loan.repayments.reduce(
+        (sum, r) => sum.plus(r.amount_ngn.toString()),
+        new Decimal(0),
+      );
+
       // Outside-the-tx provider call. On exception, we surface as send_failed
       // and the lock auto-expires — the worker will retry. Lock TTL is the
       // upper bound on how soon that retry can happen.
@@ -113,7 +130,7 @@ export class CollateralReleaseService {
         provider_reference = await this.collateral_provider.sendToLightningAddress({
           address:    loan.collateral_release_address,
           amount_sat: loan.collateral_amount_sat,
-          memo:       this.buildMemo(loan.id),
+          memo:       this.buildMemo(loan.id, total_repaid_ngn),
         });
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
