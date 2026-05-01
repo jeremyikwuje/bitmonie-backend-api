@@ -30,6 +30,7 @@ import { REDIS_KEYS } from '@/common/constants';
 import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
 import { LoanStatusService } from '@/modules/loans/loan-status.service';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import { BlinkProvider } from '@/providers/blink/blink.provider';
 import { MailgunProvider } from '@/providers/mailgun/mailgun.provider';
 import { ResendProvider } from '@/providers/resend/resend.provider';
@@ -212,12 +213,14 @@ async function main(): Promise<void> {
   const email_provider    = buildEmailProvider();
   const ops_alerts        = new OpsAlertsService(email_provider, new WorkerConfigService() as unknown as ConfigService);
   const loan_status       = new LoanStatusService();
+  const loan_notifications = new LoanNotificationsService(email_provider, prisma_as_service);
   const collateral_release = new CollateralReleaseService(
     prisma_as_service,
     blink,
     loan_status,
     ops_alerts,
     redis,
+    loan_notifications,
   );
 
   const deps: CollateralReleaseWorkerDeps = { prisma, redis, collateral_release, log: defaultLog };

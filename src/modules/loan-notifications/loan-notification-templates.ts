@@ -3,13 +3,14 @@
 // NestJS deps. Mirrors the style of reminder-templates.ts so the worker and
 // the in-process notification service render identically.
 //
-// Covers six lifecycle moments:
+// Covers seven lifecycle moments:
 //   1. Loan created           — awaiting BTC collateral
 //   2. Collateral received    — disbursement in progress
 //   3. Loan disbursed         — funds sent
 //   4. Repayment partial      — receipt + waterfall + remaining balance
 //   5. Repayment full         — loan cleared, collateral release in progress
 //   6. Collateral topped up   — protection increased
+//   7. Collateral released    — SAT sent back to customer (REPAID follow-up)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface NotificationEmail {
@@ -75,6 +76,15 @@ export interface CollateralToppedUpParams {
   loan_id:                  string;
   added_sat:                bigint;
   new_total_collateral_sat: bigint;
+}
+
+export interface CollateralReleasedParams {
+  first_name:         string | null;
+  loan_id:            string;
+  amount_sat:         bigint;
+  release_address:    string;
+  provider_reference: string;
+  released_at:        Date;
 }
 
 // ── helpers (kept local; reminder-templates.ts has its own copy) ─────────────
@@ -341,6 +351,39 @@ export function buildCollateralToppedUpEmail(p: CollateralToppedUpParams): Notif
         row('New total collateral', total) +
       `</table>` +
       `<p>Your loan is now better protected against BTC price moves.</p>` +
+      FOOTER_HTML,
+  };
+}
+
+// ── 7. Collateral released ───────────────────────────────────────────────────
+
+export function buildCollateralReleasedEmail(p: CollateralReleasedParams): NotificationEmail {
+  const sid    = shortLoanId(p.loan_id);
+  const sats   = formatSats(p.amount_sat);
+  const sent_at = p.released_at.toUTCString();
+
+  return {
+    subject: `Bitmonie loan ${sid} — collateral released`,
+    text_body:
+      `${greet(p.first_name)},\n\n` +
+      `Your collateral for loan ${sid} has been released to your Lightning address.\n\n` +
+      `  Amount sent:     ${sats}\n` +
+      `  To:              ${p.release_address}\n` +
+      `  Sent at:         ${sent_at}\n` +
+      `  Reference:       ${p.provider_reference}\n\n` +
+      `If you don't see it in your wallet within a few minutes, check that the address above is correct ` +
+      `and reach out to support — keep the reference handy.${FOOTER_TEXT}`,
+    html_body:
+      `<p>${greet(p.first_name)},</p>` +
+      `<p>Your collateral for loan <code>${sid}</code> has been released to your Lightning address.</p>` +
+      `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
+        row('Amount sent', sats) +
+        row('To',          p.release_address) +
+        row('Sent at',     sent_at) +
+        row('Reference',   p.provider_reference) +
+      `</table>` +
+      `<p>If you don't see it in your wallet within a few minutes, check that the address above is correct ` +
+      `and reach out to support — keep the reference handy.</p>` +
       FOOTER_HTML,
   };
 }

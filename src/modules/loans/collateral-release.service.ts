@@ -8,6 +8,7 @@ import {
   type CollateralProvider,
 } from '@/modules/payment-requests/collateral.provider.interface';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import { LoanReasonCodes, REDIS_KEYS } from '@/common/constants';
 import { LoanStatusService } from './loan-status.service';
 
@@ -56,6 +57,7 @@ export class CollateralReleaseService {
     private readonly ops_alerts: OpsAlertsService,
     @Inject(REDIS_CLIENT)
     private readonly redis: Redis,
+    private readonly notifications: LoanNotificationsService,
   ) {}
 
   // Memo we send to Blink alongside the SAT — visible in the customer's
@@ -128,8 +130,8 @@ export class CollateralReleaseService {
       // Redis lock — a successful provider send + a stamped release must
       // happen together, but if a parallel attempt slipped through somehow,
       // the conditional update means only one stamp wins.
+      const now = new Date();
       try {
-        const now = new Date();
         await this.prisma.$transaction(async (tx) => {
           const updated = await tx.loan.updateMany({
             where: { id: loan.id, collateral_released_at: null },
@@ -174,6 +176,21 @@ export class CollateralReleaseService {
         // Clear any prior alert dedupe so a future re-release (LIQUIDATED
         // surplus on the same loan, hypothetically) starts fresh.
         await this.redis.del(REDIS_KEYS.COLLATERAL_RELEASE_ALERTED(loan.id));
+
+        // Customer "your collateral has been released" email — fired only
+        // when the stamp tx commits, so the email is sent at most once per
+        // release regardless of which of the three callers (creditInflow
+        // hand-off, ops endpoint, worker) won the lock. The follow-up the
+        // full-repayment email promised lands here.
+        await this.notifications.notifyCollateralReleased({
+          loan_id:            loan.id,
+          user_id:            loan.user_id,
+          amount_sat:         loan.collateral_amount_sat,
+          release_address:    loan.collateral_release_address,
+          provider_reference,
+          released_at:        now,
+        });
+
         return { status: 'released', reference: provider_reference };
       } catch (err) {
         // Send succeeded, stamp failed. This is the dangerous case — we've

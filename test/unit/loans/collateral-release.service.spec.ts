@@ -3,6 +3,7 @@ import { mock, MockProxy } from 'jest-mock-extended';
 import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
 import { LoanStatusService } from '@/modules/loans/loan-status.service';
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import type { CollateralProvider } from '@/modules/payment-requests/collateral.provider.interface';
 import type { PrismaService } from '@/database/prisma.service';
 
@@ -49,14 +50,16 @@ function makeRedis() {
 }
 
 describe('CollateralReleaseService', () => {
-  let provider:    MockProxy<CollateralProvider>;
-  let ops_alerts:  MockProxy<OpsAlertsService>;
-  let loan_status: MockProxy<LoanStatusService>;
+  let provider:           MockProxy<CollateralProvider>;
+  let ops_alerts:         MockProxy<OpsAlertsService>;
+  let loan_status:        MockProxy<LoanStatusService>;
+  let loan_notifications: MockProxy<LoanNotificationsService>;
 
   beforeEach(() => {
-    provider    = mock<CollateralProvider>();
-    ops_alerts  = mock<OpsAlertsService>();
-    loan_status = mock<LoanStatusService>();
+    provider           = mock<CollateralProvider>();
+    ops_alerts         = mock<OpsAlertsService>();
+    loan_status        = mock<LoanStatusService>();
+    loan_notifications = mock<LoanNotificationsService>();
     provider.sendToLightningAddress.mockResolvedValue(REF);
   });
 
@@ -67,6 +70,7 @@ describe('CollateralReleaseService', () => {
       loan_status,
       ops_alerts,
       deps.redis ?? makeRedis(),
+      loan_notifications,
     );
   }
 

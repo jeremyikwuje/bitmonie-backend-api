@@ -4,6 +4,7 @@ import { PrismaService } from '@/database/prisma.service';
 import { EMAIL_PROVIDER, type EmailProvider } from '@/modules/auth/email.provider.interface';
 import {
   buildCollateralReceivedEmail,
+  buildCollateralReleasedEmail,
   buildCollateralToppedUpEmail,
   buildLoanCreatedEmail,
   buildLoanDisbursedEmail,
@@ -63,6 +64,15 @@ export interface NotifyCollateralToppedUpParams {
   user_id:                  string;
   added_sat:                bigint;
   new_total_collateral_sat: bigint;
+}
+
+export interface NotifyCollateralReleasedParams {
+  loan_id:            string;
+  user_id:            string;
+  amount_sat:         bigint;
+  release_address:    string;
+  provider_reference: string;
+  released_at:        Date;
 }
 
 @Injectable()
@@ -215,6 +225,22 @@ export class LoanNotificationsService {
     });
 
     await this._send(user.email, email, { event: 'collateral_topped_up', loan_id: params.loan_id });
+  }
+
+  async notifyCollateralReleased(params: NotifyCollateralReleasedParams): Promise<void> {
+    const user = await this._loadUser(params.user_id);
+    if (!user) return;
+
+    const email = buildCollateralReleasedEmail({
+      first_name:         user.first_name,
+      loan_id:            params.loan_id,
+      amount_sat:         params.amount_sat,
+      release_address:    params.release_address,
+      provider_reference: params.provider_reference,
+      released_at:        params.released_at,
+    });
+
+    await this._send(user.email, email, { event: 'collateral_released', loan_id: params.loan_id });
   }
 
   private async _loadUser(user_id: string): Promise<{ email: string; first_name: string | null } | null> {
