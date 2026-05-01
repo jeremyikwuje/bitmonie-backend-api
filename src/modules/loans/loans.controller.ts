@@ -143,14 +143,50 @@ export class LoansController {
   @UseGuards(SessionGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Set the Lightning address for collateral release after repayment' })
+  @ApiOperation({
+    summary: 'Set or change the Lightning address for collateral release after repayment',
+    description:
+      'First-set (NULL → value) is allowed with just an authenticated session. ' +
+      'CHANGING an existing address requires step-up verification: email OTP always, ' +
+      'plus TOTP if the user has 2FA enabled. Request the email OTP via ' +
+      'POST /v1/loans/:id/release-address/request-change-otp before submitting. ' +
+      'Refused once collateral has been released — that address is bound to the actual send.',
+  })
   @ApiResponse({ status: 204 })
+  @ApiResponse({ status: 401, description: 'Wrong TOTP code' })
+  @ApiResponse({ status: 409, description: 'Loan already released' })
+  @ApiResponse({ status: 422, description: 'Email OTP missing/invalid/expired or 2FA code missing' })
   async setReleaseAddress(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SetReleaseAddressDto,
   ): Promise<void> {
-    await this.loans.setReleaseAddress(user.id, id, dto.collateral_release_address);
+    await this.loans.setReleaseAddress(user.id, id, dto.collateral_release_address, {
+      email_otp: dto.email_otp,
+      totp_code: dto.totp_code,
+    });
+  }
+
+  @Post(':id/release-address/request-change-otp')
+  @UseGuards(SessionGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Email a 6-digit OTP that authorises a change to the release address on this loan',
+    description:
+      'Sends a confirmation code to the customer\'s verified email. The code is scoped to ' +
+      '(user, loan) and expires in 15 minutes. Submit it together with the new address (and ' +
+      'TOTP if 2FA is enabled) on PATCH /v1/loans/:id/release-address. Refused if the loan has ' +
+      'no existing address yet (use the PATCH directly — first-set is exempt) or if collateral ' +
+      'has already been released.',
+  })
+  @ApiResponse({ status: 204, description: 'OTP sent (or silently skipped if email send is unavailable)' })
+  @ApiResponse({ status: 409, description: 'Loan already released, OR no existing address to change' })
+  async requestReleaseAddressChangeOtp(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
+    await this.loans.requestReleaseAddressChangeOtp(user.id, id);
   }
 
   @Post(':id/add-collateral')

@@ -37,6 +37,6 @@ import { RedisModule } from '@/database/redis.module';
       },
     },
   ],
-  exports: [SessionService],
+  exports: [SessionService, AuthService, EMAIL_PROVIDER],
 })
 export class AuthModule {}

@@ -17,6 +17,7 @@ import { PaymentRequestsService } from '@/modules/payment-requests/payment-reque
 import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
 import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
+import { AuthService } from '@/modules/auth/auth.service';
 import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from '@/modules/loans/price-quote.provider.interface';
 import {
   COLLATERAL_PROVIDER,
@@ -26,6 +27,7 @@ import { PrismaService } from '@/database/prisma.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
 import {
   AddCollateralAlreadyPendingException,
+  Auth2faRequiredException,
   CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
@@ -38,7 +40,8 @@ import {
   LoanNotActiveException,
   LoanNotFoundException,
   NoUnmatchedInflowException,
-  ReleaseAddressAlreadySetException,
+  ReleaseAddressNotYetSetException,
+  ReleaseAddressOtpRequiredException,
   RepaymentAccountNotReadyException,
 } from '@/common/errors/bitmonie.errors';
 
@@ -150,6 +153,9 @@ function make_prisma() {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany:  jest.fn().mockResolvedValue([]),
     },
+    user: {
+      findUniqueOrThrow: jest.fn().mockResolvedValue({ totp_enabled: false }),
+    },
     $queryRaw: jest.fn().mockResolvedValue([{ id: LOAN_ID }]),
     $transaction: jest.fn().mockImplementation(
       async (fn: (tx: unknown) => Promise<unknown>) =>
@@ -179,6 +185,7 @@ describe('LoansService', () => {
   let user_repayment_accounts: MockProxy<UserRepaymentAccountsService>;
   let loan_notifications: MockProxy<LoanNotificationsService>;
   let collateral_release: MockProxy<CollateralReleaseService>;
+  let auth_service: MockProxy<AuthService>;
   let redis: { set: jest.Mock; get: jest.Mock; del: jest.Mock };
 
   const SAT_RATE     = new Decimal('0.97');
@@ -202,6 +209,7 @@ describe('LoansService', () => {
     loan_notifications  = mock<LoanNotificationsService>();
     collateral_release  = mock<CollateralReleaseService>();
     collateral_release.releaseForLoan.mockResolvedValue({ status: 'released', reference: 'stub' });
+    auth_service        = mock<AuthService>();
     redis               = { set: jest.fn().mockResolvedValue('OK'), get: jest.fn(), del: jest.fn() };
 
     user_repayment_accounts.ensureForUser.mockResolvedValue({
@@ -239,6 +247,7 @@ describe('LoansService', () => {
         { provide: UserRepaymentAccountsService, useValue: user_repayment_accounts },
         { provide: LoanNotificationsService,     useValue: loan_notifications },
         { provide: CollateralReleaseService,     useValue: collateral_release },
+        { provide: AuthService,                  useValue: auth_service },
       ],
     }).compile();
 
@@ -535,7 +544,7 @@ describe('LoansService', () => {
       );
     });
 
-    it('refuses to CHANGE an existing address (value → different value)', async () => {
+    it('change without an email_otp is rejected (RELEASE_ADDRESS_OTP_REQUIRED)', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
         status:                     LoanStatus.ACTIVE,
@@ -545,27 +554,91 @@ describe('LoansService', () => {
 
       await expect(
         service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv'),
-      ).rejects.toThrow(ReleaseAddressAlreadySetException);
+      ).rejects.toThrow(ReleaseAddressOtpRequiredException);
 
+      expect(auth_service.consumeReleaseAddressChangeOtp).not.toHaveBeenCalled();
       expect(prisma.loan.update).not.toHaveBeenCalled();
     });
 
-    it('refuses to RE-SET the same address (value → same value)', async () => {
+    it('change with valid email_otp + no 2FA succeeds', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
         status:                     LoanStatus.ACTIVE,
-        collateral_release_address: 'ada@blink.sv',
+        collateral_release_address: 'old@addr.sv',
         collateral_released_at:     null,
       } as never);
+      prisma.user.findUniqueOrThrow.mockResolvedValue({ totp_enabled: false } as never);
+
+      await service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', { email_otp: '482917' });
+
+      expect(auth_service.consumeReleaseAddressChangeOtp)
+        .toHaveBeenCalledWith(USER_ID, LOAN_ID, '482917');
+      expect(auth_service.verifyTotpForUser).not.toHaveBeenCalled();
+      expect(prisma.loan.update).toHaveBeenCalledWith({
+        where: { id: LOAN_ID },
+        data:  { collateral_release_address: 'new@addr.sv' },
+      });
+    });
+
+    it('change with 2FA enabled but no totp_code is rejected (Auth2faRequiredException)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                     LoanStatus.ACTIVE,
+        collateral_release_address: 'old@addr.sv',
+        collateral_released_at:     null,
+      } as never);
+      prisma.user.findUniqueOrThrow.mockResolvedValue({ totp_enabled: true } as never);
 
       await expect(
-        service.setReleaseAddress(USER_ID, LOAN_ID, 'ada@blink.sv'),
-      ).rejects.toThrow(ReleaseAddressAlreadySetException);
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', { email_otp: '482917' }),
+      ).rejects.toThrow(Auth2faRequiredException);
 
+      // Email OTP is consumed BEFORE the 2FA check (caller already proved
+      // possession of the email — the OTP is single-use). The TOTP guard
+      // surfaces afterwards if missing.
+      expect(auth_service.consumeReleaseAddressChangeOtp).toHaveBeenCalled();
       expect(prisma.loan.update).not.toHaveBeenCalled();
     });
 
-    it('post-release exception takes precedence over already-set (clearer customer-facing message)', async () => {
+    it('change with 2FA enabled + valid email_otp + valid totp_code succeeds', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                     LoanStatus.ACTIVE,
+        collateral_release_address: 'old@addr.sv',
+        collateral_released_at:     null,
+      } as never);
+      prisma.user.findUniqueOrThrow.mockResolvedValue({ totp_enabled: true } as never);
+
+      await service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', {
+        email_otp: '482917',
+        totp_code: '293041',
+      });
+
+      expect(auth_service.consumeReleaseAddressChangeOtp)
+        .toHaveBeenCalledWith(USER_ID, LOAN_ID, '482917');
+      expect(auth_service.verifyTotpForUser).toHaveBeenCalledWith(USER_ID, '293041');
+      expect(prisma.loan.update).toHaveBeenCalled();
+    });
+
+    it('first-set (NULL → value) does NOT require email_otp / totp_code', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                     LoanStatus.ACTIVE,
+        collateral_release_address: null,
+        collateral_released_at:     null,
+      } as never);
+
+      await service.setReleaseAddress(USER_ID, LOAN_ID, 'first@addr.sv');
+
+      expect(auth_service.consumeReleaseAddressChangeOtp).not.toHaveBeenCalled();
+      expect(auth_service.verifyTotpForUser).not.toHaveBeenCalled();
+      expect(prisma.loan.update).toHaveBeenCalledWith({
+        where: { id: LOAN_ID },
+        data:  { collateral_release_address: 'first@addr.sv' },
+      });
+    });
+
+    it('post-release exception takes precedence over the OTP requirement (clearer customer-facing message)', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
         status:                       LoanStatus.REPAID,
@@ -575,8 +648,9 @@ describe('LoansService', () => {
       } as never);
 
       await expect(
-        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv'),
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', { email_otp: '482917' }),
       ).rejects.toThrow(CollateralAlreadyReleasedException);
+      expect(auth_service.consumeReleaseAddressChangeOtp).not.toHaveBeenCalled();
     });
 
     it('does NOT clear dedupe key when loan is not REPAID (no-op for ACTIVE / PENDING)', async () => {
@@ -588,6 +662,48 @@ describe('LoansService', () => {
       await service.setReleaseAddress(USER_ID, LOAN_ID, 'addr');
 
       expect(redis.del).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── requestReleaseAddressChangeOtp ──────────────────────────────────────────
+
+  describe('requestReleaseAddressChangeOtp', () => {
+    it('throws LoanNotFoundException for an unknown loan', async () => {
+      prisma.loan.findFirst.mockResolvedValue(null);
+      await expect(service.requestReleaseAddressChangeOtp(USER_ID, LOAN_ID))
+        .rejects.toThrow(LoanNotFoundException);
+    });
+
+    it('throws CollateralAlreadyReleasedException after release', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        collateral_release_address:   'ada@blink.sv',
+        collateral_released_at:       new Date(),
+        collateral_release_reference: 'ref',
+      } as never);
+      await expect(service.requestReleaseAddressChangeOtp(USER_ID, LOAN_ID))
+        .rejects.toThrow(CollateralAlreadyReleasedException);
+      expect(auth_service.sendReleaseAddressChangeOtp).not.toHaveBeenCalled();
+    });
+
+    it('throws ReleaseAddressNotYetSetException when no existing address (first-set is exempt)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        collateral_release_address: null,
+      } as never);
+      await expect(service.requestReleaseAddressChangeOtp(USER_ID, LOAN_ID))
+        .rejects.toThrow(ReleaseAddressNotYetSetException);
+      expect(auth_service.sendReleaseAddressChangeOtp).not.toHaveBeenCalled();
+    });
+
+    it('delegates to AuthService.sendReleaseAddressChangeOtp on the happy path', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        collateral_release_address: 'ada@blink.sv',
+        collateral_released_at:     null,
+      } as never);
+      await service.requestReleaseAddressChangeOtp(USER_ID, LOAN_ID);
+      expect(auth_service.sendReleaseAddressChangeOtp).toHaveBeenCalledWith(USER_ID, LOAN_ID);
     });
   });
 

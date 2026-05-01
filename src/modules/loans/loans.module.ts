@@ -11,6 +11,7 @@ import { BlinkProvider } from '@/providers/blink/blink.provider';
 import type { ProvidersConfig } from '@/config/providers.config';
 import { COLLATERAL_PROVIDER } from '@/modules/payment-requests/collateral.provider.interface';
 import { OpsAlertsModule } from '@/modules/ops-alerts/ops-alerts.module';
+import { AuthModule } from '@/modules/auth/auth.module';
 import { LoansController } from './loans.controller';
 import { LoansService } from './loans.service';
 import { CalculatorService } from './calculator.service';
@@ -39,6 +40,7 @@ function pickCollateralProvider(config: ConfigService, blink: BlinkProvider) {
     UserRepaymentAccountsModule,
     LoanNotificationsModule,
     OpsAlertsModule,
+    AuthModule,
     BlinkModule,
     ConfigModule,
     RedisModule,

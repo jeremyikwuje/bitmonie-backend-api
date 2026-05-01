@@ -255,4 +255,70 @@ export class AuthService {
     await this.redis.del(otpKey(purpose, email));
     await this.redis.del(attempts_key);
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Step-up verification for the release-address change path
+  //
+  // Used by LoansService.setReleaseAddress when the customer is CHANGING an
+  // existing release address (NULL→value first-set is exempt). The OTP key
+  // is scoped to (user_id, loan_id) so a code sent for one loan can't be
+  // replayed against another. The customer's email is looked up here so
+  // callers don't need to pass it (avoids accidental misuse).
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async sendReleaseAddressChangeOtp(user_id: string, loan_id: string): Promise<void> {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where:  { id: user_id },
+      select: { email: true },
+    });
+    const otp = this.generateOtp();
+    const key = releaseAddressOtpKey(user_id, loan_id);
+    await this.redis.set(key, hashOtp(otp), 'EX', OTP_TTL_SEC);
+    await this.redis.del(releaseAddressOtpAttemptsKey(user_id, loan_id));
+    await this.email_provider.sendOtp({ to: user.email, otp, purpose: 'release_address_change' });
+  }
+
+  async consumeReleaseAddressChangeOtp(user_id: string, loan_id: string, otp: string): Promise<void> {
+    const attempts_key = releaseAddressOtpAttemptsKey(user_id, loan_id);
+    const attempts_raw = await this.redis.get(attempts_key);
+    const attempts = attempts_raw ? parseInt(attempts_raw, 10) : 0;
+    if (attempts >= OTP_MAX_ATTEMPTS) throw new AuthOtpMaxAttemptsException();
+
+    const stored_hash = await this.redis.get(releaseAddressOtpKey(user_id, loan_id));
+    if (!stored_hash) throw new AuthOtpExpiredException();
+
+    await this.redis.incr(attempts_key);
+    await this.redis.expire(attempts_key, OTP_TTL_SEC);
+
+    if (!safeCompareOtp(otp, stored_hash)) throw new AuthOtpExpiredException();
+
+    await this.redis.del(releaseAddressOtpKey(user_id, loan_id));
+    await this.redis.del(attempts_key);
+  }
+
+  // Verifies a TOTP code against the user's stored secret. Caller is
+  // expected to have already checked user.totp_enabled — if not enabled,
+  // throws Auth2faRequiredException (treated as configuration error since
+  // step-up flows shouldn't request TOTP from non-2FA users). Wrong code
+  // throws AuthInvalidCredentialsException, matching the login flow.
+  async verifyTotpForUser(user_id: string, totp_code: string): Promise<void> {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where:  { id: user_id },
+      select: { totp_enabled: true, totp_secret: true },
+    });
+    if (!user.totp_enabled || !user.totp_secret) {
+      throw new Auth2faRequiredException();
+    }
+    const secret = this.crypto_service.decrypt(user.totp_secret);
+    const result = await totpVerify({ secret, token: totp_code });
+    if (!result.valid) throw new AuthInvalidCredentialsException();
+  }
+}
+
+function releaseAddressOtpKey(user_id: string, loan_id: string): string {
+  return `auth:otp:release_address_change:${user_id}:${loan_id}`;
+}
+
+function releaseAddressOtpAttemptsKey(user_id: string, loan_id: string): string {
+  return `auth:otp_attempts:release_address_change:${user_id}:${loan_id}`;
 }

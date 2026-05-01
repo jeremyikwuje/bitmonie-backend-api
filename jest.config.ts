@@ -11,6 +11,8 @@ const base: Partial<Config> = {
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: 'tsconfig.json' }],
   },
+  // Stubs ESM-only deps (e.g. otplib) before any import resolves them.
+  setupFiles: ['<rootDir>/test/jest.setup.ts'],
   clearMocks: true,
 };
 

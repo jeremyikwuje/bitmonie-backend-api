@@ -261,6 +261,26 @@ export class ReleaseAddressAlreadySetException extends BitmonieException {
   }
 }
 
+export class ReleaseAddressOtpRequiredException extends BitmonieException {
+  constructor() {
+    super(
+      'RELEASE_ADDRESS_OTP_REQUIRED',
+      'Changing the release address requires email confirmation. Request an OTP first via POST /v1/loans/:id/release-address/request-change-otp.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class ReleaseAddressNotYetSetException extends BitmonieException {
+  constructor() {
+    super(
+      'RELEASE_ADDRESS_NOT_YET_SET',
+      'No release address is set on this loan yet — submit it directly via PATCH /v1/loans/:id/release-address. The OTP step is only required when changing an existing address.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class CollateralReleaseNotEligibleException extends BitmonieException {
   constructor(reason: string) {
     super(

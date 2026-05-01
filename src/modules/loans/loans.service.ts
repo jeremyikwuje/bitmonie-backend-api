@@ -33,6 +33,7 @@ import {
 } from '@/common/constants';
 import {
   AddCollateralAlreadyPendingException,
+  Auth2faRequiredException,
   CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
@@ -45,11 +46,13 @@ import {
   LoanNotFoundException,
   NoUnmatchedInflowException,
   PendingLoanAlreadyExistsException,
-  ReleaseAddressAlreadySetException,
+  ReleaseAddressNotYetSetException,
+  ReleaseAddressOtpRequiredException,
   RepaymentAccountNotReadyException,
 } from '@/common/errors/bitmonie.errors';
 import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
 import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
+import { AuthService } from '@/modules/auth/auth.service';
 import type { CheckoutLoanDto } from './dto/checkout-loan.dto';
 
 const CLAIM_INFLOW_WINDOW_MS  = 24 * 60 * 60 * 1000;
@@ -135,6 +138,7 @@ export class LoansService {
     private readonly user_repayment_accounts: UserRepaymentAccountsService,
     private readonly notifications: LoanNotificationsService,
     private readonly collateral_release: CollateralReleaseService,
+    private readonly auth_service: AuthService,
   ) {}
 
   async checkoutLoan(user: User, dto: CheckoutLoanDto): Promise<CheckoutLoanResult> {
@@ -360,21 +364,28 @@ export class LoansService {
     });
   }
 
-  // Customer-facing setter — first-set-only. Once a release address is on the
-  // loan, the customer cannot change it. This closes a real attack vector:
-  // a compromised customer account swapping the address moments before the
-  // release fires would silently siphon collateral. If the customer typo'd
-  // their address at checkout / first-set, they contact support and ops
-  // adjusts it server-side (no customer-facing endpoint for the change path).
+  // Customer-facing setter — step-up verified change path.
   //
-  // Allowed transitions on this endpoint:
-  //   NULL    → value   (initial set; customer didn't enter at checkout, or is
-  //                      entering it now after the loan went REPAID)
+  // Allowed transitions:
+  //   NULL  → value   First-set. Authenticated session is sufficient — no OTP.
+  //   value → value   Change. Requires step-up: email OTP always; if the
+  //                   user has 2FA enabled, BOTH email OTP + TOTP. Closes
+  //                   the address-swap-before-release attack vector against
+  //                   a compromised session.
   // Rejected:
-  //   value   → value   (any change attempt — even setting the same value)
-  //   value   → NULL    (clearing — disallowed)
-  //   *       → *       (after release_at is set — bound to the actual send)
-  async setReleaseAddress(user_id: string, loan_id: string, address: string): Promise<void> {
+  //   *     → *       After collateral_released_at is set — bound to the
+  //                   actual send and part of the loan's history.
+  //
+  // The change path requires the customer to first call
+  // requestReleaseAddressChangeOtp(user_id, loan_id) which emails a 6-digit
+  // OTP. The OTP is then submitted alongside the new address (and the TOTP
+  // code if 2FA is enabled).
+  async setReleaseAddress(
+    user_id:  string,
+    loan_id:  string,
+    address:  string,
+    options?: { email_otp?: string; totp_code?: string },
+  ): Promise<void> {
     const loan = await this.prisma.loan.findFirst({ where: { id: loan_id, user_id } });
     if (!loan) throw new LoanNotFoundException();
 
@@ -389,10 +400,24 @@ export class LoansService {
       });
     }
 
-    // First-set-only guard. Any value already in the column means the
-    // customer has committed; further changes go through ops.
-    if (loan.collateral_release_address !== null) {
-      throw new ReleaseAddressAlreadySetException();
+    const is_change = loan.collateral_release_address !== null;
+
+    if (is_change) {
+      // Step-up verification. Always require email OTP; require TOTP too if
+      // the user has 2FA enabled. The order matters: email first (cheap +
+      // single-use, so a wrong-OTP attempt is recorded), TOTP second (only
+      // after email succeeded — avoids leaking 2FA-status via timing).
+      if (!options?.email_otp) throw new ReleaseAddressOtpRequiredException();
+      await this.auth_service.consumeReleaseAddressChangeOtp(user_id, loan_id, options.email_otp);
+
+      const user = await this.prisma.user.findUniqueOrThrow({
+        where:  { id: user_id },
+        select: { totp_enabled: true },
+      });
+      if (user.totp_enabled) {
+        if (!options.totp_code) throw new Auth2faRequiredException();
+        await this.auth_service.verifyTotpForUser(user_id, options.totp_code);
+      }
     }
 
     await this.prisma.loan.update({
@@ -401,9 +426,11 @@ export class LoansService {
     });
 
     // Clear any prior "release failed" alert dedupe so the worker retries
-    // immediately with the freshly-set address. By definition the dedupe
-    // wouldn't exist yet (no prior send attempt without an address), but
-    // the del is cheap and keeps the post-condition clean.
+    // immediately with the new address. The customer changing their address
+    // is the most common signal that whatever was wrong (typo, wrong wallet)
+    // is now fixed — no point making them wait the full 24h for the alert
+    // window to expire before the worker tries again. If the loan isn't
+    // REPAID yet, this is a no-op.
     if (loan.status === LoanStatus.REPAID) {
       try {
         await this.redis.del(REDIS_KEYS.COLLATERAL_RELEASE_ALERTED(loan_id));
@@ -415,6 +442,31 @@ export class LoansService {
         );
       }
     }
+  }
+
+  // Sends a 6-digit OTP to the customer's verified email so they can prove
+  // possession of the email account before changing the release address.
+  // Refuses if the loan is already released (no point re-OTPing for a
+  // change that won't be accepted) or if there's no existing address to
+  // change (NULL→value is the first-set path which doesn't need step-up).
+  async requestReleaseAddressChangeOtp(user_id: string, loan_id: string): Promise<void> {
+    const loan = await this.prisma.loan.findFirst({ where: { id: loan_id, user_id } });
+    if (!loan) throw new LoanNotFoundException();
+
+    if (loan.collateral_released_at !== null) {
+      throw new CollateralAlreadyReleasedException({
+        released_at: loan.collateral_released_at.toISOString(),
+        reference:   loan.collateral_release_reference ?? undefined,
+      });
+    }
+
+    if (loan.collateral_release_address === null) {
+      // No existing address — customer should just PATCH directly without
+      // the OTP dance (first-set is exempt).
+      throw new ReleaseAddressNotYetSetException();
+    }
+
+    await this.auth_service.sendReleaseAddressChangeOtp(user_id, loan_id);
   }
 
   async activateLoan(loan_id: string, collateral_received_at: Date): Promise<void> {

@@ -3,7 +3,7 @@ export const EMAIL_PROVIDER = 'EMAIL_PROVIDER';
 export interface OtpEmailParams {
   to: string;
   otp: string;
-  purpose: 'verify' | 'reset';
+  purpose: 'verify' | 'reset' | 'release_address_change';
 }
 
 // Pre-rendered transactional email. Caller composes subject + body strings;
