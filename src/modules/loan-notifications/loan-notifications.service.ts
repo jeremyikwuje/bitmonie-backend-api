@@ -31,6 +31,7 @@ export interface NotifyLoanCreatedParams {
   collateral_amount_sat:        bigint;
   duration_days:                number;
   expires_at:                   Date;
+  payment_request:              string;
 }
 
 export interface NotifyCollateralReceivedParams {
@@ -98,6 +99,7 @@ export class LoanNotificationsService {
       collateral_amount_sat:        params.collateral_amount_sat,
       duration_days:                params.duration_days,
       expires_at:                   params.expires_at,
+      payment_request:              params.payment_request,
     });
 
     await this._send(user.email, email, { event: 'loan_created', loan_id: params.loan_id });

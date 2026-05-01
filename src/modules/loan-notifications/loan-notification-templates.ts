@@ -37,6 +37,7 @@ export interface LoanCreatedParams {
   collateral_amount_sat:        bigint;
   duration_days:                number;
   expires_at:                   Date;
+  payment_request:              string;     // BOLT11 invoice — rendered inline so the customer can copy + paste into any Lightning wallet without opening the dashboard
 }
 
 export interface CollateralReceivedParams {
@@ -163,7 +164,8 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
       `  Estimated repayment: ${amount_repay} over ${term}\n` +
       `  Collateral needed:  ${sats}\n` +
       `  Term:               ${term}\n\n` +
-      `Pay the Lightning invoice in your dashboard before ${p.expires_at.toUTCString()}.\n` +
+      `Pay the Lightning invoice in your dashboard before ${p.expires_at.toUTCString()}, or copy the invoice below into any Lightning wallet:\n\n` +
+      `${p.payment_request}\n\n` +
       `Once collateral is received, ${amount_receive} will be disbursed to your default account immediately. ` +
       `Repayment is estimated at ${amount_repay} (interest 0.3%/day on outstanding principal + fixed daily custody — actuals accrue).${FOOTER_TEXT}`,
     html_body:
@@ -177,7 +179,12 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
         row('Collateral needed',   sats) +
         row('Term',                term) +
       `</table>` +
-      `<p>Pay the Lightning invoice in your dashboard before <b>${escapeHtml(p.expires_at.toUTCString())}</b>.</p>` +
+      `<p>Pay the Lightning invoice in your dashboard before <b>${escapeHtml(p.expires_at.toUTCString())}</b>, or copy the invoice below into any Lightning wallet:</p>` +
+      // Italic + monospace + word-break so even 400-char BOLT11 strings stay
+      // selectable on mobile clients without horizontal scroll. The whole
+      // string is one paragraph so a single tap-and-hold on iOS / long-press
+      // on Android selects it cleanly.
+      `<p style="font-style:italic;font-family:Menlo,Consolas,monospace;font-size:12px;word-break:break-all;background:#f5f5f5;padding:10px;border-radius:4px;color:#333">${escapeHtml(p.payment_request)}</p>` +
       `<p>Once collateral is received, <b>${amount_receive}</b> will be disbursed to your default account immediately. ` +
       `Repayment is estimated at <b>${amount_repay}</b> (interest 0.3%/day on outstanding principal + fixed daily custody — actuals accrue).</p>` +
       FOOTER_HTML,

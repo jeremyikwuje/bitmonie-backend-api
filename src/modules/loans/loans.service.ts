@@ -245,6 +245,7 @@ export class LoansService {
       collateral_amount_sat:        calc.collateral_amount_sat,
       duration_days:                dto.duration_days,
       expires_at:                   payment_request_record.expires_at,
+      payment_request:              bolt11,
     });
 
     return {
