@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import type Decimal from 'decimal.js';
+import Decimal from 'decimal.js';
 import { PrismaService } from '@/database/prisma.service';
 import { EMAIL_PROVIDER, type EmailProvider } from '@/modules/auth/email.provider.interface';
 import {
@@ -108,7 +108,12 @@ export class LoanNotificationsService {
       this._loadUser(params.user_id),
       this.prisma.loan.findUnique({
         where: { id: params.loan_id },
-        select: { principal_ngn: true, duration_days: true, due_at: true },
+        select: {
+          principal_ngn:       true,
+          origination_fee_ngn: true,
+          duration_days:       true,
+          due_at:              true,
+        },
       }),
     ]);
     if (!user || !loan) {
@@ -119,12 +124,22 @@ export class LoanNotificationsService {
       return;
     }
 
+    // Net amount that will actually hit the customer's bank — the headline
+    // figure in the email. Computing here (rather than carrying through the
+    // call chain) keeps the loan→notification boundary thin: the caller only
+    // needs to say "this loan's collateral landed", not re-do the math.
+    const principal_decimal   = new Decimal(loan.principal_ngn.toString());
+    const origination_decimal = new Decimal(loan.origination_fee_ngn.toString());
+    const net_decimal         = principal_decimal.minus(origination_decimal);
+
     const email = buildCollateralReceivedEmail({
-      first_name:    user.first_name,
-      loan_id:       params.loan_id,
-      principal_ngn: loan.principal_ngn.toString(),
-      duration_days: loan.duration_days,
-      due_at:        loan.due_at,
+      first_name:            user.first_name,
+      loan_id:               params.loan_id,
+      principal_ngn:         principal_decimal.toFixed(2),
+      origination_fee_ngn:   origination_decimal.toFixed(2),
+      amount_to_receive_ngn: net_decimal.toFixed(2),
+      duration_days:         loan.duration_days,
+      due_at:                loan.due_at,
     });
 
     await this._send(user.email, email, { event: 'collateral_received', loan_id: params.loan_id });

@@ -40,11 +40,13 @@ export interface LoanCreatedParams {
 }
 
 export interface CollateralReceivedParams {
-  first_name:    string | null;
-  loan_id:       string;
-  principal_ngn: string;             // pre-formatted, 2dp
-  duration_days: number;
-  due_at:        Date;
+  first_name:            string | null;
+  loan_id:               string;
+  principal_ngn:         string;     // pre-formatted, 2dp — gross loan amount
+  origination_fee_ngn:   string;     // pre-formatted, 2dp — netted from disbursement
+  amount_to_receive_ngn: string;     // pre-formatted, 2dp — what actually hits the bank
+  duration_days:         number;
+  due_at:                Date;
 }
 
 export interface LoanDisbursedParams {
@@ -183,26 +185,32 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
 // ── 2. Collateral received ───────────────────────────────────────────────────
 
 export function buildCollateralReceivedEmail(p: CollateralReceivedParams): NotificationEmail {
-  const sid = shortLoanId(p.loan_id);
-  const principal = NGN(p.principal_ngn);
+  const sid           = shortLoanId(p.loan_id);
+  const principal     = NGN(p.principal_ngn);
+  const origination   = NGN(p.origination_fee_ngn);
+  const net_amount    = NGN(p.amount_to_receive_ngn);
 
   return {
     subject: `Bitmonie loan ${sid} — collateral confirmed, disbursing now`,
     text_body:
       `${greet(p.first_name)},\n\n` +
-      `We've received your BTC collateral for loan ${sid}. ${principal} is being disbursed to your default account now.\n\n` +
-      `  Principal:      ${principal}\n` +
-      `  Term:           ${p.duration_days} day${p.duration_days === 1 ? '' : 's'}\n` +
-      `  Maturity date:  ${p.due_at.toDateString()}\n\n` +
+      `We've received your BTC collateral for loan ${sid}. ${net_amount} is being disbursed to your default account now (${principal} less ${origination} origination fee).\n\n` +
+      `  Loan amount:     ${principal}\n` +
+      `  Origination fee: −${origination}\n` +
+      `  You'll receive:  ${net_amount}\n` +
+      `  Term:            ${p.duration_days} day${p.duration_days === 1 ? '' : 's'}\n` +
+      `  Maturity date:   ${p.due_at.toDateString()}\n\n` +
       `Interest accrues daily at 0.3% on outstanding principal. Custody fees accrue at a fixed daily rate set at origination.\n` +
       `You can repay any time before maturity to save on fees.${FOOTER_TEXT}`,
     html_body:
       `<p>${greet(p.first_name)},</p>` +
-      `<p>We've received your BTC collateral for loan <code>${sid}</code>. <b>${principal}</b> is being disbursed to your default account now.</p>` +
+      `<p>We've received your BTC collateral for loan <code>${sid}</code>. <b>${net_amount}</b> is being disbursed to your default account now (${principal} less ${origination} origination fee).</p>` +
       `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
-        row('Principal',     principal) +
-        row('Term',          `${p.duration_days} day${p.duration_days === 1 ? '' : 's'}`) +
-        row('Maturity date', p.due_at.toDateString()) +
+        row('Loan amount',     principal) +
+        row('Origination fee', `−${origination}`) +
+        row("You'll receive",  net_amount) +
+        row('Term',            `${p.duration_days} day${p.duration_days === 1 ? '' : 's'}`) +
+        row('Maturity date',   p.due_at.toDateString()) +
       `</table>` +
       `<p>Interest accrues daily at 0.3% on outstanding principal. Custody fees accrue at a fixed daily rate set at origination. You can repay any time before maturity to save on fees.</p>` +
       FOOTER_HTML,
@@ -229,6 +237,8 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
       `  Bank:           ${p.bank_name}\n` +
       `  Account:        ${account_line}\n\n` +
       `Loan due: ${p.due_at.toDateString()}.\n\n` +
+      `Interest accrues daily at 0.3% on outstanding principal. Custody fees accrue at a fixed daily rate set at origination. ` +
+      `You can repay any time before maturity to save on fees.\n\n` +
       `When you're ready to repay (in part or in full):\n` +
       `${paymentBlock(p.repayment_account)}${FOOTER_TEXT}`,
     html_body:
@@ -242,6 +252,8 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
         row('Account',         account_line) +
       `</table>` +
       `<p>Loan due: <b>${escapeHtml(p.due_at.toDateString())}</b>.</p>` +
+      `<p>Interest accrues daily at 0.3% on outstanding principal. Custody fees accrue at a fixed daily rate set at origination. ` +
+      `You can repay any time before maturity to save on fees.</p>` +
       `<p>When you're ready to repay (in part or in full):</p>` +
       paymentBlockHtml(p.repayment_account) +
       FOOTER_HTML,
