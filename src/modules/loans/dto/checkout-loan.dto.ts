@@ -1,14 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   Equals,
   IsBoolean,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPositive,
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import Decimal from 'decimal.js';
@@ -44,7 +47,12 @@ export class CheckoutLoanDto {
 
   @ApiPropertyOptional({ description: 'Lightning address to receive collateral back after repayment' })
   @IsOptional()
+  // Trim before validation so a whitespace-only input becomes "" and gets
+  // rejected by IsNotEmpty rather than slipping past as a "non-empty string".
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(512)
   collateral_release_address?: string;
 
   get principal_decimal(): Decimal {
