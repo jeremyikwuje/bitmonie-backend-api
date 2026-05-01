@@ -189,12 +189,22 @@ export class LoanNotificationsService {
   }
 
   async notifyRepayment(params: NotifyRepaymentParams): Promise<void> {
-    const [user, va] = await Promise.all([
+    const [user, va, loan] = await Promise.all([
       this._loadUser(params.user_id),
       // Partial repayment emails embed the VA so customers know where to send
       // the next payment. The full-repayment template doesn't render it, so an
       // unprovisioned VA is only a hard skip on the partial path.
       params.is_fully_repaid ? Promise.resolve(null) : this._loadRepaymentAccount(params.user_id),
+      // Full-repayment email shows the SAT amount + Lightning address so the
+      // customer can verify before the release goes out. Partial doesn't read
+      // these — but loading them unconditionally is one cheap query and keeps
+      // the branching here, not at every caller.
+      params.is_fully_repaid
+        ? this.prisma.loan.findUnique({
+            where:  { id: params.loan_id },
+            select: { collateral_amount_sat: true, collateral_release_address: true },
+          })
+        : Promise.resolve(null),
     ]);
     if (!user) return;
 
@@ -206,20 +216,30 @@ export class LoanNotificationsService {
       return;
     }
 
+    if (params.is_fully_repaid && !loan) {
+      this.logger.warn(
+        { event: 'repayment_full', loan_id: params.loan_id, user_id: params.user_id },
+        'Notification skipped — full repayment receipt requires loan row',
+      );
+      return;
+    }
+
     const email = buildRepaymentEmail({
-      first_name:           user.first_name,
-      loan_id:              params.loan_id,
-      amount_paid_ngn:      params.amount_paid_ngn.toFixed(2),
-      applied_to_custody:   params.applied_to_custody.toFixed(2),
-      applied_to_interest:  params.applied_to_interest.toFixed(2),
-      applied_to_principal: params.applied_to_principal.toFixed(2),
-      overpay_ngn:          params.overpay_ngn.toFixed(2),
-      outstanding_ngn:      params.outstanding_ngn.toFixed(2),
-      is_fully_repaid:      params.is_fully_repaid,
+      first_name:                 user.first_name,
+      loan_id:                    params.loan_id,
+      amount_paid_ngn:            params.amount_paid_ngn.toFixed(2),
+      applied_to_custody:         params.applied_to_custody.toFixed(2),
+      applied_to_interest:        params.applied_to_interest.toFixed(2),
+      applied_to_principal:       params.applied_to_principal.toFixed(2),
+      overpay_ngn:                params.overpay_ngn.toFixed(2),
+      outstanding_ngn:            params.outstanding_ngn.toFixed(2),
+      is_fully_repaid:            params.is_fully_repaid,
       // va is only nullable on the full-repayment branch where the template
       // doesn't read it; cast through an empty placeholder so the type stays
       // strict without leaking nulls into the templates.
-      repayment_account:    va ?? EMPTY_VA,
+      repayment_account:          va ?? EMPTY_VA,
+      collateral_amount_sat:      loan?.collateral_amount_sat ?? BigInt(0),
+      collateral_release_address: loan?.collateral_release_address ?? null,
     });
 
     await this._send(user.email, email, {

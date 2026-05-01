@@ -63,16 +63,18 @@ export interface LoanDisbursedParams {
 }
 
 export interface RepaymentParams {
-  first_name:           string | null;
-  loan_id:              string;
-  amount_paid_ngn:      string;      // pre-formatted, 2dp
-  applied_to_custody:   string;
-  applied_to_interest:  string;
-  applied_to_principal: string;
-  overpay_ngn:          string;
-  outstanding_ngn:      string;      // 0.00 when fully repaid
-  is_fully_repaid:      boolean;
-  repayment_account:    RepaymentAccountSummary;   // shown only on partial
+  first_name:                 string | null;
+  loan_id:                    string;
+  amount_paid_ngn:            string;      // pre-formatted, 2dp
+  applied_to_custody:         string;
+  applied_to_interest:        string;
+  applied_to_principal:       string;
+  overpay_ngn:                string;
+  outstanding_ngn:            string;      // 0.00 when fully repaid
+  is_fully_repaid:            boolean;
+  repayment_account:          RepaymentAccountSummary;   // shown only on partial
+  collateral_amount_sat:      bigint;                    // shown only on full
+  collateral_release_address: string | null;             // shown only on full; nullable per §5.4a
 }
 
 export interface CollateralToppedUpParams {
@@ -288,6 +290,34 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
   }
 
   if (p.is_fully_repaid) {
+    const sats = formatSats(p.collateral_amount_sat);
+    const has_address = p.collateral_release_address !== null && p.collateral_release_address.length > 0;
+
+    // Two paths — the address may legitimately still be null at this point
+    // (CLAUDE.md §5.4a: a loan can sit at REPAID with collateral_released_at
+    // NULL while the customer enters their Lightning address). The release
+    // worker picks it up the moment the address is set.
+    const release_text = has_address
+      ? `We're now releasing your ${sats} collateral to your Lightning address:\n\n` +
+        `  ${p.collateral_release_address}\n\n` +
+        `Double-check the address — Lightning sends are irreversible, and a wrong address means lost funds. ` +
+        `If it's wrong, update it from your Bitmonie account before the release goes out. ` +
+        `You'll receive a separate confirmation once the release lands.`
+      : `Your ${sats} collateral is ready to be released. ` +
+        `Add your Lightning address from your Bitmonie account to start the release — ` +
+        `your collateral stays safe until you do. ` +
+        `Double-check the address before saving — Lightning sends are irreversible, and a wrong address means lost funds.`;
+
+    const release_html = has_address
+      ? `<p>We're now releasing your <b>${sats}</b> collateral to your Lightning address:</p>` +
+        `<p style="margin:12px 0"><span style="font-size:16px;font-weight:700;letter-spacing:0.3px;font-family:Menlo,Consolas,monospace;word-break:break-all">${escapeHtml(p.collateral_release_address!)}</span></p>` +
+        `<p style="color:#a00"><b>Double-check the address.</b> Lightning sends are irreversible, and a wrong address means lost funds. ` +
+        `If it's wrong, update it from your Bitmonie account before the release goes out.</p>` +
+        `<p>You'll receive a separate confirmation once the release lands.</p>`
+      : `<p>Your <b>${sats}</b> collateral is ready to be released. ` +
+        `Add your Lightning address from your Bitmonie account to start the release — your collateral stays safe until you do.</p>` +
+        `<p style="color:#a00"><b>Double-check the address before saving.</b> Lightning sends are irreversible, and a wrong address means lost funds.</p>`;
+
     return {
       subject: `Bitmonie loan ${sid} — REPAID. Releasing your collateral.`,
       text_body:
@@ -300,8 +330,7 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
         (parseFloat(p.overpay_ngn) > 0
           ? `You overpaid by ${NGN(p.overpay_ngn)}. Our team will reach out to arrange a refund.\n\n`
           : '') +
-        `We're now releasing your BTC collateral to the Lightning address you provided at checkout. ` +
-        `You'll receive a separate confirmation once the release lands.${FOOTER_TEXT}`,
+        `${release_text}${FOOTER_TEXT}`,
       html_body:
         `<p>${greet(p.first_name)},</p>` +
         `<p>Your Bitmonie loan <code>${sid}</code> is <b>fully repaid</b>.</p>` +
@@ -314,8 +343,7 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
         (parseFloat(p.overpay_ngn) > 0
           ? `<p>You overpaid by <b>${NGN(p.overpay_ngn)}</b>. Our team will reach out to arrange a refund.</p>`
           : '') +
-        `<p>We're now releasing your BTC collateral to the Lightning address you provided at checkout. ` +
-        `You'll receive a separate confirmation once the release lands.</p>` +
+        release_html +
         FOOTER_HTML,
     };
   }
