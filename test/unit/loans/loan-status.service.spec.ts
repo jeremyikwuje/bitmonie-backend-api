@@ -143,4 +143,77 @@ describe('LoanStatusService', () => {
       });
     }
   });
+
+  // ── self-transitions (CLAUDE.md §5.4) ─────────────────────────────────────────
+
+  describe('self-transitions', () => {
+    const allowed_self_transitions: Array<[LoanStatus, string]> = [
+      [LoanStatus.ACTIVE, 'REPAYMENT_PARTIAL_NGN'],
+      [LoanStatus.ACTIVE, 'COLLATERAL_TOPPED_UP'],
+      [LoanStatus.REPAID, 'COLLATERAL_RELEASED'],
+    ];
+
+    for (const [status, reason] of allowed_self_transitions) {
+      it(`allows ${status} → ${status} with reason_code=${reason}`, async () => {
+        const tx = make_tx();
+        await expect(
+          service.transition(tx as never, {
+            loan_id:      LOAN_ID,
+            user_id:      USER_ID,
+            from_status:  status,
+            to_status:    status,
+            triggered_by: StatusTrigger.SYSTEM,
+            reason_code:  reason,
+          }),
+        ).resolves.not.toThrow();
+      });
+
+      it(`writes a status_log row but does NOT update loan.status on ${status} → ${status} (${reason})`, async () => {
+        const tx = make_tx();
+        await service.transition(tx as never, {
+          loan_id:      LOAN_ID,
+          user_id:      USER_ID,
+          from_status:  status,
+          to_status:    status,
+          triggered_by: StatusTrigger.SYSTEM,
+          reason_code:  reason,
+        });
+        expect(tx.loan.update).not.toHaveBeenCalled();
+        expect(tx.loanStatusLog.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            from_status: status,
+            to_status:   status,
+            reason_code: reason,
+          }),
+        });
+      });
+    }
+
+    const rejected_self_transitions: Array<[LoanStatus, string]> = [
+      // Right status, wrong reason_code
+      [LoanStatus.ACTIVE, 'REPAYMENT_COMPLETED'],
+      [LoanStatus.REPAID, 'REPAYMENT_PARTIAL_NGN'],
+      // Status with no allowed self-transition reasons at all
+      [LoanStatus.PENDING_COLLATERAL, 'LOAN_CREATED'],
+      [LoanStatus.LIQUIDATED, 'COLLATERAL_RELEASED'],
+      [LoanStatus.EXPIRED, 'INVOICE_EXPIRED'],
+      [LoanStatus.CANCELLED, 'CUSTOMER_CANCELLED'],
+    ];
+
+    for (const [status, reason] of rejected_self_transitions) {
+      it(`rejects ${status} → ${status} with reason_code=${reason}`, async () => {
+        const tx = make_tx();
+        await expect(
+          service.transition(tx as never, {
+            loan_id:      LOAN_ID,
+            user_id:      USER_ID,
+            from_status:  status,
+            to_status:    status,
+            triggered_by: StatusTrigger.SYSTEM,
+            reason_code:  reason,
+          }),
+        ).rejects.toThrow(LoanInvalidTransitionException);
+      });
+    }
+  });
 });

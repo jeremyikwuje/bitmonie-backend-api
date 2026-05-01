@@ -16,6 +16,7 @@ import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
 import { PaymentRequestsService } from '@/modules/payment-requests/payment-requests.service';
 import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
 import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
+import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
 import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from '@/modules/loans/price-quote.provider.interface';
 import {
   COLLATERAL_PROVIDER,
@@ -25,6 +26,7 @@ import { PrismaService } from '@/database/prisma.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
 import {
   AddCollateralAlreadyPendingException,
+  CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
   InflowAlreadyMatchedException,
@@ -100,7 +102,9 @@ const DB_LOAN = {
   duration_days:            7,
   sat_ngn_rate_at_creation: new Decimal('0.97'),
   ltv_percent:              new Decimal('0.60'),
-  collateral_release_address: null,
+  collateral_release_address:   null,
+  collateral_released_at:       null,
+  collateral_release_reference: null,
   repayments:               [],
   status_logs:              [],
   due_at:                   new Date(Date.now() + 7 * 86400_000),
@@ -173,6 +177,7 @@ describe('LoansService', () => {
   let collateral_provider: MockProxy<CollateralProvider>;
   let user_repayment_accounts: MockProxy<UserRepaymentAccountsService>;
   let loan_notifications: MockProxy<LoanNotificationsService>;
+  let collateral_release: MockProxy<CollateralReleaseService>;
   let redis: { set: jest.Mock; get: jest.Mock; del: jest.Mock };
 
   const SAT_RATE     = new Decimal('0.97');
@@ -194,6 +199,8 @@ describe('LoansService', () => {
     collateral_provider = mock<CollateralProvider>();
     user_repayment_accounts = mock<UserRepaymentAccountsService>();
     loan_notifications  = mock<LoanNotificationsService>();
+    collateral_release  = mock<CollateralReleaseService>();
+    collateral_release.releaseForLoan.mockResolvedValue({ status: 'released', reference: 'stub' });
     redis               = { set: jest.fn().mockResolvedValue('OK'), get: jest.fn(), del: jest.fn() };
 
     user_repayment_accounts.ensureForUser.mockResolvedValue({
@@ -230,6 +237,7 @@ describe('LoansService', () => {
         { provide: REDIS_CLIENT,           useValue: redis },
         { provide: UserRepaymentAccountsService, useValue: user_repayment_accounts },
         { provide: LoanNotificationsService,     useValue: loan_notifications },
+        { provide: CollateralReleaseService,     useValue: collateral_release },
       ],
     }).compile();
 
@@ -495,6 +503,47 @@ describe('LoansService', () => {
         LoanNotFoundException,
       );
     });
+
+    it('refuses to change the address once collateral has been released', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                       LoanStatus.REPAID,
+        collateral_released_at:       new Date('2026-01-01T00:00:00Z'),
+        collateral_release_reference: 'blink:ln_address:old@addr:42:0',
+      } as never);
+
+      await expect(
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv'),
+      ).rejects.toThrow(CollateralAlreadyReleasedException);
+
+      expect(prisma.loan.update).not.toHaveBeenCalled();
+    });
+
+    it('clears the release-alert dedupe key when address is updated on a REPAID loan with NULL released_at', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                       LoanStatus.REPAID,
+        collateral_released_at:       null,
+        collateral_release_address:   'old@addr.sv',
+      } as never);
+
+      await service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv');
+
+      expect(redis.del).toHaveBeenCalledWith(
+        expect.stringContaining(`collateral_release:alerted:${LOAN_ID}`),
+      );
+    });
+
+    it('does NOT clear dedupe key when loan is not REPAID (no-op for ACTIVE / PENDING)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status: LoanStatus.ACTIVE,
+      } as never);
+
+      await service.setReleaseAddress(USER_ID, LOAN_ID, 'addr');
+
+      expect(redis.del).not.toHaveBeenCalled();
+    });
   });
 
   // ── activateLoan ──────────────────────────────────────────────────────────────
@@ -639,6 +688,36 @@ describe('LoansService', () => {
           reason_code: 'REPAYMENT_COMPLETED',
         }),
       );
+    });
+
+    it('triggers post-commit collateral release when full repayment closes the loan', async () => {
+      setupTx(makeActiveLoan());
+
+      await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('566000'),
+        match_method: 'CUSTOMER_CLAIM',
+      });
+
+      // Fire-and-forget — the service may resolve before the release call
+      // settles, so flush microtasks before asserting.
+      await Promise.resolve();
+      expect(collateral_release.releaseForLoan).toHaveBeenCalledWith(LOAN_ID);
+    });
+
+    it('does NOT trigger collateral release on a partial repayment', async () => {
+      setupTx(makeActiveLoan());
+
+      await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('100000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      await Promise.resolve();
+      expect(collateral_release.releaseForLoan).not.toHaveBeenCalled();
     });
 
     it('overpayment closes the loan and records overpay_ngn', async () => {

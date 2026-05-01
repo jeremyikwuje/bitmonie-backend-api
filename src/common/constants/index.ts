@@ -67,6 +67,13 @@ export const REDIS_KEYS = {
     `collateral_topup:pending:${receiving_address}`,
   ALERT_SENT: (loan_id: string) => `liquidation:alert_sent:${loan_id}`,
   REMINDER_SENT: (loan_id: string, slot: string) => `reminder_sent:${loan_id}:${slot}`,
+  // Held while a collateral-release attempt is in-flight (post-commit
+  // hand-off in creditInflow, the ops endpoint, and the safety-net worker
+  // all SETNX this so they can't race + double-send).
+  COLLATERAL_RELEASE_LOCK: (loan_id: string) => `collateral_release:lock:${loan_id}`,
+  // Set after the FIRST send-failure ops alert so the worker doesn't email
+  // ops every tick while the operator works the issue. 24h TTL.
+  COLLATERAL_RELEASE_ALERTED: (loan_id: string) => `collateral_release:alerted:${loan_id}`,
   WORKER_HEARTBEAT: (worker: string) => `worker:${worker}:last_run`,
   RATE_LIMIT_AUTH: (ip: string) => `rate_limit:auth:${ip}`,
   RATE_LIMIT_API: (user_id: string) => `rate_limit:api:${user_id}`,

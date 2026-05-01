@@ -5,10 +5,13 @@ import { OpsAuditService } from '@/modules/ops/auth/ops-audit.service';
 import { OPS_ACTION, OPS_TARGET_TYPE } from '@/common/constants/ops-actions';
 import { LoanReasonCodes, MIN_LIQUIDATION_RATE_FRACTION } from '@/common/constants';
 import {
+  CollateralReleaseNotEligibleException,
+  CollateralReleaseSendFailedException,
   LoanNotFoundException,
   LoanNotLiquidatedException,
   LiquidationNotBadRateException,
 } from '@/common/errors/bitmonie.errors';
+import type { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
 
 const LOAN_ID = '11111111-2222-3333-4444-555555555555';
 const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -67,7 +70,12 @@ function makeService(loan: LoanRow | null) {
     pipeline: () => { throw new Error('redis.pipeline() is not expected on this code path'); },
   } as unknown as import('ioredis').default;
 
-  const service = new OpsLoansService(prisma as never, ops_audit, redis);
+  const collateral_release = {
+    releaseForLoan: jest.fn().mockRejectedValue(
+      new Error('collateral_release.releaseForLoan() is not expected on this code path'),
+    ),
+  } as unknown as import('@/modules/loans/collateral-release.service').CollateralReleaseService;
+  const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, redis);
   return { service, prisma, tx, audit_write };
 }
 
@@ -238,7 +246,12 @@ describe('OpsLoansService.getReminders', () => {
 
     if (opts.now) jest.useFakeTimers().setSystemTime(opts.now);
 
-    const service = new OpsLoansService(prisma as never, ops_audit, redis);
+    const collateral_release = {
+    releaseForLoan: jest.fn().mockRejectedValue(
+      new Error('collateral_release.releaseForLoan() is not expected on this code path'),
+    ),
+  } as unknown as import('@/modules/loans/collateral-release.service').CollateralReleaseService;
+  const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, redis);
     return { service, prisma, pipeline };
   }
 
@@ -306,5 +319,126 @@ describe('OpsLoansService.getReminders', () => {
     const out = await service.getReminders(LOAN_ID);
     expect(out.worker_heartbeat?.healthy).toBe(false);
     expect(out.worker_heartbeat?.age_seconds).toBe(3 * 3600);
+  });
+});
+
+// ── releaseCollateral ──────────────────────────────────────────────────────
+
+describe('OpsLoansService.releaseCollateral', () => {
+  function makeReleaseService(opts: {
+    loan: { id: string; status: LoanStatus; collateral_release_address: string | null; collateral_released_at: Date | null; collateral_release_reference: string | null } | null;
+    release_result?: Awaited<ReturnType<CollateralReleaseService['releaseForLoan']>>;
+    release_throws?: Error;
+  }) {
+    const prisma = {
+      loan: { findUnique: jest.fn().mockResolvedValue(opts.loan) },
+      $transaction: jest.fn().mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ opsAuditLog: { create: jest.fn().mockResolvedValue({}) } }),
+      ),
+    };
+    const audit_write = jest.fn().mockResolvedValue(undefined);
+    const ops_audit = { write: audit_write } as unknown as OpsAuditService;
+
+    const release_mock = jest.fn();
+    if (opts.release_throws) release_mock.mockRejectedValue(opts.release_throws);
+    else if (opts.release_result) release_mock.mockResolvedValue(opts.release_result);
+    else release_mock.mockResolvedValue({ status: 'released', reference: 'ref-1' });
+
+    const collateral_release = {
+      releaseForLoan: release_mock,
+    } as unknown as CollateralReleaseService;
+
+    const redis = {
+      pipeline: () => { throw new Error('redis.pipeline() unexpected'); },
+    } as unknown as import('ioredis').default;
+    const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, redis);
+    return { service, audit_write, release_mock };
+  }
+
+  const RELEASE_LOAN_ID = '22222222-3333-4444-5555-666666666666';
+  function defaultLoan() {
+    return {
+      id:                           RELEASE_LOAN_ID,
+      status:                       LoanStatus.REPAID,
+      collateral_release_address:   'ada@blink.sv',
+      collateral_released_at:       null,
+      collateral_release_reference: null,
+    };
+  }
+
+  it('throws LoanNotFoundException when the loan does not exist', async () => {
+    const { service } = makeReleaseService({ loan: null });
+    await expect(service.releaseCollateral(RELEASE_LOAN_ID, CTX)).rejects.toBeInstanceOf(LoanNotFoundException);
+  });
+
+  it('writes ops_audit_logs row before invoking CollateralReleaseService', async () => {
+    const { service, audit_write, release_mock } = makeReleaseService({ loan: defaultLoan() });
+
+    await service.releaseCollateral(RELEASE_LOAN_ID, CTX);
+
+    expect(audit_write).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        ops_user_id: OPS_USER_ID,
+        action:      OPS_ACTION.LOAN_RELEASE_COLLATERAL,
+        target_type: OPS_TARGET_TYPE.LOAN,
+        target_id:   RELEASE_LOAN_ID,
+        request_id:  'req_abc',
+        ip_address:  '1.2.3.4',
+      }),
+    );
+    expect(release_mock).toHaveBeenCalledWith(RELEASE_LOAN_ID);
+    // audit invoked before release
+    expect(audit_write.mock.invocationCallOrder[0]).toBeLessThan(release_mock.mock.invocationCallOrder[0]!);
+  });
+
+  it('returns released + reference on the happy path', async () => {
+    const { service } = makeReleaseService({
+      loan: defaultLoan(),
+      release_result: { status: 'released', reference: 'blink:ln_address:ada@blink.sv:42:0' },
+    });
+
+    const result = await service.releaseCollateral(RELEASE_LOAN_ID, CTX);
+    expect(result).toEqual({ status: 'released', reference: 'blink:ln_address:ada@blink.sv:42:0' });
+  });
+
+  it('returns already_released when the service reports it was previously released', async () => {
+    const { service } = makeReleaseService({
+      loan: defaultLoan(),
+      release_result: { status: 'already_released', reference: 'old-ref' },
+    });
+
+    const result = await service.releaseCollateral(RELEASE_LOAN_ID, CTX);
+    expect(result).toEqual({ status: 'already_released', reference: 'old-ref' });
+  });
+
+  it('returns in_flight when another caller holds the lock', async () => {
+    const { service } = makeReleaseService({
+      loan: defaultLoan(),
+      release_result: { status: 'in_flight' },
+    });
+
+    const result = await service.releaseCollateral(RELEASE_LOAN_ID, CTX);
+    expect(result.status).toBe('in_flight');
+  });
+
+  it('translates not_eligible to CollateralReleaseNotEligibleException (409)', async () => {
+    const { service } = makeReleaseService({
+      loan: defaultLoan(),
+      release_result: { status: 'not_eligible', reason: 'no_release_address' },
+    });
+
+    await expect(service.releaseCollateral(RELEASE_LOAN_ID, CTX))
+      .rejects.toBeInstanceOf(CollateralReleaseNotEligibleException);
+  });
+
+  it('translates send_failed to CollateralReleaseSendFailedException (502)', async () => {
+    const { service } = makeReleaseService({
+      loan: defaultLoan(),
+      release_result: { status: 'send_failed', error: 'Insufficient route' },
+    });
+
+    await expect(service.releaseCollateral(RELEASE_LOAN_ID, CTX))
+      .rejects.toBeInstanceOf(CollateralReleaseSendFailedException);
   });
 });

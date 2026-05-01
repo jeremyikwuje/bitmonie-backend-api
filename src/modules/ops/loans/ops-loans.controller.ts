@@ -83,4 +83,29 @@ export class OpsLoansController {
     });
     return { message: 'Loan restored to ACTIVE.' };
   }
+
+  @Post(':loan_id/release-collateral')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Manually release collateral SAT for a REPAID loan',
+    description:
+      'Drives the same CollateralReleaseService the live post-commit hand-off and the safety-net worker use, so all three converge on identical state. The ops_audit_logs row is written FIRST in its own transaction (records intent regardless of send outcome). The release attempt runs after the audit commits — on success the loan row is stamped with collateral_released_at + collateral_release_reference and a REPAID→REPAID self-transition row lands in loan_status_logs. Refused unless the loan is REPAID, has a collateral_release_address set, and has not already been released. Concurrent attempts (worker + ops + post-commit) coordinate via a Redis SETNX lock, so a stuck "in_flight" status means another caller holds the lock — wait and recheck.',
+  })
+  @ApiParam({ name: 'loan_id', description: 'Loan UUID' })
+  @ApiResponse({ status: 200, description: 'Released, already-released, or in-flight' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 404, description: 'Loan not found' })
+  @ApiResponse({ status: 409, description: 'Loan not eligible for release (status, address, etc.)' })
+  @ApiResponse({ status: 502, description: 'Provider rejected the send — safe to retry after fixing the cause' })
+  async releaseCollateral(
+    @CurrentOpsUser() ops_user: AuthenticatedOpsUser,
+    @Param('loan_id', new ParseUUIDPipe()) loan_id: string,
+    @Req() req: Request,
+  ): Promise<{ status: string; reference: string | null }> {
+    return this.service.releaseCollateral(loan_id, {
+      ops_user_id: ops_user.id,
+      request_id:  readRequestId(req),
+      ip_address:  req.ip ?? null,
+    });
+  }
 }

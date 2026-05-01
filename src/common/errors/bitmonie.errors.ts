@@ -236,6 +236,43 @@ export class InflowAlreadyMatchedException extends BitmonieException {
   }
 }
 
+export class CollateralAlreadyReleasedException extends BitmonieException {
+  constructor(context: { released_at: string; reference?: string }) {
+    const details: BitmonieErrorDetail[] = [
+      { field: 'released_at', issue: context.released_at },
+    ];
+    if (context.reference) details.push({ field: 'reference', issue: context.reference });
+    super(
+      'COLLATERAL_ALREADY_RELEASED',
+      'Collateral has already been released for this loan — release address can no longer be changed.',
+      HttpStatus.CONFLICT,
+      details,
+    );
+  }
+}
+
+export class CollateralReleaseNotEligibleException extends BitmonieException {
+  constructor(reason: string) {
+    super(
+      'COLLATERAL_RELEASE_NOT_ELIGIBLE',
+      'Loan is not eligible for collateral release.',
+      HttpStatus.CONFLICT,
+      [{ field: 'reason', issue: reason }],
+    );
+  }
+}
+
+export class CollateralReleaseSendFailedException extends BitmonieException {
+  constructor(error: string) {
+    super(
+      'COLLATERAL_RELEASE_SEND_FAILED',
+      'Collateral release attempted but the provider rejected the send. Loan was not stamped — safe to retry after fixing the cause.',
+      HttpStatus.BAD_GATEWAY,
+      [{ field: 'error', issue: error }],
+    );
+  }
+}
+
 export class RepaymentAccountNotReadyException extends BitmonieException {
   constructor() {
     super(

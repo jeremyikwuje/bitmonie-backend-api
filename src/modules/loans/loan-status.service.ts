@@ -1,12 +1,27 @@
 import { Injectable } from '@nestjs/common';
 import { LoanStatus, StatusTrigger } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
+import { LoanReasonCodes } from '@/common/constants';
 import { LoanInvalidTransitionException } from '@/common/errors/bitmonie.errors';
 
-// Forward-only state machine: from → valid destinations
+// Forward-only state machine: from → valid destinations.
 const VALID_TRANSITIONS: Partial<Record<LoanStatus, LoanStatus[]>> = {
   [LoanStatus.PENDING_COLLATERAL]: [LoanStatus.ACTIVE, LoanStatus.EXPIRED, LoanStatus.CANCELLED],
   [LoanStatus.ACTIVE]:             [LoanStatus.REPAID, LoanStatus.LIQUIDATED],
+};
+
+// Self-transitions (from === to) are exceptions to forward-only — required
+// for state-changing events that don't move status (CLAUDE.md §5.4). Each
+// allowed self-transition lists the specific reason codes that authorize it.
+// Anything not in this map throws LoanInvalidTransitionException.
+const SELF_TRANSITION_REASONS: Partial<Record<LoanStatus, ReadonlySet<string>>> = {
+  [LoanStatus.ACTIVE]: new Set([
+    LoanReasonCodes.REPAYMENT_PARTIAL_NGN,
+    LoanReasonCodes.COLLATERAL_TOPPED_UP,
+  ]),
+  [LoanStatus.REPAID]: new Set([
+    LoanReasonCodes.COLLATERAL_RELEASED,
+  ]),
 };
 
 export interface TransitionParams {
@@ -29,11 +44,16 @@ export class LoanStatusService {
     const { loan_id, user_id, from_status, to_status } = params;
 
     if (from_status !== null) {
-      this._assertValidTransition(from_status, to_status);
-      await tx.loan.update({
-        where: { id: loan_id },
-        data: { status: to_status },
-      });
+      this._assertValidTransition(from_status, to_status, params.reason_code);
+      // Skip the loan.status UPDATE on a self-transition — status hasn't
+      // moved, only the side-effect (repayment / top-up / release) has.
+      // The status_log row below is still required (§5.4).
+      if (from_status !== to_status) {
+        await tx.loan.update({
+          where: { id: loan_id },
+          data: { status: to_status },
+        });
+      }
     }
 
     await tx.loanStatusLog.create({
@@ -51,7 +71,14 @@ export class LoanStatusService {
     });
   }
 
-  private _assertValidTransition(from: LoanStatus, to: LoanStatus): void {
+  private _assertValidTransition(from: LoanStatus, to: LoanStatus, reason_code: string): void {
+    if (from === to) {
+      const allowed_reasons = SELF_TRANSITION_REASONS[from];
+      if (!allowed_reasons || !allowed_reasons.has(reason_code)) {
+        throw new LoanInvalidTransitionException({ from_status: from, to_status: to });
+      }
+      return;
+    }
     const allowed = VALID_TRANSITIONS[from] ?? [];
     if (!allowed.includes(to)) {
       throw new LoanInvalidTransitionException({ from_status: from, to_status: to });

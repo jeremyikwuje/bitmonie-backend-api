@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   DisbursementAccountKind,
   DisbursementAccountStatus,
@@ -17,6 +17,7 @@ import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
 import { CalculatorService } from './calculator.service';
 import { AccrualService, type AccrualRepaymentInput } from './accrual.service';
 import { LoanStatusService } from './loan-status.service';
+import { CollateralReleaseService } from './collateral-release.service';
 import { PaymentRequestsService } from '@/modules/payment-requests/payment-requests.service';
 import {
   COLLATERAL_PROVIDER,
@@ -32,6 +33,7 @@ import {
 } from '@/common/constants';
 import {
   AddCollateralAlreadyPendingException,
+  CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
   InflowAlreadyMatchedException,
@@ -114,6 +116,8 @@ export interface RepaymentInstructionsResult {
 
 @Injectable()
 export class LoansService {
+  private readonly logger = new Logger(LoansService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly price_feed: PriceFeedService,
@@ -129,6 +133,7 @@ export class LoansService {
     private readonly redis: Redis,
     private readonly user_repayment_accounts: UserRepaymentAccountsService,
     private readonly notifications: LoanNotificationsService,
+    private readonly collateral_release: CollateralReleaseService,
   ) {}
 
   async checkoutLoan(user: User, dto: CheckoutLoanDto): Promise<CheckoutLoanResult> {
@@ -358,10 +363,38 @@ export class LoansService {
     const loan = await this.prisma.loan.findFirst({ where: { id: loan_id, user_id } });
     if (!loan) throw new LoanNotFoundException();
 
+    // Once collateral has been released, the address is permanently bound to
+    // that send — changing it would mislead the loan history. Refuse silently
+    // with a clear 409. Customer can still see what was sent in the timeline.
+    if (loan.collateral_released_at !== null) {
+      throw new CollateralAlreadyReleasedException({
+        released_at: loan.collateral_released_at.toISOString(),
+        reference:   loan.collateral_release_reference ?? undefined,
+      });
+    }
+
     await this.prisma.loan.update({
       where: { id: loan_id },
       data:  { collateral_release_address: address },
     });
+
+    // Clear any prior "release failed" alert dedupe so the worker retries
+    // immediately with the new address. The customer changing their address
+    // is the most common signal that whatever was wrong (typo, wrong wallet)
+    // is now fixed — no point making them wait the full 24h for the alert
+    // window to expire before the worker tries again. If the loan isn't
+    // REPAID yet, this is a no-op.
+    if (loan.status === LoanStatus.REPAID && loan.collateral_released_at === null) {
+      try {
+        await this.redis.del(REDIS_KEYS.COLLATERAL_RELEASE_ALERTED(loan_id));
+      } catch (err) {
+        // Best-effort — Redis blip shouldn't break a successful PATCH.
+        this.logger.warn(
+          { loan_id, error: err instanceof Error ? err.message : String(err) },
+          'setReleaseAddress: failed to clear release-alert dedupe key',
+        );
+      }
+    }
   }
 
   async activateLoan(loan_id: string, collateral_received_at: Date): Promise<void> {
@@ -602,6 +635,26 @@ export class LoansService {
         overpay_ngn:          receipt.overpay_ngn,
         outstanding_ngn:      receipt.outstanding_ngn,
         is_fully_repaid:      receipt.is_fully_repaid,
+      });
+    }
+
+    // Post-commit collateral release on REPAID. Fire-and-forget — the credit
+    // result is already returnable to the caller; the release is its own
+    // independently retryable concern. CollateralReleaseService handles the
+    // not-eligible / no-address / send-failed cases internally (the
+    // safety-net worker picks up anything that didn't land here). We
+    // intentionally do NOT await this in the request hot path; in practice
+    // the controller will return well before Blink's lnAddressPaymentSend
+    // round-trip completes.
+    if (receipt?.is_fully_repaid) {
+      void this.collateral_release.releaseForLoan(result.loan_id).catch((err) => {
+        this.logger.error(
+          {
+            loan_id: result.loan_id,
+            error:   err instanceof Error ? err.message : String(err),
+          },
+          'Post-commit collateral release threw — worker will retry on next tick',
+        );
       });
     }
 

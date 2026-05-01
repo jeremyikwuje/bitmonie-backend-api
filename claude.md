@@ -48,7 +48,7 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 | `disbursements` + `outflows` | Two-layer outbound payment system |
 | `webhooks` | Inbound provider events (collateral, disbursement, collection) |
 | `ops-alerts` | Internal ops-paging emails (unmatched inflows, credit failures); uses the same `EmailProvider` interface as auth OTP |
-| `workers` | Price feed, liquidation monitor, payment-request expiry, loan-maturity expiry, **loan-reminder** (T−7d / T−1d / T / daily through 7-day grace / final) |
+| `workers` | Price feed, liquidation monitor, payment-request expiry, loan-maturity expiry, **loan-reminder** (T−7d / T−1d / T / daily through 7-day grace / final), **outflow-reconciler** (stale PROCESSING outflows), **collateral-release** (REPAID loans with NULL `collateral_released_at` + address SET) |
 | `calculator` | Public bidirectional loan quote engine — projections only (actual fees accrue) — no auth |
 | `get-quote` | Large-loan enquiry form (> N10M) — human follow-up |
 
@@ -127,7 +127,11 @@ Provider name lives in `processing_provider`, `triggered_by_id`, etc. — as dat
 - All status changes inside a Prisma transaction.
 - Same transaction writes a row to `loan_status_logs`. No exceptions.
 - Forward-only between distinct statuses — no backward transitions, ever. Invalid → throw `LoanInvalidTransitionException`.
-- ACTIVE → ACTIVE self-transitions are permitted **only** for partial repayment (`REPAYMENT_PARTIAL_NGN`) and collateral top-up (`COLLATERAL_TOPPED_UP`). Same `loan_status_logs` rule applies — no log row, it didn't happen.
+- Self-transitions are permitted **only** for these (status, reason_code) pairs (enforced by `LoanStatusService._assertValidTransition`):
+  - `ACTIVE → ACTIVE` with `REPAYMENT_PARTIAL_NGN` (partial repayment)
+  - `ACTIVE → ACTIVE` with `COLLATERAL_TOPPED_UP` (collateral top-up)
+  - `REPAID → REPAID` with `COLLATERAL_RELEASED` (collateral SAT sent back to customer)
+  Anything else → `LoanInvalidTransitionException`. Same `loan_status_logs` rule applies — no log row, it didn't happen. On a self-transition the `loans.status` column is NOT updated (it hasn't moved); only the log row records the side-effect.
 - A loan status change (or self-transition log) without a corresponding `loan_status_logs` row is a bug.
 
 ### 5.4a Outstanding & liquidation math (accrual-based)
@@ -141,6 +145,13 @@ Provider name lives in `processing_provider`, `triggered_by_id`, etc. — as dat
 - Liquidation: `collateral_ngn < 1.10 × outstanding` (LIQUIDATION_THRESHOLD against TOTAL outstanding, not principal alone). Recomputed on every monitor tick.
 - Repayment waterfall: **custody → interest → principal → overpay**. Apply in this order so principal-based interest accrual the next day uses the correctly-reduced principal.
 - Collateral release is **all-or-nothing on REPAID**. Partial repayments never release collateral — releasing partial collateral creates an attack surface (repay N1 of N1M, demand N0.99 back).
+- **Release pipeline (CollateralReleaseService).** Three callers converge on the same service method, coordinated by a per-loan Redis SETNX lock so a customer never gets double-paid:
+  1. **Post-commit fire-and-forget** in `LoansService.creditInflow`: when a repayment closes a loan to REPAID, `releaseForLoan(loan_id)` is called outside the credit transaction. Does not block the credit response.
+  2. **Ops endpoint** `POST /v1/ops/loans/:id/release-collateral`: ops trigger when the auto path is wedged (provider outage, etc.). Audit row written first, release attempt runs after the audit commits — same pattern as the disbursement retry endpoint.
+  3. **`collateral-release` worker** (5-min default tick): scans loans where `status=REPAID AND collateral_released_at IS NULL AND collateral_release_address IS NOT NULL`. Safety net for transient failures and for cases where the customer set their address only after REPAID.
+- **Address is optional indefinitely.** A loan can sit at REPAID with `collateral_released_at IS NULL` waiting for the customer to set/correct their address via `PATCH /v1/loans/:id/release-address`. The worker picks it up the moment the address is set. The setter clears the per-loan release-alert dedupe key on update so the next worker tick alerts ops fresh if the new address also fails.
+- **Address is immutable after release.** Once `collateral_released_at` is set, `setReleaseAddress` rejects with `CollateralAlreadyReleasedException` (409). The address bound to the actual send is now part of the loan history.
+- **Send failure semantics.** Standard failure (provider rejected the send): worker keeps retrying; ops alerted once per loan per 24h via Redis dedupe. Critical failure (provider sent successfully but DB stamp failed): page ops every time without dedupe — real money has moved without the loan reflecting it; manual reconciliation required before any retry.
 
 ### 5.5 Webhook signature verification
 

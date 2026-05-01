@@ -12,10 +12,13 @@ import {
   REDIS_KEYS,
 } from '@/common/constants';
 import {
+  CollateralReleaseNotEligibleException,
+  CollateralReleaseSendFailedException,
   LoanNotFoundException,
   LoanNotLiquidatedException,
   LiquidationNotBadRateException,
 } from '@/common/errors/bitmonie.errors';
+import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
 import {
   REMINDER_SLOTS,
   determineCurrentSlot,
@@ -73,6 +76,7 @@ export class OpsLoansService {
   constructor(
     private readonly prisma:    PrismaService,
     private readonly ops_audit: OpsAuditService,
+    private readonly collateral_release: CollateralReleaseService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
@@ -213,6 +217,65 @@ export class OpsLoansService {
         ip_address:  ctx.ip_address,
       });
     });
+  }
+
+  // Manual collateral release. Used when the auto path (post-commit fire-
+  // and-forget in creditInflow) is wedged — e.g. provider outage at the
+  // moment the loan was marked REPAID, or the customer reports their SAT
+  // never arrived. Drives the same CollateralReleaseService the worker and
+  // the post-commit hand-off use, so all three converge on identical state.
+  //
+  // Audit-then-state pattern (mirrors retry/cancel for disbursements): the
+  // ops_audit row records that ops triggered a release, written in its own
+  // tx so the intent is captured regardless of whether the send attempt
+  // ultimately succeeds. The release itself runs after the audit commits.
+  async releaseCollateral(
+    loan_id: string,
+    ctx:     OpsAuditContext,
+  ): Promise<{ status: string; reference: string | null; error?: string }> {
+    const loan = await this.prisma.loan.findUnique({
+      where:  { id: loan_id },
+      select: {
+        id:                           true,
+        status:                       true,
+        collateral_release_address:   true,
+        collateral_released_at:       true,
+        collateral_release_reference: true,
+      },
+    });
+    if (!loan) throw new LoanNotFoundException();
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.ops_audit.write(tx, {
+        ops_user_id: ctx.ops_user_id,
+        action:      OPS_ACTION.LOAN_RELEASE_COLLATERAL,
+        target_type: OPS_TARGET_TYPE.LOAN,
+        target_id:   loan.id,
+        details: {
+          previous_status:                       loan.status,
+          collateral_release_address:            loan.collateral_release_address,
+          previous_collateral_released_at:       loan.collateral_released_at?.toISOString() ?? null,
+          previous_collateral_release_reference: loan.collateral_release_reference,
+        },
+        request_id:  ctx.request_id,
+        ip_address:  ctx.ip_address,
+      });
+    });
+
+    const result = await this.collateral_release.releaseForLoan(loan.id);
+
+    switch (result.status) {
+      case 'released':
+        return { status: 'released', reference: result.reference };
+      case 'already_released':
+        return { status: 'already_released', reference: result.reference };
+      case 'in_flight':
+        return { status: 'in_flight', reference: null };
+      case 'not_eligible':
+        throw new CollateralReleaseNotEligibleException(result.reason);
+      case 'send_failed':
+        throw new CollateralReleaseSendFailedException(result.error);
+    }
   }
 }
 

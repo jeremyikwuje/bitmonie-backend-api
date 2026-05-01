@@ -60,6 +60,24 @@ export interface DisbursementOnHoldDigestRow {
   failure_reason:  string | null;
 }
 
+// Fired by CollateralReleaseService when a SAT release attempt fails. Two
+// severities to disambiguate:
+//   standard  — provider rejected the send (bad address, route failure, etc.)
+//               worker will keep retrying; rate-limited via Redis to one
+//               email per loan per 24h while the issue persists.
+//   critical  — provider accepted the send BUT the DB stamp failed. Real
+//               money has moved without the loan reflecting it, so this
+//               page is NEVER deduped — every occurrence pages ops.
+export interface CollateralReleaseFailedParams {
+  loan_id:             string;
+  user_id:             string;
+  amount_sat?:         string;
+  release_address:     string;
+  failure_reason:      string;
+  provider_reference?: string;
+  alert_severity:      'standard' | 'critical';
+}
+
 @Injectable()
 export class OpsAlertsService {
   private readonly logger = new Logger(OpsAlertsService.name);
@@ -152,6 +170,70 @@ export class OpsAlertsService {
         'Failed to send disbursement on-hold digest email',
       );
     }
+  }
+
+  // Collateral release failed — either provider rejected the send (standard)
+  // or provider sent but DB stamp failed (critical). Caller (CollateralReleaseService)
+  // handles per-loan dedupe via Redis for the standard case; critical bypasses
+  // dedupe because real funds may have moved without the loan reflecting it.
+  async alertCollateralReleaseFailed(params: CollateralReleaseFailedParams): Promise<void> {
+    const recipient = this.config.get<AppConfig>('app')?.internal_alert_email;
+    if (!recipient) {
+      this.logger.warn(
+        { loan_id: params.loan_id, severity: params.alert_severity },
+        'Collateral release failed but INTERNAL_ALERT_EMAIL is unset — alert skipped',
+      );
+      return;
+    }
+
+    const tag = params.alert_severity === 'critical' ? 'CRITICAL' : 'release failed';
+    const subject = `[Bitmonie ops] Collateral ${tag} — loan ${params.loan_id}`;
+    const text_body = this._buildCollateralReleaseFailedTextBody(params);
+    const html_body = this._buildCollateralReleaseFailedHtmlBody(params);
+
+    try {
+      await this.email.sendTransactional({ to: recipient, subject, text_body, html_body });
+    } catch (err) {
+      this.logger.error(
+        { loan_id: params.loan_id, error: err instanceof Error ? err.message : String(err) },
+        'Failed to send collateral-release-failed ops alert email',
+      );
+    }
+  }
+
+  private _buildCollateralReleaseFailedTextBody(p: CollateralReleaseFailedParams): string {
+    const lines = [
+      p.alert_severity === 'critical'
+        ? 'CRITICAL: SAT was sent to the customer but the loan row was NOT stamped — manual reconciliation required before any retry.'
+        : 'Collateral release attempt failed. The worker will keep retrying; rate-limited to one email per loan per 24h.',
+      '',
+      `Loan ID:         ${p.loan_id}`,
+      `User ID:         ${p.user_id}`,
+      `Release address: ${p.release_address}`,
+    ];
+    if (p.amount_sat)         lines.push(`Amount (SAT):    ${p.amount_sat}`);
+    if (p.provider_reference) lines.push(`Provider ref:    ${p.provider_reference}`);
+    lines.push(`Failure reason:  ${p.failure_reason}`);
+    return lines.join('\n');
+  }
+
+  private _buildCollateralReleaseFailedHtmlBody(p: CollateralReleaseFailedParams): string {
+    const row = (label: string, value: string | null | undefined) =>
+      `<tr><td style="padding:4px 12px 4px 0;color:#666"><b>${label}</b></td><td style="padding:4px 0">${escapeHtml(value ?? '')}</td></tr>`;
+    const headline = p.alert_severity === 'critical'
+      ? '<p style="color:#b00;font-weight:bold">CRITICAL: SAT was sent to the customer but the loan row was NOT stamped — manual reconciliation required before any retry.</p>'
+      : '<p>Collateral release attempt failed. The worker will keep retrying; rate-limited to one email per loan per 24h.</p>';
+    return `
+      ${headline}
+      <table style="font-family:system-ui,sans-serif;font-size:14px">
+        ${row('Loan ID',         p.loan_id)}
+        ${row('User ID',         p.user_id)}
+        ${row('Release address', p.release_address)}
+        ${p.amount_sat         ? row('Amount (SAT)',    p.amount_sat) : ''}
+        ${p.provider_reference ? row('Provider ref',    p.provider_reference) : ''}
+        ${row('Failure reason',  p.failure_reason)}
+      </table>
+    `.trim();
   }
 
   private _buildTextBody(p: UnmatchedInflowAlertParams): string {

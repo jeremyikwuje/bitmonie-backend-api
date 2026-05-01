@@ -11,6 +11,7 @@ export const OPS_ACTION = {
   DISBURSEMENT_ABANDON_ATTEMPT: 'disbursement.abandon_attempt',
   DISBURSEMENT_RECREATE:        'disbursement.recreate',
   LOAN_RESTORE_BAD_LIQUIDATION: 'loan.restore_bad_liquidation',
+  LOAN_RELEASE_COLLATERAL:      'loan.release_collateral',
 } as const;
 
 export type OpsAction = (typeof OPS_ACTION)[keyof typeof OPS_ACTION];

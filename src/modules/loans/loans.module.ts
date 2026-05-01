@@ -10,11 +10,13 @@ import { BlinkModule } from '@/providers/blink/blink.module';
 import { BlinkProvider } from '@/providers/blink/blink.provider';
 import type { ProvidersConfig } from '@/config/providers.config';
 import { COLLATERAL_PROVIDER } from '@/modules/payment-requests/collateral.provider.interface';
+import { OpsAlertsModule } from '@/modules/ops-alerts/ops-alerts.module';
 import { LoansController } from './loans.controller';
 import { LoansService } from './loans.service';
 import { CalculatorService } from './calculator.service';
 import { AccrualService } from './accrual.service';
 import { LoanStatusService } from './loan-status.service';
+import { CollateralReleaseService } from './collateral-release.service';
 import { PRICE_QUOTE_PROVIDER } from './price-quote.provider.interface';
 
 // Both factories pick the active collateral provider per config. They resolve to
@@ -36,6 +38,7 @@ function pickCollateralProvider(config: ConfigService, blink: BlinkProvider) {
     PaymentRequestsModule,
     UserRepaymentAccountsModule,
     LoanNotificationsModule,
+    OpsAlertsModule,
     BlinkModule,
     ConfigModule,
     RedisModule,
@@ -47,6 +50,7 @@ function pickCollateralProvider(config: ConfigService, blink: BlinkProvider) {
     CalculatorService,
     AccrualService,
     LoanStatusService,
+    CollateralReleaseService,
     {
       provide: PRICE_QUOTE_PROVIDER,
       inject: [ConfigService, BlinkProvider],
@@ -58,6 +62,6 @@ function pickCollateralProvider(config: ConfigService, blink: BlinkProvider) {
       useFactory: pickCollateralProvider,
     },
   ],
-  exports: [LoansService, LoanStatusService, AccrualService],
+  exports: [LoansService, LoanStatusService, AccrualService, CollateralReleaseService],
 })
 export class LoansModule {}
