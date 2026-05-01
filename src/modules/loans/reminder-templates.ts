@@ -84,7 +84,10 @@ function paymentBlock(p: ReminderTemplateParams): string {
 }
 
 function paymentBlockHtml(p: ReminderTemplateParams): string {
-  return `<p style="margin:12px 0">Pay to:<br><b>${escapeHtml(p.bank_name)}</b><br><b>${escapeHtml(p.virtual_account_name)}</b><br><code style="font-size:16px">${escapeHtml(p.virtual_account_no)}</code></p>`;
+  // See loan-notification-templates.ts paymentBlockHtml — Gmail iOS strips
+  // font-size on <code>, so use an explicitly-styled span for the account
+  // number instead.
+  return `<p style="margin:12px 0">Pay to:<br><b>${escapeHtml(p.bank_name)}</b><br><b>${escapeHtml(p.virtual_account_name)}</b><br><span style="font-size:20px;font-weight:700;letter-spacing:0.5px;font-family:Menlo,Consolas,monospace">${escapeHtml(p.virtual_account_no)}</span></p>`;
 }
 
 const FOOTER_TEXT = '\n\n— Bitmonie';

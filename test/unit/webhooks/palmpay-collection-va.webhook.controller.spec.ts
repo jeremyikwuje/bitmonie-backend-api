@@ -271,8 +271,9 @@ describe('PalmpayCollectionVaWebhookController', () => {
     expect(provider.getCollectionOrderStatus).not.toHaveBeenCalled(); // gated before re-query
   });
 
-  it('writes unmatched inflow with reason "below_floor" when amount is below N10,000', async () => {
+  it('writes unmatched inflow with reason "below_floor" when amount is below N10,000 and does not close any loan', async () => {
     prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
+    loans.amountClosesAnyActiveLoan.mockResolvedValue(false);
 
     // 500,000 cents = N5,000 — below the N10,000 floor.
     await request(app.getHttpServer())
@@ -289,6 +290,28 @@ describe('PalmpayCollectionVaWebhookController', () => {
       }),
     );
     expect(loans.creditInflow).not.toHaveBeenCalled();
+  });
+
+  it('bypasses the floor and auto-credits when a sub-N10,000 amount closes an ACTIVE loan', async () => {
+    prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
+    prisma.loan.findMany.mockResolvedValue([ACTIVE_LOAN] as never);
+    prisma.inflow.upsert.mockResolvedValue({ id: 'inflow-uuid-001', is_matched: false } as never);
+    // Customer is paying off a loan whose outstanding has accrued down to N8,390.
+    loans.amountClosesAnyActiveLoan.mockResolvedValue(true);
+    provider.getCollectionOrderStatus.mockResolvedValue({ ...REQUERY_OK, amount_kobo: 839_000 });
+
+    await request(app.getHttpServer())
+      .post('/webhooks/palmpay/collection/va')
+      .send({ ...COLLECTION_NOTIFICATION, orderAmount: 839_000 })
+      .expect(200);
+
+    expect(loans.amountClosesAnyActiveLoan).toHaveBeenCalledWith(USER_ID, expect.anything());
+    expect(loans.creditInflow).toHaveBeenCalledWith(
+      expect.objectContaining({ loan_id: LOAN_ID, match_method: 'AUTO_AMOUNT' }),
+    );
+    // Did NOT persist as unmatched (no below_floor row).
+    const upsert_calls = prisma.inflow.upsert.mock.calls as unknown as Array<[{ create: { is_matched: boolean; provider_response?: Record<string, unknown> } }]>;
+    expect(upsert_calls.every((c) => !('bitmonie_unmatched_reason' in (c[0].create.provider_response ?? {})))).toBe(true);
   });
 
   it('writes unmatched inflow with reason "no_active_loans" when user has no ACTIVE loans', async () => {

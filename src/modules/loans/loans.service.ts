@@ -967,6 +967,41 @@ export class LoansService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // amountClosesAnyActiveLoan
+  //
+  // Floor-bypass check for the PalmPay collection webhook. When the inflow
+  // amount sits below MIN_PARTIAL_REPAYMENT_NGN, the auto-credit path would
+  // normally park the inflow as `below_floor`. That's correct for stray
+  // small transfers — but wrong when the customer is paying off a loan
+  // whose outstanding has accrued down below the floor (e.g. principal
+  // ₦8,390 left on a loan that started at ₦10k+). For that case we want
+  // the credit to go through even though the amount is < ₦10,000.
+  //
+  // Returns true when the amount covers (or sits within tolerance below)
+  // the total outstanding of any one ACTIVE loan owned by the user — i.e.
+  // this transfer plausibly closes a loan rather than being noise.
+  // ─────────────────────────────────────────────────────────────────────────
+  async amountClosesAnyActiveLoan(user_id: string, amount_ngn: Decimal): Promise<boolean> {
+    const active_loans = await this.prisma.loan.findMany({
+      where:   { user_id, status: LoanStatus.ACTIVE },
+      include: { repayments: { orderBy: { created_at: 'asc' } } },
+    });
+    if (active_loans.length === 0) return false;
+
+    const now = new Date();
+    for (const loan of active_loans) {
+      const outstanding = this.accrual.compute({
+        loan,
+        repayments: loan.repayments.map(this._toAccrualRepayment),
+        as_of:      now,
+      });
+      const threshold = outstanding.total_outstanding_ngn.minus(INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN);
+      if (amount_ngn.gte(threshold)) return true;
+    }
+    return false;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // listUnmatchedInflowsForUser
   //
   // Backs GET /v1/inflows/unmatched — the customer's "stack of cash rolls"

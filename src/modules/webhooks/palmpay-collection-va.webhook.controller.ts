@@ -152,7 +152,10 @@ export class PalmpayCollectionVaWebhookController {
 
   // v1.1 matching flow (see docs/repayment-matching-redesign.md §5.1):
   //   1. Resolve user from virtualAccountNo via UserRepaymentAccount.
-  //   2. Floor check: amount < MIN_PARTIAL_REPAYMENT_NGN → unmatched, alert ops.
+  //   2. Floor check: amount < MIN_PARTIAL_REPAYMENT_NGN → unmatched, alert ops,
+  //      UNLESS the amount closes (within tolerance) an ACTIVE loan owned by
+  //      this user — that's a payoff for a loan whose outstanding accrued
+  //      down below ₦10,000, and we want it to credit, not park.
   //   3. Find user's ACTIVE loans.
   //        Zero  → unmatched, alert ops.
   //        Multi → unmatched, claim path (POST /v1/loans/:id/claim-inflow).
@@ -202,9 +205,21 @@ export class PalmpayCollectionVaWebhookController {
     const user_id = repayment_account.user_id;
 
     // 2. Floor check.
+    //    Bypassed when the amount plausibly closes one of the user's ACTIVE
+    //    loans (covers outstanding within tolerance). The floor exists to
+    //    avoid auto-applying tiny accidental transfers; a payoff is the
+    //    opposite of accidental, so it shouldn't be parked as unmatched
+    //    just because outstanding accrued down below ₦10,000.
     if (amount_ngn.lt(MIN_PARTIAL_REPAYMENT_NGN)) {
-      await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'below_floor');
-      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'below_floor', external_reference: ext_ref };
+      const closes_a_loan = await this.loans.amountClosesAnyActiveLoan(user_id, amount_ngn);
+      if (!closes_a_loan) {
+        await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'below_floor');
+        return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'below_floor', external_reference: ext_ref };
+      }
+      this.logger.log(
+        { user_id, order_no: payload.orderNo, amount_ngn: amount_ngn.toFixed(2) },
+        'PalmPay collection: floor bypassed — amount closes an ACTIVE loan',
+      );
     }
 
     // 3. Find ACTIVE loans for this user.

@@ -13,6 +13,8 @@
 //   7. Collateral released    — SAT sent back to customer (REPAID follow-up)
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { MIN_PARTIAL_REPAYMENT_NGN } from '@/common/constants';
+
 export interface NotificationEmail {
   subject:   string;
   text_body: string;
@@ -117,7 +119,12 @@ function paymentBlock(va: RepaymentAccountSummary): string {
 }
 
 function paymentBlockHtml(va: RepaymentAccountSummary): string {
-  return `<p style="margin:12px 0">Pay to:<br><b>${escapeHtml(va.bank_name)}</b><br><b>${escapeHtml(va.virtual_account_name)}</b><br><code style="font-size:16px">${escapeHtml(va.virtual_account_no)}</code></p>`;
+  // Account number rendered as a styled span (not <code>) — Gmail iOS and a
+  // few other mobile clients ignore inline font-size on <code> and fall back
+  // to a small monospace default, which made the digits hard to read on
+  // phones. Explicit size + weight + monospace stack survives the common
+  // email-client style strippers and stays legible.
+  return `<p style="margin:12px 0">Pay to:<br><b>${escapeHtml(va.bank_name)}</b><br><b>${escapeHtml(va.virtual_account_name)}</b><br><span style="font-size:20px;font-weight:700;letter-spacing:0.5px;font-family:Menlo,Consolas,monospace">${escapeHtml(va.virtual_account_no)}</span></p>`;
 }
 
 function escapeHtml(s: string): string {
@@ -301,7 +308,29 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
     };
   }
 
-  // Partial — loan still active, show next-payment instructions
+  // Partial — loan still active, show next-payment instructions.
+  //
+  // When outstanding has accrued down below the ₦10,000 partial-repayment
+  // floor, the standard "any amount ≥ ₦10,000" guidance becomes wrong: the
+  // customer either has to overpay or send the exact outstanding (which the
+  // collection webhook now bypasses the floor for, see palmpay-collection-va).
+  // Branch the copy so the customer is told to send the exact outstanding
+  // to close the loan in full.
+  const outstanding_below_floor =
+    parseFloat(p.outstanding_ngn) < MIN_PARTIAL_REPAYMENT_NGN.toNumber();
+
+  const next_payment_text = outstanding_below_floor
+    ? `Pay exactly ${NGN(p.outstanding_ngn)} to close this loan in full. ` +
+      `Interest and custody continue to accrue daily until the loan closes.`
+    : `Your loan is still ACTIVE. Interest and custody continue to accrue daily on the remaining principal — ` +
+      `repay any amount of at least ₦10,000 to bring the balance down further.`;
+
+  const next_payment_html = outstanding_below_floor
+    ? `<p>Pay exactly <b>${NGN(p.outstanding_ngn)}</b> to close this loan in full. ` +
+      `Interest and custody continue to accrue daily until the loan closes.</p>`
+    : `<p>Your loan is still <b>ACTIVE</b>. Interest and custody continue to accrue daily on the remaining principal — ` +
+      `repay any amount of at least ₦10,000 to bring the balance down further.</p>`;
+
   return {
     subject: `Bitmonie loan ${sid} — ${paid} received (partial repayment)`,
     text_body:
@@ -310,8 +339,7 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
       `How we applied it:\n` +
       breakdown_lines.join('\n') + '\n\n' +
       `Outstanding balance:  ${NGN(p.outstanding_ngn)}\n\n` +
-      `Your loan is still ACTIVE. Interest and custody continue to accrue daily on the remaining principal — ` +
-      `repay any amount of at least ₦10,000 to bring the balance down further.\n\n` +
+      `${next_payment_text}\n\n` +
       `${paymentBlock(p.repayment_account)}${FOOTER_TEXT}`,
     html_body:
       `<p>${greet(p.first_name)},</p>` +
@@ -321,8 +349,7 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
         breakdown_rows.join('') +
         row('Outstanding balance', NGN(p.outstanding_ngn)) +
       `</table>` +
-      `<p>Your loan is still <b>ACTIVE</b>. Interest and custody continue to accrue daily on the remaining principal — ` +
-      `repay any amount of at least ₦10,000 to bring the balance down further.</p>` +
+      next_payment_html +
       paymentBlockHtml(p.repayment_account) +
       FOOTER_HTML,
   };
