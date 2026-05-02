@@ -4,6 +4,8 @@
 // See docs/repayment-matching-redesign.md §8.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { MIN_PARTIAL_REPAYMENT_NGN } from '@/common/constants';
+
 export type ReminderSlot =
   | 't_minus_7d'
   | 't_minus_1d'
@@ -99,6 +101,14 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
   const sid = shortLoanId(p.loan_id);
   const greeting = greet(p.first_name);
   const owed = NGN(p.outstanding_ngn);
+  // When outstanding has accrued/repaid down below the partial-repayment
+  // floor, the standard "any amount ≥ ₦10,000" guidance is wrong: the
+  // customer can no longer make a *partial* — they can only close the loan.
+  // The collection webhook bypasses the floor for closing payments
+  // (see palmpay-collection-va.webhook.controller), so the customer should
+  // be told to pay the exact outstanding to clear the loan.
+  const outstanding_below_floor =
+    parseFloat(p.outstanding_ngn) < MIN_PARTIAL_REPAYMENT_NGN.toNumber();
 
   switch (slot) {
     case 't_minus_7d':
@@ -129,26 +139,34 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
           `${paymentBlockHtml(p)}${FOOTER_HTML}`,
       };
 
-    case 't_maturity':
+    case 't_maturity': {
+      const options_text = outstanding_below_floor
+        ? `Pay ${owed} today to close this loan in full, or add more BTC collateral to defend it.`
+        : `If you can't repay in full today, you can:\n` +
+          `  - Make a partial repayment of at least ₦10,000\n` +
+          `  - Add more BTC collateral to defend your loan`;
+      const options_html = outstanding_below_floor
+        ? `<p>Pay <b>${owed}</b> today to close this loan in full, or add more BTC collateral to defend it.</p>`
+        : `<p>If you can't repay in full today, you can:</p>` +
+          `<ul><li>Make a partial repayment of at least ₦10,000</li><li>Add more BTC collateral to defend your loan</li></ul>`;
+
       return {
         subject: `Your Bitmonie loan ${sid} is due TODAY`,
         text_body:
           `${greeting},\n\nYour Bitmonie loan ${sid} is due TODAY.\n` +
           `You owe ${owed}.\n\n` +
-          `If you can't repay in full today, you can:\n` +
-          `  - Make a partial repayment of at least ₦10,000\n` +
-          `  - Add more BTC collateral to defend your loan\n\n` +
+          `${options_text}\n\n` +
           `If your loan is not fully repaid within 7 days, your collateral will be liquidated.\n\n` +
           `${paymentBlock(p)}${FOOTER_TEXT}`,
         html_body:
           `<p>${greeting},</p>` +
           `<p>Your Bitmonie loan <code>${sid}</code> is due <b>TODAY</b>.</p>` +
           `<p>You owe <b>${owed}</b>.</p>` +
-          `<p>If you can't repay in full today, you can:</p>` +
-          `<ul><li>Make a partial repayment of at least ₦10,000</li><li>Add more BTC collateral to defend your loan</li></ul>` +
+          options_html +
           `<p style="color:#a00">If your loan is not fully repaid within 7 days, your collateral will be liquidated.</p>` +
           `${paymentBlockHtml(p)}${FOOTER_HTML}`,
       };
+    }
 
     case 'grace_final':
       return {
@@ -172,19 +190,26 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
       // Generic grace_d1..d6 reminder
       const days_late = parseInt(slot.replace('grace_d', ''), 10);
       const days_left = 7 - days_late;
+      const repay_action_text = outstanding_below_floor
+        ? `Pay ${owed} to close this loan, or add collateral.`
+        : `You can repay (any amount ≥ ₦10,000) or add collateral.`;
+      const repay_action_html = outstanding_below_floor
+        ? `Pay <b>${owed}</b> to close this loan, or add collateral.`
+        : `You can repay (any amount ≥ ₦10,000) or add collateral.`;
+
       return {
         subject: `Your Bitmonie loan ${sid} is ${days_late} day${days_late === 1 ? '' : 's'} overdue`,
         text_body:
           `${greeting},\n\nYour Bitmonie loan ${sid} was due ${days_late} day${days_late === 1 ? '' : 's'} ago and is now overdue.\n` +
           `You owe ${owed}.\n\n` +
           `You have ${days_left} day${days_left === 1 ? '' : 's'} left before liquidation.\n` +
-          `You can repay (any amount ≥ ₦10,000) or add collateral.\n\n` +
+          `${repay_action_text}\n\n` +
           `${paymentBlock(p)}${FOOTER_TEXT}`,
         html_body:
           `<p>${greeting},</p>` +
           `<p>Your Bitmonie loan <code>${sid}</code> was due <b>${days_late} day${days_late === 1 ? '' : 's'} ago</b> and is now overdue.</p>` +
           `<p>You owe <b>${owed}</b>.</p>` +
-          `<p>You have <b>${days_left} day${days_left === 1 ? '' : 's'}</b> left before liquidation. You can repay (any amount ≥ ₦10,000) or add collateral.</p>` +
+          `<p>You have <b>${days_left} day${days_left === 1 ? '' : 's'}</b> left before liquidation. ${repay_action_html}</p>` +
           `${paymentBlockHtml(p)}${FOOTER_HTML}`,
       };
     }
