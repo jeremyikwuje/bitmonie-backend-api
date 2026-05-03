@@ -181,7 +181,8 @@ describe('buildReminderEmail', () => {
       expect(e.text_body).toContain('500,000');        // remaining principal
       expect(e.text_body).toContain('1,500');          // daily interest
       expect(e.text_body).toContain('700');            // daily custody
-      expect(e.text_body).toContain('0.3% interest');
+      expect(e.text_body).toContain('0.3%');           // rate disclosure
+      expect(e.text_body).toContain('asset collateral comes straight back');
       expect(e.html_body).toContain('₦2,200');
     }
   });

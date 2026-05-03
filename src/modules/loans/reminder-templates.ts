@@ -101,11 +101,11 @@ function paymentBlock(p: ReminderTemplateParams): string {
 function accrualBlockText(p: ReminderTemplateParams): string {
   return (
     `Each day this stays open, ₦${formatThousands(p.daily_total_ngn)} is added — ` +
-    `that's 0.3% interest on your ₦${formatThousands(p.principal_remaining_ngn)} ` +
-    `remaining principal (₦${formatThousands(p.daily_interest_ngn)}/day) plus ` +
-    `your fixed ₦${formatThousands(p.daily_custody_ngn)}/day custody fee.\n\n` +
-    `Repaying sooner keeps the total smaller, and once you're settled your BTC ` +
-    `collateral comes straight back to you.`
+    `that's ₦${formatThousands(p.daily_interest_ngn)} interest ` +
+    `(0.3% of your ₦${formatThousands(p.principal_remaining_ngn)} remaining principal) ` +
+    `plus your fixed ₦${formatThousands(p.daily_custody_ngn)} custody fee.\n\n` +
+    `Repaying sooner keeps the total smaller, and once you're settled your ` +
+    `asset collateral comes straight back to you.`
   );
 }
 
@@ -113,11 +113,11 @@ function accrualBlockHtml(p: ReminderTemplateParams): string {
   return (
     `<p style="background:#f5f5f5;padding:12px;border-radius:4px;margin:12px 0;font-size:13px;color:#333">` +
     `Each day this stays open, <b>₦${formatThousands(p.daily_total_ngn)}</b> is added — ` +
-    `that's 0.3% interest on your <b>₦${formatThousands(p.principal_remaining_ngn)}</b> ` +
-    `remaining principal (₦${formatThousands(p.daily_interest_ngn)}/day) plus ` +
-    `your fixed ₦${formatThousands(p.daily_custody_ngn)}/day custody fee.<br><br>` +
-    `Repaying sooner keeps the total smaller, and once you're settled your BTC ` +
-    `collateral comes straight back to you.` +
+    `that's ₦${formatThousands(p.daily_interest_ngn)} interest ` +
+    `(0.3% of your <b>₦${formatThousands(p.principal_remaining_ngn)}</b> remaining principal) ` +
+    `plus your fixed ₦${formatThousands(p.daily_custody_ngn)} custody fee.<br><br>` +
+    `Repaying sooner keeps the total smaller, and once you're settled your ` +
+    `asset collateral comes straight back to you.` +
     `</p>`
   );
 }
