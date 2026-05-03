@@ -64,6 +64,7 @@ type CandidateLoan = {
   principal_ngn:            Decimal | { toString(): string };
   daily_interest_rate_bps:  number;
   daily_custody_fee_ngn:    Decimal | { toString(): string };
+  collateral_amount_sat:    bigint;
   collateral_received_at:   Date | null;
   user: { email: string; first_name: string | null };
   repayment_account:        { virtual_account_no: string; virtual_account_name: string; bank_name: string } | null;
@@ -155,6 +156,11 @@ export async function runReminderCycle(deps: LoanReminderDeps): Promise<void> {
       const daily_custody_decimal = toDecimal(loan.daily_custody_fee_ngn);
       const daily_total_decimal   = daily_interest_decimal.plus(daily_custody_decimal);
 
+      // v1.1 only supports BTC/SAT collateral; once non-BTC types ship, branch
+      // here on collateral kind to render "50,000 USDT", "Toyota Camry 2022",
+      // etc. The template just renders this verbatim.
+      const collateral_summary = `${loan.collateral_amount_sat.toLocaleString('en-US')} SAT`;
+
       const email = buildReminderEmail(slot, {
         first_name:           loan.user.first_name,
         loan_id:              loan.id,
@@ -163,6 +169,7 @@ export async function runReminderCycle(deps: LoanReminderDeps): Promise<void> {
         daily_interest_ngn:      displayNgn(daily_interest_decimal, 'ceil'),
         daily_custody_ngn:       displayNgn(daily_custody_decimal, 'ceil'),
         daily_total_ngn:         displayNgn(daily_total_decimal, 'ceil'),
+        collateral_summary,
         virtual_account_no:   account.virtual_account_no,
         virtual_account_name: account.virtual_account_name,
         bank_name:            account.bank_name,

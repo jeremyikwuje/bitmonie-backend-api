@@ -30,6 +30,7 @@ function makeLoan(opts: {
     principal_ngn:            new Decimal('500000'),
     daily_interest_rate_bps:  30,
     daily_custody_fee_ngn:    new Decimal('700'),
+    collateral_amount_sat:    BigInt(1_500_000),
     collateral_received_at:   new Date(due_at.getTime() - 30 * 86400_000), // 30d before due
     user:                     { email: 'ada@test.com', first_name: 'Ada' },
     repayments:               [],
@@ -109,6 +110,7 @@ describe('buildReminderEmail', () => {
     daily_interest_ngn:      '1500',
     daily_custody_ngn:       '700',
     daily_total_ngn:         '2200',
+    collateral_summary:      '1,500,000 SAT',
     virtual_account_no:   VA_NO,
     virtual_account_name: VA_NAME,
     bank_name:            VA_BANK,
@@ -182,7 +184,7 @@ describe('buildReminderEmail', () => {
       expect(e.text_body).toContain('1,500');          // daily interest
       expect(e.text_body).toContain('700');            // daily custody
       expect(e.text_body).toContain('0.3%');           // rate disclosure
-      expect(e.text_body).toContain('asset collateral comes straight back');
+      expect(e.text_body).toContain('your 1,500,000 SAT comes straight back');
       expect(e.html_body).toContain('₦2,200');
     }
   });

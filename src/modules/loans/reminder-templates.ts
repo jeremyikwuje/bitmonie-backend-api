@@ -62,6 +62,12 @@ export interface ReminderTemplateParams {
   daily_interest_ngn:      string;
   daily_custody_ngn:       string;
   daily_total_ngn:         string;
+  // Customer-readable description of the specific collateral securing this loan
+  // — e.g. "500,000 SAT" today; "50,000 USDT" or "Toyota Camry 2022" once
+  // non-BTC collateral types are supported. Caller composes; template renders
+  // verbatim. Concrete-by-asset reads warmer + more motivating than "your
+  // collateral".
+  collateral_summary:      string;
   virtual_account_no:   string;
   virtual_account_name: string;
   bank_name:            string;     // partner bank visible to the customer on their transfer screen
@@ -105,7 +111,7 @@ function accrualBlockText(p: ReminderTemplateParams): string {
     `(0.3% of your ₦${formatThousands(p.principal_remaining_ngn)} remaining principal) ` +
     `plus your fixed ₦${formatThousands(p.daily_custody_ngn)} custody fee.\n\n` +
     `Repaying sooner keeps the total smaller, and once you're settled your ` +
-    `asset collateral comes straight back to you.`
+    `${p.collateral_summary} comes straight back to you.`
   );
 }
 
@@ -117,7 +123,7 @@ function accrualBlockHtml(p: ReminderTemplateParams): string {
     `(0.3% of your <b>₦${formatThousands(p.principal_remaining_ngn)}</b> remaining principal) ` +
     `plus your fixed ₦${formatThousands(p.daily_custody_ngn)} custody fee.<br><br>` +
     `Repaying sooner keeps the total smaller, and once you're settled your ` +
-    `asset collateral comes straight back to you.` +
+    `${escapeHtml(p.collateral_summary)} comes straight back to you.` +
     `</p>`
   );
 }
