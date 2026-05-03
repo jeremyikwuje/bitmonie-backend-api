@@ -24,6 +24,7 @@ import { SessionGuard } from '@/common/guards/session.guard';
 import { KycTierGuard } from '@/common/guards/kyc-tier.guard';
 import { RequiresKyc } from '@/common/decorators/requires-kyc.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
+import { displayNgn } from '@/common/formatting/ngn-display';
 import { LoansService } from './loans.service';
 import { CalculatorService } from './calculator.service';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
@@ -75,7 +76,7 @@ export class LoansController {
       btc_usd_rate,
     });
     return {
-      principal_ngn:                principal.toFixed(2),
+      principal_ngn:                displayNgn(principal, 'ceil'),
       duration_days:                dto.duration_days,
       ltv_percent:                  result.ltv_percent.toFixed(2),
 
@@ -83,21 +84,22 @@ export class LoansController {
       initial_collateral_usd:       result.initial_collateral_usd.toFixed(2),
       sat_ngn_rate_at_creation:     result.sat_ngn_rate_at_creation.toFixed(6),
 
-      // Locked at origination
-      origination_fee_ngn:          result.origination_fee_ngn.toFixed(2),
-      daily_custody_fee_ngn:        result.daily_custody_fee_ngn.toFixed(2),
+      // Locked at origination — fees customer ultimately pays us → ceil
+      origination_fee_ngn:          displayNgn(result.origination_fee_ngn, 'ceil'),
+      daily_custody_fee_ngn:        displayNgn(result.daily_custody_fee_ngn, 'ceil'),
       daily_interest_rate_bps:      result.daily_interest_rate_bps,
 
-      // Estimates for the chosen duration
-      projected_interest_ngn:       result.projected_interest_ngn.toFixed(2),
-      projected_custody_ngn:        result.projected_custody_ngn.toFixed(2),
-      projected_total_ngn:          result.projected_total_ngn.toFixed(2),
+      // Estimates for the chosen duration — customer pays us → ceil
+      projected_interest_ngn:       displayNgn(result.projected_interest_ngn, 'ceil'),
+      projected_custody_ngn:        displayNgn(result.projected_custody_ngn, 'ceil'),
+      projected_total_ngn:          displayNgn(result.projected_total_ngn, 'ceil'),
 
-      // Disclosure — what the customer's bank receives vs. what they pay back
-      amount_to_receive_ngn:        result.amount_to_receive_ngn.toFixed(2),
-      amount_to_repay_estimate_ngn: result.amount_to_repay_estimate_ngn.toFixed(2),
+      // Disclosure — what the customer's bank receives (we pay → floor) vs.
+      // what they pay back (customer pays us → ceil).
+      amount_to_receive_ngn:        displayNgn(result.amount_to_receive_ngn, 'floor'),
+      amount_to_repay_estimate_ngn: displayNgn(result.amount_to_repay_estimate_ngn, 'ceil'),
 
-      // UI display (these move daily once accrual starts)
+      // Rates — keep precision (UI displays these as price-style figures)
       initial_liquidation_rate_ngn: result.initial_liquidation_rate_ngn.toFixed(6),
       initial_alert_rate_ngn:       result.initial_alert_rate_ngn.toFixed(6),
     };

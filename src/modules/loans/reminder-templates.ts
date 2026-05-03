@@ -52,7 +52,7 @@ export function determineCurrentSlot(due_at: Date, now: Date): ReminderSlot | nu
 export interface ReminderTemplateParams {
   first_name:           string | null;
   loan_id:              string;
-  outstanding_ngn:      string;     // pre-formatted with 2dp
+  outstanding_ngn:      string;     // whole NGN, ceil — caller rounds via displayNgn
   virtual_account_no:   string;
   virtual_account_name: string;
   bank_name:            string;     // partner bank visible to the customer on their transfer screen
@@ -67,10 +67,11 @@ export interface ReminderEmail {
 
 const NGN = (amount: string) => `₦${formatThousands(amount)}`;
 
+// Input is a whole-naira integer string ("50000"). Producing worker rounds
+// kobo away at the boundary; templates only ever render whole naira.
 function formatThousands(amount: string): string {
-  const [whole, frac = '00'] = amount.split('.');
-  const grouped = (whole ?? '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${grouped}.${frac}`;
+  const [whole = ''] = amount.split('.');
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function shortLoanId(loan_id: string): string {

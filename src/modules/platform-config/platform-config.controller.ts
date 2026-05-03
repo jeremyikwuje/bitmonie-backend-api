@@ -15,6 +15,7 @@ import {
   MIN_PARTIAL_REPAYMENT_NGN,
   ORIGINATION_FEE_PER_100K_NGN,
 } from '@/common/constants';
+import { displayNgn } from '@/common/formatting/ngn-display';
 import { PlatformConfigResponseDto } from './dto/platform-config-response.dto';
 
 @ApiTags('config')
@@ -32,14 +33,14 @@ export class PlatformConfigController {
     return {
       loans: {
         fees: {
-          origination_fee_per_100k_ngn: ORIGINATION_FEE_PER_100K_NGN.toFixed(2),
+          origination_fee_per_100k_ngn: displayNgn(ORIGINATION_FEE_PER_100K_NGN, 'ceil'),
           daily_interest_rate_bps:      DAILY_INTEREST_RATE_BPS,
-          custody_fee_per_100_usd_ngn:  CUSTODY_FEE_PER_100_USD_NGN.toFixed(2),
+          custody_fee_per_100_usd_ngn:  displayNgn(CUSTODY_FEE_PER_100_USD_NGN, 'ceil'),
         },
         limits: {
-          min_loan_ngn:              MIN_LOAN_NGN.toFixed(2),
-          max_selfserve_loan_ngn:    MAX_SELFSERVE_LOAN_NGN.toFixed(2),
-          min_partial_repayment_ngn: MIN_PARTIAL_REPAYMENT_NGN.toFixed(2),
+          min_loan_ngn:              displayNgn(MIN_LOAN_NGN, 'ceil'),
+          max_selfserve_loan_ngn:    displayNgn(MAX_SELFSERVE_LOAN_NGN, 'ceil'),
+          min_partial_repayment_ngn: displayNgn(MIN_PARTIAL_REPAYMENT_NGN, 'ceil'),
         },
         durations: {
           min_duration_days: MIN_LOAN_DURATION_DAYS,

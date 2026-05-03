@@ -353,7 +353,7 @@ describe('LoansService', () => {
         duration_days:                7,
       });
       // Disclosure: principal 300_000 − origination 1_500 = 298_500 to receive.
-      expect(result.fee_breakdown.amount_to_receive_ngn).toBe('298500.00');
+      expect(result.fee_breakdown.amount_to_receive_ngn).toBe('298500');
     });
 
     it('stamps terms_accepted_at on loan.create — proves consumer-protection consent', async () => {
@@ -448,7 +448,7 @@ describe('LoansService', () => {
         bank_name:            'PalmPay',
         provider:             'palmpay',
       });
-      expect(result.minimum_partial_repayment_ngn).toBe('10000.00');
+      expect(result.minimum_partial_repayment_ngn).toBe('10000');
       // Outstanding shape — values come from AccrualService (real, not mocked).
       expect(result.outstanding).toEqual(expect.objectContaining({
         principal_ngn:         expect.any(String),
@@ -458,10 +458,11 @@ describe('LoansService', () => {
         days_elapsed:          expect.any(Number),
       }));
       // Day-1 of a N300k principal at 30 bps → N900 interest, plus N300/day custody.
-      expect(result.outstanding.principal_ngn).toBe('300000.00');
-      expect(result.outstanding.accrued_interest_ngn).toBe('900.00');
-      expect(result.outstanding.accrued_custody_ngn).toBe('300.00');
-      expect(result.outstanding.total_outstanding_ngn).toBe('301200.00');
+      // Customer-facing strings are whole-naira (kobo internally; ceil at display).
+      expect(result.outstanding.principal_ngn).toBe('300000');
+      expect(result.outstanding.accrued_interest_ngn).toBe('900');
+      expect(result.outstanding.accrued_custody_ngn).toBe('300');
+      expect(result.outstanding.total_outstanding_ngn).toBe('301200');
       expect(result.outstanding.days_elapsed).toBe(1);
     });
   });
@@ -814,10 +815,10 @@ describe('LoansService', () => {
       expect(result.new_status).toBe(LoanStatus.ACTIVE);
       // Waterfall on N100k against custody 21k + interest 45k + principal 500k:
       // → custody 21,000 / interest 45,000 / principal 34,000 / overpay 0
-      expect(result.applied_to_custody).toBe('21000.00');
-      expect(result.applied_to_interest).toBe('45000.00');
-      expect(result.applied_to_principal).toBe('34000.00');
-      expect(result.overpay_ngn).toBe('0.00');
+      expect(result.applied_to_custody).toBe('21000');
+      expect(result.applied_to_interest).toBe('45000');
+      expect(result.applied_to_principal).toBe('34000');
+      expect(result.overpay_ngn).toBe('0');
 
       expect(loan_status.transition).toHaveBeenCalledWith(
         expect.anything(),
@@ -839,8 +840,8 @@ describe('LoansService', () => {
       });
 
       expect(result.new_status).toBe(LoanStatus.REPAID);
-      expect(result.applied_to_principal).toBe('500000.00');
-      expect(result.overpay_ngn).toBe('0.00');
+      expect(result.applied_to_principal).toBe('500000');
+      expect(result.overpay_ngn).toBe('0');
 
       expect(loan_status.transition).toHaveBeenCalledWith(
         expect.anything(),
@@ -892,7 +893,7 @@ describe('LoansService', () => {
       });
 
       expect(result.new_status).toBe(LoanStatus.REPAID);
-      expect(result.overpay_ngn).toBe('34000.00');
+      expect(result.overpay_ngn).toBe('34000');
     });
 
     it('inserts a LoanRepayment row in the same transaction', async () => {
@@ -949,7 +950,7 @@ describe('LoansService', () => {
       });
 
       expect(result.new_status).toBe(LoanStatus.REPAID);
-      expect(result.applied_to_principal).toBe('0.00');
+      expect(result.applied_to_principal).toBe('0');
       expect(loan_status.transition).not.toHaveBeenCalled();
     });
 
@@ -1360,7 +1361,7 @@ describe('LoansService', () => {
       const result = await service.listUnmatchedInflowsForUser(USER_ID);
       expect(result).toHaveLength(1);
       expect(result[0]!.status).toBe('CLAIMABLE');
-      expect(result[0]!.amount_ngn).toBe('50000.00');
+      expect(result[0]!.amount_ngn).toBe('50000');
       expect(result[0]!.payer_name).toBe('Ada Obi');
       expect(result[0]!.payer_bank_name).toBe('GTBank');
       expect(result[0]!.received_via).toBe('9012345678');

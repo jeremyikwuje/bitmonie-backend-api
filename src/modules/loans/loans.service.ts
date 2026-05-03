@@ -13,6 +13,7 @@ import { AssetPair } from '@prisma/client';
 import type Redis from 'ioredis';
 import { PrismaService } from '@/database/prisma.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
+import { displayNgn } from '@/common/formatting/ngn-display';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
 import { CalculatorService } from './calculator.service';
 import { AccrualService, type AccrualRepaymentInput } from './accrual.service';
@@ -256,14 +257,14 @@ export class LoansService {
       receiving_address:     payment_request_record.receiving_address,
       expires_at:            payment_request_record.expires_at,
       fee_breakdown: {
-        origination_fee_ngn:          calc.origination_fee_ngn.toFixed(2),
-        daily_custody_fee_ngn:        calc.daily_custody_fee_ngn.toFixed(2),
+        origination_fee_ngn:          displayNgn(calc.origination_fee_ngn, 'ceil'),
+        daily_custody_fee_ngn:        displayNgn(calc.daily_custody_fee_ngn, 'ceil'),
         daily_interest_rate_bps:      calc.daily_interest_rate_bps,
-        projected_interest_ngn:       calc.projected_interest_ngn.toFixed(2),
-        projected_custody_ngn:        calc.projected_custody_ngn.toFixed(2),
-        projected_total_ngn:          calc.projected_total_ngn.toFixed(2),
-        amount_to_receive_ngn:        calc.amount_to_receive_ngn.toFixed(2),
-        amount_to_repay_estimate_ngn: calc.amount_to_repay_estimate_ngn.toFixed(2),
+        projected_interest_ngn:       displayNgn(calc.projected_interest_ngn, 'ceil'),
+        projected_custody_ngn:        displayNgn(calc.projected_custody_ngn, 'ceil'),
+        projected_total_ngn:          displayNgn(calc.projected_total_ngn, 'ceil'),
+        amount_to_receive_ngn:        displayNgn(calc.amount_to_receive_ngn, 'floor'),
+        amount_to_repay_estimate_ngn: displayNgn(calc.amount_to_repay_estimate_ngn, 'ceil'),
         duration_days:                dto.duration_days,
       },
     };
@@ -289,10 +290,10 @@ export class LoansService {
     return {
       ...loan,
       outstanding: {
-        principal_ngn:         outstanding.principal_ngn.toFixed(2),
-        accrued_interest_ngn:  outstanding.accrued_interest_ngn.toFixed(2),
-        accrued_custody_ngn:   outstanding.accrued_custody_ngn.toFixed(2),
-        total_outstanding_ngn: outstanding.total_outstanding_ngn.toFixed(2),
+        principal_ngn:         displayNgn(outstanding.principal_ngn, 'ceil'),
+        accrued_interest_ngn:  displayNgn(outstanding.accrued_interest_ngn, 'ceil'),
+        accrued_custody_ngn:   displayNgn(outstanding.accrued_custody_ngn, 'ceil'),
+        total_outstanding_ngn: displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
         days_elapsed:          outstanding.days_elapsed,
       },
     };
@@ -338,14 +339,14 @@ export class LoansService {
     return {
       loan_id: loan.id,
       outstanding: {
-        principal_ngn:         outstanding.principal_ngn.toFixed(2),
-        accrued_interest_ngn:  outstanding.accrued_interest_ngn.toFixed(2),
-        accrued_custody_ngn:   outstanding.accrued_custody_ngn.toFixed(2),
-        total_outstanding_ngn: outstanding.total_outstanding_ngn.toFixed(2),
+        principal_ngn:         displayNgn(outstanding.principal_ngn, 'ceil'),
+        accrued_interest_ngn:  displayNgn(outstanding.accrued_interest_ngn, 'ceil'),
+        accrued_custody_ngn:   displayNgn(outstanding.accrued_custody_ngn, 'ceil'),
+        total_outstanding_ngn: displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
         days_elapsed:          outstanding.days_elapsed,
       },
       repayment_account: va.summary,
-      minimum_partial_repayment_ngn: new Decimal(MIN_PARTIAL_REPAYMENT_NGN).toFixed(2),
+      minimum_partial_repayment_ngn: displayNgn(new Decimal(MIN_PARTIAL_REPAYMENT_NGN), 'ceil'),
     };
   }
 
@@ -528,8 +529,8 @@ export class LoansService {
   }): Promise<CreditInflowResult> {
     if (!params.skip_floor && params.amount_ngn.lt(MIN_PARTIAL_REPAYMENT_NGN)) {
       throw new InflowBelowFloorException({
-        received_ngn: params.amount_ngn.toFixed(2),
-        floor_ngn:    MIN_PARTIAL_REPAYMENT_NGN.toFixed(2),
+        received_ngn: displayNgn(params.amount_ngn, 'ceil'),
+        floor_ngn:    displayNgn(new Decimal(MIN_PARTIAL_REPAYMENT_NGN), 'ceil'),
       });
     }
 
@@ -569,11 +570,11 @@ export class LoansService {
           result: {
             loan_id:              loan.id,
             new_status:           loan.status,
-            applied_to_custody:   '0.00',
-            applied_to_interest:  '0.00',
-            applied_to_principal: '0.00',
-            overpay_ngn:          '0.00',
-            outstanding_ngn:      '0.00',
+            applied_to_custody:   '0',
+            applied_to_interest:  '0',
+            applied_to_principal: '0',
+            overpay_ngn:          '0',
+            outstanding_ngn:      '0',
           },
           receipt: null,
         };
@@ -675,11 +676,14 @@ export class LoansService {
         result: {
           loan_id:              params.loan_id,
           new_status:           is_fully_repaid ? LoanStatus.REPAID : LoanStatus.ACTIVE,
-          applied_to_custody:   applied_to_custody.toFixed(2),
-          applied_to_interest:  applied_to_interest.toFixed(2),
-          applied_to_principal: applied_to_principal.toFixed(2),
-          overpay_ngn:          overpay_ngn.toFixed(2),
-          outstanding_ngn:      Decimal.max(new_outstanding_total, 0).toFixed(2),
+          // Customer-facing breakdown — display only; exact Decimals stay on
+          // the LoanRepayment row + flow into the next accrual computation.
+          // Money-they-paid-us → ceil; refundable overpay (we'll pay them) → floor.
+          applied_to_custody:   displayNgn(applied_to_custody, 'ceil'),
+          applied_to_interest:  displayNgn(applied_to_interest, 'ceil'),
+          applied_to_principal: displayNgn(applied_to_principal, 'ceil'),
+          overpay_ngn:          displayNgn(overpay_ngn, 'floor'),
+          outstanding_ngn:      displayNgn(Decimal.max(new_outstanding_total, 0), 'ceil'),
         },
         receipt: {
           user_id:              loan.user_id,
@@ -1041,7 +1045,8 @@ export class LoansService {
         const below_floor  = amount.lt(MIN_PARTIAL_REPAYMENT_NGN);
         return {
           id:              row.id,
-          amount_ngn:      amount.toFixed(2),
+          // Inflow amount is money the customer paid in (customer→us) → ceil.
+          amount_ngn:      displayNgn(amount, 'ceil'),
           received_at:     row.created_at,
           payer_name:      pr?.payerAccountName ?? null,
           payer_bank_name: pr?.payerBankName    ?? null,

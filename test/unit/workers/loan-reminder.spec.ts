@@ -103,7 +103,7 @@ describe('buildReminderEmail', () => {
   const baseParams = {
     first_name:           'Ada',
     loan_id:              'aabbccdd-eeff-0011-2233-445566778899',
-    outstanding_ngn:      '566000.00',
+    outstanding_ngn:      '566000',
     virtual_account_no:   VA_NO,
     virtual_account_name: VA_NAME,
     bank_name:            VA_BANK,
@@ -140,9 +140,9 @@ describe('buildReminderEmail', () => {
     for (const slot of slots) {
       const e = buildReminderEmail(slot, baseParams);
       expect(e.text_body).toContain(VA_NO);
-      expect(e.text_body).toContain('566,000.00');
+      expect(e.text_body).toContain('566,000');
       expect(e.html_body).toContain(VA_NO);
-      expect(e.html_body).toContain('566,000.00');
+      expect(e.html_body).toContain('566,000');
     }
   });
 
@@ -266,7 +266,7 @@ describe('runReminderCycle', () => {
     await runReminderCycle(deps);
 
     const args = deps.send_email.mock.calls[0]![0];
-    expect(args.text_body).toContain('566,000.00');
+    expect(args.text_body).toContain('566,000');
   });
 
   it('queries only loans whose due_at is within ±8 days of now', async () => {

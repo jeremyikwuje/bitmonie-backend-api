@@ -27,13 +27,18 @@ export interface RepaymentAccountSummary {
   bank_name:            string;
 }
 
+// All NGN string params below are pre-formatted whole-naira integers (no
+// decimal point). Producing service / worker rounds via `displayNgn(...)`
+// at the boundary — `ceil` for amounts owed to us, `floor` for amounts we
+// pay the customer. Templates render verbatim.
+
 export interface LoanCreatedParams {
   first_name:                   string | null;
   loan_id:                      string;
-  principal_ngn:                string;     // pre-formatted, 2dp
-  origination_fee_ngn:          string;     // pre-formatted, 2dp
-  amount_to_receive_ngn:        string;     // pre-formatted, 2dp — net of origination
-  amount_to_repay_estimate_ngn: string;     // pre-formatted, 2dp — over chosen term
+  principal_ngn:                string;     // whole NGN, ceil
+  origination_fee_ngn:          string;     // whole NGN, ceil
+  amount_to_receive_ngn:        string;     // whole NGN, floor — net of origination
+  amount_to_repay_estimate_ngn: string;     // whole NGN, ceil — over chosen term
   collateral_amount_sat:        bigint;
   duration_days:                number;
   expires_at:                   Date;
@@ -43,9 +48,9 @@ export interface LoanCreatedParams {
 export interface CollateralReceivedParams {
   first_name:            string | null;
   loan_id:               string;
-  principal_ngn:         string;     // pre-formatted, 2dp — gross loan amount
-  origination_fee_ngn:   string;     // pre-formatted, 2dp — netted from disbursement
-  amount_to_receive_ngn: string;     // pre-formatted, 2dp — what actually hits the bank
+  principal_ngn:         string;     // whole NGN, ceil — gross loan amount
+  origination_fee_ngn:   string;     // whole NGN, ceil — netted from disbursement
+  amount_to_receive_ngn: string;     // whole NGN, floor — what actually hits the bank
   duration_days:         number;
   due_at:                Date;
 }
@@ -53,9 +58,9 @@ export interface CollateralReceivedParams {
 export interface LoanDisbursedParams {
   first_name:          string | null;
   loan_id:             string;
-  amount_ngn:          string;         // pre-formatted, 2dp — what hit the customer's bank (netted)
-  principal_ngn:       string;         // pre-formatted, 2dp — gross loan amount
-  origination_fee_ngn: string;         // pre-formatted, 2dp — netted from disbursement
+  amount_ngn:          string;         // whole NGN, floor — what hit the customer's bank (netted)
+  principal_ngn:       string;         // whole NGN, ceil — gross loan amount
+  origination_fee_ngn: string;         // whole NGN, ceil — netted from disbursement
   bank_name:           string;
   account_unique:      string;
   account_name:        string | null;
@@ -66,12 +71,12 @@ export interface LoanDisbursedParams {
 export interface RepaymentParams {
   first_name:                 string | null;
   loan_id:                    string;
-  amount_paid_ngn:            string;      // pre-formatted, 2dp
-  applied_to_custody:         string;
-  applied_to_interest:        string;
-  applied_to_principal:       string;
-  overpay_ngn:                string;
-  outstanding_ngn:            string;      // 0.00 when fully repaid
+  amount_paid_ngn:            string;      // whole NGN, ceil
+  applied_to_custody:         string;      // whole NGN, ceil
+  applied_to_interest:        string;      // whole NGN, ceil
+  applied_to_principal:       string;      // whole NGN, ceil
+  overpay_ngn:                string;      // whole NGN, floor — refundable to customer
+  outstanding_ngn:            string;      // whole NGN, ceil — "0" when fully repaid
   is_fully_repaid:            boolean;
   repayment_account:          RepaymentAccountSummary;   // shown only on partial
   collateral_amount_sat:      bigint;                    // shown only on full
@@ -101,10 +106,11 @@ const FOOTER_HTML = '<p style="color:#666;font-size:12px;margin-top:20px">— Bi
 
 const NGN = (amount: string) => `₦${formatThousands(amount)}`;
 
+// Input is a whole-naira integer string ("50000"). Producing service rounds
+// kobo away at the boundary; templates only ever render whole naira.
 function formatThousands(amount: string): string {
-  const [whole, frac = '00'] = amount.split('.');
-  const grouped = (whole ?? '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${grouped}.${frac}`;
+  const [whole = ''] = amount.split('.');
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function formatSats(sats: bigint): string {
@@ -333,7 +339,7 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
         `Final payment received: ${paid}\n\n` +
         `How we applied it:\n` +
         breakdown_lines.join('\n') + '\n\n' +
-        `Outstanding balance:    ${NGN('0.00')}\n\n` +
+        `Outstanding balance:    ${NGN('0')}\n\n` +
         (parseFloat(p.overpay_ngn) > 0
           ? `You overpaid by ${NGN(p.overpay_ngn)}. Our team will reach out to arrange a refund.\n\n`
           : '') +
@@ -345,7 +351,7 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
         `<p style="margin-top:12px;color:#666"><b>How we applied it:</b></p>` +
         `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
           breakdown_rows.join('') +
-          row('Outstanding balance', NGN('0.00')) +
+          row('Outstanding balance', NGN('0')) +
         `</table>` +
         (parseFloat(p.overpay_ngn) > 0
           ? `<p>You overpaid by <b>${NGN(p.overpay_ngn)}</b>. Our team will reach out to arrange a refund.</p>`

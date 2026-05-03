@@ -16,6 +16,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import Redis from 'ioredis';
 import Decimal from 'decimal.js';
 import { REDIS_KEYS, LOAN_GRACE_PERIOD_DAYS } from '@/common/constants';
+import { displayNgn } from '@/common/formatting/ngn-display';
 import { AccrualService } from '@/modules/loans/accrual.service';
 import {
   buildReminderEmail,
@@ -148,7 +149,7 @@ export async function runReminderCycle(deps: LoanReminderDeps): Promise<void> {
       const email = buildReminderEmail(slot, {
         first_name:           loan.user.first_name,
         loan_id:              loan.id,
-        outstanding_ngn:      outstanding.total_outstanding_ngn.toFixed(2),
+        outstanding_ngn:      displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
         virtual_account_no:   account.virtual_account_no,
         virtual_account_name: account.virtual_account_name,
         bank_name:            account.bank_name,

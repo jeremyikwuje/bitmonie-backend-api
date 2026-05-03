@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
+import { displayNgn } from '@/common/formatting/ngn-display';
 import { PrismaService } from '@/database/prisma.service';
 import { EMAIL_PROVIDER, type EmailProvider } from '@/modules/auth/email.provider.interface';
 import {
@@ -92,10 +93,10 @@ export class LoanNotificationsService {
     const email = buildLoanCreatedEmail({
       first_name:                   user.first_name,
       loan_id:                      params.loan_id,
-      principal_ngn:                params.principal_ngn.toFixed(2),
-      origination_fee_ngn:          params.origination_fee_ngn.toFixed(2),
-      amount_to_receive_ngn:        params.amount_to_receive_ngn.toFixed(2),
-      amount_to_repay_estimate_ngn: params.amount_to_repay_estimate_ngn.toFixed(2),
+      principal_ngn:                displayNgn(params.principal_ngn, 'ceil'),
+      origination_fee_ngn:          displayNgn(params.origination_fee_ngn, 'ceil'),
+      amount_to_receive_ngn:        displayNgn(params.amount_to_receive_ngn, 'floor'),
+      amount_to_repay_estimate_ngn: displayNgn(params.amount_to_repay_estimate_ngn, 'ceil'),
       collateral_amount_sat:        params.collateral_amount_sat,
       duration_days:                params.duration_days,
       expires_at:                   params.expires_at,
@@ -137,9 +138,9 @@ export class LoanNotificationsService {
     const email = buildCollateralReceivedEmail({
       first_name:            user.first_name,
       loan_id:               params.loan_id,
-      principal_ngn:         principal_decimal.toFixed(2),
-      origination_fee_ngn:   origination_decimal.toFixed(2),
-      amount_to_receive_ngn: net_decimal.toFixed(2),
+      principal_ngn:         displayNgn(principal_decimal, 'ceil'),
+      origination_fee_ngn:   displayNgn(origination_decimal, 'ceil'),
+      amount_to_receive_ngn: displayNgn(net_decimal, 'floor'),
       duration_days:         loan.duration_days,
       due_at:                loan.due_at,
     });
@@ -177,9 +178,9 @@ export class LoanNotificationsService {
     const email = buildLoanDisbursedEmail({
       first_name:          user.first_name,
       loan_id:             params.loan_id,
-      amount_ngn:          params.amount_ngn.toFixed(2),
-      principal_ngn:       loan.principal_ngn.toFixed(2),
-      origination_fee_ngn: loan.origination_fee_ngn.toFixed(2),
+      amount_ngn:          displayNgn(params.amount_ngn, 'floor'),
+      principal_ngn:       displayNgn(new Decimal(loan.principal_ngn.toString()), 'ceil'),
+      origination_fee_ngn: displayNgn(new Decimal(loan.origination_fee_ngn.toString()), 'ceil'),
       bank_name:           params.bank_name,
       account_unique:      params.account_unique,
       account_name:        params.account_name,
@@ -229,12 +230,13 @@ export class LoanNotificationsService {
     const email = buildRepaymentEmail({
       first_name:                 user.first_name,
       loan_id:                    params.loan_id,
-      amount_paid_ngn:            params.amount_paid_ngn.toFixed(2),
-      applied_to_custody:         params.applied_to_custody.toFixed(2),
-      applied_to_interest:        params.applied_to_interest.toFixed(2),
-      applied_to_principal:       params.applied_to_principal.toFixed(2),
-      overpay_ngn:                params.overpay_ngn.toFixed(2),
-      outstanding_ngn:            params.outstanding_ngn.toFixed(2),
+      // Money customer paid us / applied to debts → ceil. Refundable overpay → floor.
+      amount_paid_ngn:            displayNgn(params.amount_paid_ngn, 'ceil'),
+      applied_to_custody:         displayNgn(params.applied_to_custody, 'ceil'),
+      applied_to_interest:        displayNgn(params.applied_to_interest, 'ceil'),
+      applied_to_principal:       displayNgn(params.applied_to_principal, 'ceil'),
+      overpay_ngn:                displayNgn(params.overpay_ngn, 'floor'),
+      outstanding_ngn:            displayNgn(params.outstanding_ngn, 'ceil'),
       is_fully_repaid:            params.is_fully_repaid,
       // va is only nullable on the full-repayment branch where the template
       // doesn't read it; cast through an empty placeholder so the type stays
