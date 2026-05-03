@@ -15,7 +15,7 @@ import { PrismaClient, LoanStatus } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import Redis from 'ioredis';
 import Decimal from 'decimal.js';
-import { REDIS_KEYS, LOAN_GRACE_PERIOD_DAYS } from '@/common/constants';
+import { REDIS_KEYS, LOAN_GRACE_PERIOD_DAYS, DAILY_INTEREST_RATE_BPS } from '@/common/constants';
 import { displayNgn } from '@/common/formatting/ngn-display';
 import { AccrualService } from '@/modules/loans/accrual.service';
 import {
@@ -146,10 +146,23 @@ export async function runReminderCycle(deps: LoanReminderDeps): Promise<void> {
         as_of: now,
       });
 
+      // Live daily-accrual snapshot — interest tracks current outstanding
+      // principal (drops as the customer makes partial repayments), custody
+      // is the fixed-at-origination figure on this loan row.
+      const daily_interest_decimal = outstanding.principal_ngn
+        .mul(DAILY_INTEREST_RATE_BPS)
+        .div(10_000);
+      const daily_custody_decimal = toDecimal(loan.daily_custody_fee_ngn);
+      const daily_total_decimal   = daily_interest_decimal.plus(daily_custody_decimal);
+
       const email = buildReminderEmail(slot, {
         first_name:           loan.user.first_name,
         loan_id:              loan.id,
         outstanding_ngn:      displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
+        principal_remaining_ngn: displayNgn(outstanding.principal_ngn, 'ceil'),
+        daily_interest_ngn:      displayNgn(daily_interest_decimal, 'ceil'),
+        daily_custody_ngn:       displayNgn(daily_custody_decimal, 'ceil'),
+        daily_total_ngn:         displayNgn(daily_total_decimal, 'ceil'),
         virtual_account_no:   account.virtual_account_no,
         virtual_account_name: account.virtual_account_name,
         bank_name:            account.bank_name,

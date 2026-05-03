@@ -53,6 +53,15 @@ export interface ReminderTemplateParams {
   first_name:           string | null;
   loan_id:              string;
   outstanding_ngn:      string;     // whole NGN, ceil — caller rounds via displayNgn
+  // Live daily-accrual snapshot — recomputed at send time so the customer sees
+  // what's actually being added today (interest tracks current principal, which
+  // drops as they make partial repayments). All whole NGN, ceil. Rendered on
+  // every slot except `grace_final` (final-notice mode is liquidation-focused;
+  // accrual math dilutes the urgency).
+  principal_remaining_ngn: string;
+  daily_interest_ngn:      string;
+  daily_custody_ngn:       string;
+  daily_total_ngn:         string;
   virtual_account_no:   string;
   virtual_account_name: string;
   bank_name:            string;     // partner bank visible to the customer on their transfer screen
@@ -86,6 +95,33 @@ function paymentBlock(p: ReminderTemplateParams): string {
   return `Pay to:\n  Bank:            ${p.bank_name}\n  Account name:    ${p.virtual_account_name}\n  Account number:  ${p.virtual_account_no}`;
 }
 
+// Daily-accrual disclosure rendered on every slot except `grace_final`.
+// Reframes the cost transparently and ends positive (BTC comes back) so the
+// customer is informed without feeling threatened.
+function accrualBlockText(p: ReminderTemplateParams): string {
+  return (
+    `Each day this stays open, ₦${formatThousands(p.daily_total_ngn)} is added — ` +
+    `that's 0.3% interest on your ₦${formatThousands(p.principal_remaining_ngn)} ` +
+    `remaining principal (₦${formatThousands(p.daily_interest_ngn)}/day) plus ` +
+    `your fixed ₦${formatThousands(p.daily_custody_ngn)}/day custody fee.\n\n` +
+    `Repaying sooner keeps the total smaller, and once you're settled your BTC ` +
+    `collateral comes straight back to you.`
+  );
+}
+
+function accrualBlockHtml(p: ReminderTemplateParams): string {
+  return (
+    `<p style="background:#f5f5f5;padding:12px;border-radius:4px;margin:12px 0;font-size:13px;color:#333">` +
+    `Each day this stays open, <b>₦${formatThousands(p.daily_total_ngn)}</b> is added — ` +
+    `that's 0.3% interest on your <b>₦${formatThousands(p.principal_remaining_ngn)}</b> ` +
+    `remaining principal (₦${formatThousands(p.daily_interest_ngn)}/day) plus ` +
+    `your fixed ₦${formatThousands(p.daily_custody_ngn)}/day custody fee.<br><br>` +
+    `Repaying sooner keeps the total smaller, and once you're settled your BTC ` +
+    `collateral comes straight back to you.` +
+    `</p>`
+  );
+}
+
 function paymentBlockHtml(p: ReminderTemplateParams): string {
   // See loan-notification-templates.ts paymentBlockHtml — Gmail iOS strips
   // font-size on <code>, so use an explicitly-styled span for the account
@@ -117,12 +153,14 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
         subject: `Your Bitmonie loan ${sid} is due in 7 days`,
         text_body:
           `${greeting},\n\nYour Bitmonie loan ${sid} matures in 7 days on ${p.due_at.toDateString()}.\n` +
-          `You currently owe ${owed} (interest and custody fees accrue daily).\n\n` +
+          `You currently owe ${owed}.\n\n` +
+          `${accrualBlockText(p)}\n\n` +
           `${paymentBlock(p)}${FOOTER_TEXT}`,
         html_body:
           `<p>${greeting},</p>` +
           `<p>Your Bitmonie loan <code>${sid}</code> matures in <b>7 days</b> on ${escapeHtml(p.due_at.toDateString())}.</p>` +
-          `<p>You currently owe <b>${owed}</b> (interest and custody fees accrue daily).</p>` +
+          `<p>You currently owe <b>${owed}</b>.</p>` +
+          `${accrualBlockHtml(p)}` +
           `${paymentBlockHtml(p)}${FOOTER_HTML}`,
       };
 
@@ -132,11 +170,13 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
         text_body:
           `${greeting},\n\nYour Bitmonie loan ${sid} matures TOMORROW (${p.due_at.toDateString()}).\n` +
           `You currently owe ${owed}.\n\n` +
+          `${accrualBlockText(p)}\n\n` +
           `${paymentBlock(p)}${FOOTER_TEXT}`,
         html_body:
           `<p>${greeting},</p>` +
           `<p>Your Bitmonie loan <code>${sid}</code> matures <b>tomorrow</b> (${escapeHtml(p.due_at.toDateString())}).</p>` +
           `<p>You currently owe <b>${owed}</b>.</p>` +
+          `${accrualBlockHtml(p)}` +
           `${paymentBlockHtml(p)}${FOOTER_HTML}`,
       };
 
@@ -156,6 +196,7 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
         text_body:
           `${greeting},\n\nYour Bitmonie loan ${sid} is due TODAY.\n` +
           `You owe ${owed}.\n\n` +
+          `${accrualBlockText(p)}\n\n` +
           `${options_text}\n\n` +
           `If your loan is not fully repaid within 7 days, your collateral will be liquidated.\n\n` +
           `${paymentBlock(p)}${FOOTER_TEXT}`,
@@ -163,6 +204,7 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
           `<p>${greeting},</p>` +
           `<p>Your Bitmonie loan <code>${sid}</code> is due <b>TODAY</b>.</p>` +
           `<p>You owe <b>${owed}</b>.</p>` +
+          `${accrualBlockHtml(p)}` +
           options_html +
           `<p style="color:#a00">If your loan is not fully repaid within 7 days, your collateral will be liquidated.</p>` +
           `${paymentBlockHtml(p)}${FOOTER_HTML}`,
@@ -203,6 +245,7 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
         text_body:
           `${greeting},\n\nYour Bitmonie loan ${sid} was due ${days_late} day${days_late === 1 ? '' : 's'} ago and is now overdue.\n` +
           `You owe ${owed}.\n\n` +
+          `${accrualBlockText(p)}\n\n` +
           `You have ${days_left} day${days_left === 1 ? '' : 's'} left before liquidation.\n` +
           `${repay_action_text}\n\n` +
           `${paymentBlock(p)}${FOOTER_TEXT}`,
@@ -210,6 +253,7 @@ export function buildReminderEmail(slot: ReminderSlot, p: ReminderTemplateParams
           `<p>${greeting},</p>` +
           `<p>Your Bitmonie loan <code>${sid}</code> was due <b>${days_late} day${days_late === 1 ? '' : 's'} ago</b> and is now overdue.</p>` +
           `<p>You owe <b>${owed}</b>.</p>` +
+          `${accrualBlockHtml(p)}` +
           `<p>You have <b>${days_left} day${days_left === 1 ? '' : 's'}</b> left before liquidation. ${repay_action_html}</p>` +
           `${paymentBlockHtml(p)}${FOOTER_HTML}`,
       };

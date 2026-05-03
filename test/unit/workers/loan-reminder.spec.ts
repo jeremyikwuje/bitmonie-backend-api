@@ -104,6 +104,11 @@ describe('buildReminderEmail', () => {
     first_name:           'Ada',
     loan_id:              'aabbccdd-eeff-0011-2233-445566778899',
     outstanding_ngn:      '566000',
+    // N500k principal × 0.3% = N1,500/day interest; N700/day fixed custody.
+    principal_remaining_ngn: '500000',
+    daily_interest_ngn:      '1500',
+    daily_custody_ngn:       '700',
+    daily_total_ngn:         '2200',
     virtual_account_no:   VA_NO,
     virtual_account_name: VA_NAME,
     bank_name:            VA_BANK,
@@ -161,6 +166,30 @@ describe('buildReminderEmail', () => {
     const e = buildReminderEmail('t_minus_7d', { ...baseParams, virtual_account_name: '<script>x</script>' });
     expect(e.html_body).not.toContain('<script>');
     expect(e.html_body).toContain('&lt;script&gt;');
+  });
+
+  // Daily-accrual disclosure — present on every slot EXCEPT grace_final, which
+  // is liquidation-focused and shouldn't dilute the urgency.
+  it('non-final slots include the daily-accrual block (interest + custody + total)', () => {
+    const slots: ReminderSlot[] = [
+      't_minus_7d', 't_minus_1d', 't_maturity',
+      'grace_d1', 'grace_d2', 'grace_d3', 'grace_d4', 'grace_d5', 'grace_d6',
+    ];
+    for (const slot of slots) {
+      const e = buildReminderEmail(slot, baseParams);
+      expect(e.text_body).toContain('₦2,200');         // daily total
+      expect(e.text_body).toContain('500,000');        // remaining principal
+      expect(e.text_body).toContain('1,500');          // daily interest
+      expect(e.text_body).toContain('700');            // daily custody
+      expect(e.text_body).toContain('0.3% interest');
+      expect(e.html_body).toContain('₦2,200');
+    }
+  });
+
+  it('grace_final omits the daily-accrual block (final-notice mode is liquidation-focused)', () => {
+    const e = buildReminderEmail('grace_final', baseParams);
+    expect(e.text_body).not.toContain('Each day this stays open');
+    expect(e.html_body).not.toContain('Each day this stays open');
   });
 });
 
