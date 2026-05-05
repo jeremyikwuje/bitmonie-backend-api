@@ -16,6 +16,7 @@ Read on every session.
 | `docs/conventions.md` | Code examples, ESLint/Prettier config |
 | `docs/testing.md` | Writing tests, critical test cases catalog |
 | `docs/errors.md` | Exception template + full error code catalog |
+| `docs/web.md` | Contract for the SvelteKit web client at `web.bitmonie.co`. **Mirrored to `~/source/apps/bitmonie-web/docs/web.md` — both copies must change together** when a contract this client depends on changes. |
 | `prisma/schema.prisma` | Source of truth for all DB models |
 | `.env.example` | Configuration values |
 

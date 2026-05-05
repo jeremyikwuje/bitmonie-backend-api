@@ -17,6 +17,7 @@ import { KycModule } from './modules/kyc/kyc.module';
 import { BanksModule } from './modules/banks/banks.module';
 import { DisbursementAccountsModule } from './modules/disbursement-accounts/disbursement-accounts.module';
 import { LoansModule } from './modules/loans/loans.module';
+import { MeModule } from './modules/me/me.module';
 import { OpsAuthModule } from './modules/ops/auth/ops-auth.module';
 import { OpsKycModule } from './modules/ops/kyc/ops-kyc.module';
 import { OpsDisbursementsModule } from './modules/ops/disbursements/ops-disbursements.module';
@@ -43,6 +44,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     BanksModule,
     DisbursementAccountsModule,
     LoansModule,
+    MeModule,
     OpsAuthModule,
     OpsKycModule,
     OpsDisbursementsModule,
