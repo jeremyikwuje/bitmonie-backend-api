@@ -32,7 +32,21 @@ async function bootstrap(): Promise<void> {
 
   app.use(helmet());
   app.use(cookieParser());
-  app.enableCors({ credentials: true, origin: allowed_origin });
+
+  // ALLOWED_ORIGIN accepts a comma-separated list of explicit origins so
+  // production, preview, and local-dev frontends can all be allowed at once
+  // (e.g. "https://web.bitmonie.co,http://localhost:5173"). The browser
+  // refuses ACAO=* on credentialed requests, so a literal '*' is mapped to
+  // the cors library's reflect-the-request-origin mode (`origin: true`),
+  // keeping the no-env dev fallback usable. Production should always set an
+  // explicit list.
+  const allowed_origins = allowed_origin
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const cors_origin: true | string[] =
+    allowed_origins.length === 1 && allowed_origins[0] === '*' ? true : allowed_origins;
+  app.enableCors({ credentials: true, origin: cors_origin });
 
   app.useGlobalPipes(
     new ValidationPipe({
