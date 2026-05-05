@@ -6,6 +6,7 @@ import { DisbursementRouter } from '@/modules/disbursements/disbursement-router.
 import type { DisbursementProvider } from '@/modules/disbursements/disbursement.provider.interface';
 import { NameMatchService } from '@/common/name-match/name-match.service';
 import { PrismaService } from '@/database/prisma.service';
+import { DISBURSEMENT_NAME_MATCH_THRESHOLD } from '@/common/constants';
 
 const KYC_USER = {
   id: 'user-uuid',
@@ -84,7 +85,7 @@ describe('DisbursementAccountsService', () => {
   // ── addAccount ──────────────────────────────────────────────────────────────
 
   describe('addAccount', () => {
-    it('adds a BANK account when name matches', async () => {
+    it('adds a BANK account when name matches and echoes the resolved name + score', async () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(KYC_USER);
       prisma.disbursementAccount.count.mockResolvedValue(0);
       disbursement_provider.lookupAccountName.mockResolvedValue('Ada Obi');
@@ -94,6 +95,10 @@ describe('DisbursementAccountsService', () => {
 
       expect(result.id).toBe('acct-uuid');
       expect(result.message).toContain('added');
+      expect(result.account_holder_name).toBe('Ada Obi');
+      expect(result.name_match_score).toBeGreaterThanOrEqual(DISBURSEMENT_NAME_MATCH_THRESHOLD);
+      expect(result.status).toBe(DisbursementAccountStatus.VERIFIED);
+      expect(result.is_default).toBe(true);
       expect(disbursement_provider.lookupAccountName).toHaveBeenCalledWith({
         bank_code: '058',
         account_number: '0123456789',
@@ -153,7 +158,7 @@ describe('DisbursementAccountsService', () => {
       expect(prisma.disbursementAccount.create).not.toHaveBeenCalled();
     });
 
-    it('skips name lookup for CRYPTO_ADDRESS', async () => {
+    it('skips name lookup for CRYPTO_ADDRESS and returns nulls for name + score', async () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(UNVERIFIED_USER);
       prisma.disbursementAccount.count.mockResolvedValue(0);
       prisma.disbursementAccount.create.mockResolvedValue({ id: 'acct-uuid' });
@@ -161,6 +166,10 @@ describe('DisbursementAccountsService', () => {
       const result = await service.addAccount('user-uuid', CRYPTO_DTO);
 
       expect(result.id).toBe('acct-uuid');
+      expect(result.account_holder_name).toBeNull();
+      expect(result.name_match_score).toBeNull();
+      expect(result.status).toBe(DisbursementAccountStatus.VERIFIED);
+      expect(result.is_default).toBe(true);
       expect(disbursement_provider.lookupAccountName).not.toHaveBeenCalled();
     });
 

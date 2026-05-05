@@ -35,7 +35,14 @@ export class DisbursementAccountsService {
   async addAccount(
     user_id: string,
     dto: AddDisbursementAccountDto,
-  ): Promise<{ id: string; message: string }> {
+  ): Promise<{
+    id: string;
+    account_holder_name: string | null;
+    name_match_score: number | null;
+    status: DisbursementAccountStatus;
+    is_default: boolean;
+    message: string;
+  }> {
     const existing_count = await this.prisma.disbursementAccount.count({
       where: { user_id, kind: dto.kind },
     });
@@ -125,6 +132,10 @@ export class DisbursementAccountsService {
 
     return {
       id: account.id,
+      account_holder_name,
+      name_match_score,
+      status,
+      is_default: is_first,
       message: 'Disbursement account added successfully.',
     };
   }

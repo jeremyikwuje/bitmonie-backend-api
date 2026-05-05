@@ -20,7 +20,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import type { Request } from 'express';
-import type { User } from '@prisma/client';
+import type { User, DisbursementAccountStatus } from '@prisma/client';
 import { SessionGuard } from '@/common/guards/session.guard';
 import { KycTierGuard } from '@/common/guards/kyc-tier.guard';
 import { RequiresKyc } from '@/common/decorators/requires-kyc.decorator';
@@ -39,15 +39,30 @@ export class DisbursementAccountsController {
   constructor(private readonly service: DisbursementAccountsService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Add a disbursement account' })
-  @ApiResponse({ status: 201, description: 'Account added' })
+  @ApiOperation({
+    summary: 'Add a disbursement account',
+    description:
+      'For BANK and MOBILE_MONEY kinds the response echoes the resolved ' +
+      'account_holder_name (fetched from the rail and matched against the ' +
+      'user\'s KYC name) plus the name_match_score, so the client can confirm ' +
+      'to the user what name was matched. CRYPTO_ADDRESS skips the name lookup ' +
+      'and returns null for both fields.',
+  })
+  @ApiResponse({ status: 201, description: 'Account added — resolved name + match score returned' })
   @ApiResponse({ status: 400, description: 'Max accounts reached' })
   @ApiResponse({ status: 403, description: 'KYC required' })
   @ApiResponse({ status: 422, description: 'Name mismatch' })
   async addAccount(
     @Req() req: AuthRequest,
     @Body() dto: AddDisbursementAccountDto,
-  ): Promise<{ id: string; message: string }> {
+  ): Promise<{
+    id: string;
+    account_holder_name: string | null;
+    name_match_score: number | null;
+    status: DisbursementAccountStatus;
+    is_default: boolean;
+    message: string;
+  }> {
     return this.service.addAccount(req.user.id, dto);
   }
 
