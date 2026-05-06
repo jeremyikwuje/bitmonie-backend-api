@@ -50,6 +50,17 @@ export class MeSummaryResponseDto {
   })
   outstanding_ngn!: string;
 
+  @ApiProperty({
+    description:
+      'Total amount the user\'s outstanding will grow by tomorrow if they take no action ' +
+      '— interest + custody, summed across every ACTIVE loan. Interest is computed against ' +
+      'the current outstanding principal (post-repayments), so partial repayments lower it. ' +
+      'Custody is fixed at origination. Drives the "₦X accrues daily" urgency line on Home. ' +
+      '"0" if no ACTIVE loans.',
+    example: '2200',
+  })
+  daily_accrual_ngn!: string;
+
   @ApiProperty({ description: 'Count of loans currently in ACTIVE.' })
   active_loan_count!: number;
 

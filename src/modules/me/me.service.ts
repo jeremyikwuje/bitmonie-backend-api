@@ -20,6 +20,11 @@ import {
 // Spec: ../../../docs/web.md §5.1.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Basis-points denominator for converting daily_interest_rate_bps → daily
+// fraction. Mirrors the same private constant in AccrualService — fine to
+// duplicate since 10_000 is the bps definition, not project-specific config.
+const BPS_DENOMINATOR = new Decimal('10000');
+
 // Stable urgency tiers — the spec only promises "sort DESC, no fixed range,"
 // so future tiers can slot between these without breaking the contract.
 const URGENCY: Record<AttentionKind, number> = {
@@ -64,8 +69,16 @@ export class MeService {
     const pending_loans = loans.filter((l) => l.status === LoanStatus.PENDING_COLLATERAL);
     const repaid_loans = loans.filter((l) => l.status === LoanStatus.REPAID);
 
-    // ── outstanding sum ──────────────────────────────────────────────────────
+    // ── outstanding sum + projected next-day accrual ─────────────────────────
+    // daily_accrual_ngn is the total amount the user's outstanding will grow
+    // by tomorrow if they take no action — interest + custody, summed across
+    // every ACTIVE loan. Drives the "₦X accrues daily" urgency line on the
+    // Home hero so the user feels the cost of waiting. Interest is computed
+    // against current outstanding principal (post-repayments) — partial
+    // repayments lower the daily interest. Custody is fixed at origination
+    // and accrues regardless of repayments.
     let outstanding_total = new Decimal(0);
+    let daily_accrual_total = new Decimal(0);
     const active_outstandings = new Map<string, Decimal>();
     for (const loan of active_loans) {
       const result = this.accrual.compute({
@@ -75,6 +88,14 @@ export class MeService {
       });
       outstanding_total = outstanding_total.plus(result.total_outstanding_ngn);
       active_outstandings.set(loan.id, result.total_outstanding_ngn);
+
+      // bps → fraction. Same shape AccrualService uses internally; kept here
+      // so we don't have to expose a new method on AccrualService just for
+      // this single per-day projection.
+      const rate_factor = new Decimal(loan.daily_interest_rate_bps).div(BPS_DENOMINATOR);
+      const daily_interest = result.principal_ngn.mul(rate_factor);
+      const daily_custody = new Decimal(loan.daily_custody_fee_ngn.toString());
+      daily_accrual_total = daily_accrual_total.plus(daily_interest).plus(daily_custody);
     }
 
     // ── attention cards ──────────────────────────────────────────────────────
@@ -196,6 +217,7 @@ export class MeService {
 
     return {
       outstanding_ngn: displayNgn(outstanding_total, 'ceil'),
+      daily_accrual_ngn: displayNgn(daily_accrual_total, 'ceil'),
       active_loan_count: active_loans.length,
       attention,
       unmatched_inflow_count: unmatched_count,

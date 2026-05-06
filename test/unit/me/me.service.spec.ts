@@ -77,6 +77,7 @@ describe('MeService', () => {
     const result = await service.getSummary(USER_ID);
 
     expect(result.outstanding_ngn).toBe('0');
+    expect(result.daily_accrual_ngn).toBe('0');
     expect(result.active_loan_count).toBe(0);
     expect(result.attention).toEqual([]);
     expect(result.unmatched_inflow_count).toBe(0);
@@ -84,6 +85,23 @@ describe('MeService', () => {
     // No ACTIVE loan → don't waste a price-feed call. Keeps the endpoint
     // responsive even when the feed is degraded for non-ACTIVE users.
     expect(price_feed.getCurrentRate).not.toHaveBeenCalled();
+  });
+
+  it('computes daily_accrual_ngn = (outstanding principal × bps/10000) + daily_custody, summed across ACTIVE loans', async () => {
+    // Two ACTIVE loans, no repayments → outstanding principal == initial principal.
+    // make_loan defaults daily_custody_fee_ngn=700, daily_interest_rate_bps=30.
+    //   loan A: ₦500,000 × 30bps = ₦1,500 interest + ₦700 custody = ₦2,200/day
+    //   loan B: ₦200,000 × 30bps = ₦600 interest   + ₦700 custody = ₦1,300/day
+    //   total                                                       = ₦3,500/day (ceil)
+    prisma.loan.findMany.mockResolvedValue([
+      make_loan({ id: 'loan-A', principal_ngn: '500000' }),
+      make_loan({ id: 'loan-B', principal_ngn: '200000' }),
+    ]);
+
+    const result = await service.getSummary(USER_ID);
+
+    expect(result.active_loan_count).toBe(2);
+    expect(result.daily_accrual_ngn).toBe('3500');
   });
 
   it('emits a PENDING_COLLATERAL card with the matched payment-request expiry', async () => {

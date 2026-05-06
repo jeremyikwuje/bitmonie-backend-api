@@ -84,6 +84,7 @@ Single-shot snapshot the web client polls on app focus and after every write tha
 ```json
 {
   "outstanding_ngn": "525000",
+  "daily_accrual_ngn": "2200",
   "active_loan_count": 2,
   "attention": [
     {
@@ -111,6 +112,7 @@ Single-shot snapshot the web client polls on app focus and after every write tha
 Fields:
 
 - `outstanding_ngn` — sum of `AccrualService.compute(loan, repayments, now)` across all `ACTIVE` loans, displayed via `displayNgn(..., 'ceil')` to match repayment-side rounding (customer pays us → ceil).
+- `daily_accrual_ngn` — total amount the user's outstanding will grow by tomorrow if they take no action: interest + custody, summed across every `ACTIVE` loan. Interest is computed against the current outstanding principal (post-repayments), so partial repayments lower it. Custody is fixed at origination and accrues regardless of repayments. Drives the "₦X accrues daily" urgency line on Home. `"0"` when no `ACTIVE` loans.
 - `active_loan_count` — count of loans in `ACTIVE`. `PENDING_COLLATERAL` excluded — it has zero outstanding.
 - `attention[]` — loans needing user action, sorted by `urgency` desc. Web renders this as the peek-stack on Home (top card visible, others peek with a `+N more` indicator). Empty array when nothing needs attention.
   - `kind` enum: `PENDING_COLLATERAL`, `OVERDUE_GRACE`, `LIQUIDATION_RISK` (`collateral_ngn < ALERT_THRESHOLD × outstanding`, i.e. 1.20×), `AWAITING_RELEASE_ADDRESS` (REPAID with NULL `collateral_release_address`).
