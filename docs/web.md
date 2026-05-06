@@ -19,7 +19,7 @@ This spec is the contract between this API and the web client. The web codebase 
 ## 2. Auth + transport
 
 - Browser → `https://api.bitmonie.co/v1/...` from origin `https://web.bitmonie.co`.
-- The session cookie set by `POST /v1/auth/login` is `HttpOnly`, `Secure`, `SameSite=Lax`, `Domain=.bitmonie.co` so it carries across subdomains.
+- The session cookie set by `POST /v1/auth/login` is `HttpOnly`, `Secure`, `SameSite=None` in non-dev environments so it works for cross-site SPA auth (e.g. `localhost:5173 → api.bitmonie.co` or `web.bitmonie.co → api.bitmonie.co`). In `NODE_ENV=development` it falls back to `SameSite=Lax` + `Secure=false` so localhost-to-localhost dev works without HTTPS. CSRF is mitigated by `HttpOnly` + the `ALLOWED_ORIGIN` allowlist (preflight gates which origins can even attempt credentialed requests) + the `Idempotency-Key` requirement on every write.
 - **CORS:** `Access-Control-Allow-Origin: https://web.bitmonie.co` + `Access-Control-Allow-Credentials: true`. The `ALLOWED_ORIGIN` env var must include the production web origin and any preview origins.
 - The web client always sends `credentials: 'include'`. There is no `Authorization` header path for the web client — session cookie only.
 - Any 401 on an authed call → web client clears in-memory user state and routes to `/login`. Never auto-refresh, never silently retry.

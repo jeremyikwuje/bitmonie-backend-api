@@ -85,13 +85,7 @@ export class AuthController {
       req.headers['user-agent'],
     );
 
-    res.cookie('session', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV !== 'development',
-      sameSite: 'strict',
-      maxAge: SESSION_TTL_SEC * 1_000,
-      path: '/',
-    });
+    res.cookie('session', token, sessionCookieOptions(SESSION_TTL_SEC * 1_000));
 
     return { message: 'Logged in.', token, expires_in: SESSION_TTL_SEC };
   }
@@ -110,7 +104,7 @@ export class AuthController {
     const token = (req as Request & { cookies?: Record<string, string> }).cookies?.session ?? '';
     await this.auth_service.logout(token);
 
-    res.clearCookie('session', { path: '/' });
+    res.clearCookie('session', sessionCookieOptions());
     return { message: 'Logged out.' };
   }
 
@@ -125,7 +119,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ message: string }> {
     await this.auth_service.logoutAll(user.id);
-    res.clearCookie('session', { path: '/' });
+    res.clearCookie('session', sessionCookieOptions());
     return { message: 'All sessions ended.' };
   }
 
@@ -212,4 +206,29 @@ export class AuthController {
       created_at: user.created_at,
     };
   }
+}
+
+// Single source of truth for the session-cookie attributes. login (set) and
+// the two logout paths (clear) MUST agree on every attribute or browsers
+// will silently keep the original cookie around after logout.
+//
+//   sameSite='none' + secure=true  → required for cross-site SPA auth
+//     (e.g. localhost:5173 / web.bitmonie.co frontend → api.bitmonie.co API).
+//     'strict' / 'lax' would block the cookie on cross-site fetches.
+//   sameSite='lax' + secure=false  → dev fallback for localhost:port-to-port,
+//     where 'none' would force HTTPS that we don't have locally.
+//
+// CSRF: still mitigated by HttpOnly + ALLOWED_ORIGIN allowlist (preflight
+// gates which origins can even attempt credentialed requests) + the
+// Idempotency-Key requirement on every write. Add a CSRF token if the
+// trust boundary later needs it.
+function sessionCookieOptions(maxAge?: number) {
+  const is_dev = process.env.NODE_ENV === 'development';
+  return {
+    httpOnly: true,
+    secure: !is_dev,
+    sameSite: (is_dev ? 'lax' : 'none') as 'lax' | 'none',
+    path: '/',
+    ...(maxAge !== undefined ? { maxAge } : {}),
+  };
 }
