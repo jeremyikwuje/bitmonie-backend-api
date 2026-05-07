@@ -11,6 +11,11 @@ export interface UserProfile {
   date_of_birth: Date | null;
   country: string;
   totp_enabled: boolean;
+  // Boolean derivation of `transaction_pin_hash !== null`. Drives the
+  // "Set transaction PIN" nudge in the Security panel without forcing the
+  // web client to also call `/v1/auth/me`. The hash itself never leaves the
+  // server.
+  transaction_pin_set: boolean;
   kyc_tier: number;
   is_active: boolean;
   disbursement_enabled: boolean;
@@ -30,7 +35,7 @@ export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getProfile(user_id: string): Promise<UserProfile> {
-    return this.prisma.user.findUniqueOrThrow({
+    const row = await this.prisma.user.findUniqueOrThrow({
       where: { id: user_id },
       select: {
         id: true,
@@ -42,6 +47,7 @@ export class UsersService {
         date_of_birth: true,
         country: true,
         totp_enabled: true,
+        transaction_pin_hash: true,
         kyc_tier: true,
         is_active: true,
         disbursement_enabled: true,
@@ -58,5 +64,7 @@ export class UsersService {
         },
       },
     });
+    const { transaction_pin_hash, ...rest } = row;
+    return { ...rest, transaction_pin_set: transaction_pin_hash !== null };
   }
 }
