@@ -1,6 +1,5 @@
 import { Injectable, Inject, HttpStatus } from '@nestjs/common';
 import type Redis from 'ioredis';
-import * as argon2 from 'argon2';
 import { generateSecret, verify as totpVerify, generateURI } from 'otplib';
 import * as QRCode from 'qrcode';
 import { randomInt, createHash, timingSafeEqual } from 'crypto';
@@ -8,12 +7,14 @@ import { PrismaService } from '@/database/prisma.service';
 import { CryptoService } from '@/common/crypto/crypto.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
 import { SessionService } from './session.service';
-import { EMAIL_PROVIDER, type EmailProvider } from './email.provider.interface';
+import {
+  EMAIL_PROVIDER,
+  type EmailProvider,
+  type OtpPurpose,
+} from './email.provider.interface';
 import type { SignupDto } from './dto/signup.dto';
-import type { LoginDto } from './dto/login.dto';
 import type { VerifyEmailDto } from './dto/verify-email.dto';
-import type { ForgotPasswordDto } from './dto/forgot-password.dto';
-import type { ResetPasswordDto } from './dto/reset-password.dto';
+import type { VerifyLoginOtpDto } from './dto/verify-login-otp.dto';
 import type { Verify2faDto } from './dto/verify-2fa.dto';
 import {
   AuthInvalidCredentialsException,
@@ -28,11 +29,16 @@ const OTP_MAX_ATTEMPTS = 5;
 const OTP_LENGTH = 6;
 const APP_NAME = 'Bitmonie';
 
-function otpKey(purpose: 'verify' | 'reset', email: string): string {
+// All scoped OTP purposes share the same Redis key/attempts discipline.
+// Email-only OTPs (verify, login) key on the email; loan/PIN-scoped OTPs
+// key on user_id (+ optional resource_id) — see scopedOtpKey.
+type EmailScopedPurpose = Extract<OtpPurpose, 'verify' | 'login'>;
+
+function emailOtpKey(purpose: EmailScopedPurpose, email: string): string {
   return `auth:otp:${purpose}:${email}`;
 }
 
-function otpAttemptsKey(purpose: 'verify' | 'reset', email: string): string {
+function emailOtpAttemptsKey(purpose: EmailScopedPurpose, email: string): string {
   return `auth:otp_attempts:${purpose}:${email}`;
 }
 
@@ -57,6 +63,8 @@ export class AuthService {
     @Inject(EMAIL_PROVIDER) private readonly email_provider: EmailProvider,
   ) {}
 
+  // ── Signup + email verification ────────────────────────────────────────────
+
   async signup(dto: SignupDto, ip?: string, user_agent?: string): Promise<void> {
     void ip;
     void user_agent;
@@ -64,16 +72,18 @@ export class AuthService {
     const email = dto.email.toLowerCase();
     const existing = await this.prisma.user.findUnique({ where: { email } });
 
+    // Always send the OTP (or pretend to) so signup never leaks whether an
+    // email is registered. If it exists and is verified, we silently no-op
+    // — the normal path for that user is /login, not /signup.
     if (existing) {
-      await this.sendEmailVerificationOtp(email);
+      if (!existing.email_verified) await this.sendEmailOtp('verify', email);
       return;
     }
 
-    const password_hash = await argon2.hash(dto.password);
     await this.prisma.user.create({
-      data: { email, password_hash, email_verified: false, country: 'NG' },
+      data: { email, email_verified: false, country: 'NG' },
     });
-    await this.sendEmailVerificationOtp(email);
+    await this.sendEmailOtp('verify', email);
   }
 
   async verifyEmail(dto: VerifyEmailDto): Promise<void> {
@@ -90,19 +100,45 @@ export class AuthService {
       );
     }
 
-    await this.consumeOtp('verify', email, dto.otp);
+    await this.consumeEmailOtp('verify', email, dto.otp);
     await this.prisma.user.update({ where: { id: user.id }, data: { email_verified: true } });
   }
 
-  async login(dto: LoginDto, ip?: string, user_agent?: string): Promise<{ token: string }> {
+  async resendVerificationEmail(email: string): Promise<void> {
+    const normalised = email.toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email: normalised } });
+    if (!user || user.email_verified) return;
+    await this.sendEmailOtp('verify', normalised);
+  }
+
+  // ── Passwordless login ─────────────────────────────────────────────────────
+  //
+  // Two-step: request-otp emails a code; verify-otp consumes it and mints a
+  // session. TOTP is NOT consulted at login by design — see the security
+  // model in CLAUDE.md §5.4a and the rationale in docs/tdd.md (auth section).
+
+  async requestLoginOtp(email: string): Promise<void> {
+    const normalised = email.toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email: normalised } });
+    // Never leak whether the email exists. We also skip unverified users so
+    // signup-then-immediately-login forces them through verify-email first.
+    if (!user || !user.email_verified) return;
+    await this.sendEmailOtp('login', normalised);
+  }
+
+  async verifyLoginOtp(
+    dto: VerifyLoginOtpDto,
+    ip?: string,
+    user_agent?: string,
+  ): Promise<{ token: string }> {
     const email = dto.email.toLowerCase();
     const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) throw new AuthOtpExpiredException();
 
-    if (!user) throw new AuthInvalidCredentialsException();
-
-    const password_ok = await argon2.verify(user.password_hash, dto.password);
-    if (!password_ok) throw new AuthInvalidCredentialsException();
-
+    // Defense in depth: an attacker shouldn't be able to log into an
+    // unverified account by guessing OTPs of the verification flow. The
+    // login OTP is independent (different Redis key), so this is mostly
+    // belt-and-braces — but we still enforce email_verified as a hard gate.
     if (!user.email_verified) {
       throw new BitmonieException(
         'AUTH_EMAIL_NOT_VERIFIED',
@@ -111,15 +147,13 @@ export class AuthService {
       );
     }
 
-    if (user.totp_enabled) {
-      if (!dto.totp_code) throw new Auth2faRequiredException();
-      const secret = user.totp_secret ? this.crypto_service.decrypt(user.totp_secret) : null;
-      if (!secret) throw new AuthInvalidCredentialsException();
-      const result = await totpVerify({ secret, token: dto.totp_code });
-      if (!result.valid) throw new AuthInvalidCredentialsException();
-    }
+    await this.consumeEmailOtp('login', email, dto.otp);
 
-    const token = await this.session_service.create({ user_id: user.id, ip_address: ip, user_agent });
+    const token = await this.session_service.create({
+      user_id:    user.id,
+      ip_address: ip,
+      user_agent,
+    });
     return { token };
   }
 
@@ -131,6 +165,13 @@ export class AuthService {
   async logoutAll(user_id: string): Promise<void> {
     await this.session_service.destroyAll(user_id);
   }
+
+  // ── 2FA (TOTP) ─────────────────────────────────────────────────────────────
+  //
+  // TOTP is OPT-IN and used as a transaction step-up factor (alongside the
+  // transaction PIN) — never at login. setup → confirm activates it; disable
+  // requires the user to prove possession of the current code (no password
+  // exists to gate it anymore).
 
   async setup2fa(user_id: string): Promise<{ secret: string; qr_code_uri: string; otpauth_url: string }> {
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: user_id } });
@@ -191,73 +232,8 @@ export class AuthService {
     });
   }
 
-  async forgotPassword(dto: ForgotPasswordDto): Promise<void> {
-    const email = dto.email.toLowerCase();
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user) return; // never leak account existence
-    await this.sendPasswordResetOtp(email);
-  }
-
-  async resetPassword(dto: ResetPasswordDto): Promise<void> {
-    const email = dto.email.toLowerCase();
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user) throw new AuthOtpExpiredException();
-
-    await this.consumeOtp('reset', email, dto.otp);
-
-    const password_hash = await argon2.hash(dto.new_password);
-    await this.prisma.user.update({ where: { id: user.id }, data: { password_hash } });
-    await this.session_service.destroyAll(user.id);
-  }
-
-  async resendVerificationEmail(email: string): Promise<void> {
-    const normalised = email.toLowerCase();
-    const user = await this.prisma.user.findUnique({ where: { email: normalised } });
-    if (!user || user.email_verified) return;
-    await this.sendEmailVerificationOtp(normalised);
-  }
-
-  // ── Private helpers ────────────────────────────────────────────────────────
-
-  private generateOtp(): string {
-    return String(randomInt(0, 1_000_000)).padStart(OTP_LENGTH, '0');
-  }
-
-  private async sendEmailVerificationOtp(email: string): Promise<void> {
-    const otp = this.generateOtp();
-    await this.redis.set(otpKey('verify', email), hashOtp(otp), 'EX', OTP_TTL_SEC);
-    await this.redis.del(otpAttemptsKey('verify', email));
-    await this.email_provider.sendOtp({ to: email, otp, purpose: 'verify' });
-  }
-
-  private async sendPasswordResetOtp(email: string): Promise<void> {
-    const otp = this.generateOtp();
-    await this.redis.set(otpKey('reset', email), hashOtp(otp), 'EX', OTP_TTL_SEC);
-    await this.redis.del(otpAttemptsKey('reset', email));
-    await this.email_provider.sendOtp({ to: email, otp, purpose: 'reset' });
-  }
-
-  private async consumeOtp(purpose: 'verify' | 'reset', email: string, otp: string): Promise<void> {
-    const attempts_key = otpAttemptsKey(purpose, email);
-    const attempts_raw = await this.redis.get(attempts_key);
-    const attempts = attempts_raw ? parseInt(attempts_raw, 10) : 0;
-
-    if (attempts >= OTP_MAX_ATTEMPTS) throw new AuthOtpMaxAttemptsException();
-
-    const stored_hash = await this.redis.get(otpKey(purpose, email));
-    if (!stored_hash) throw new AuthOtpExpiredException();
-
-    await this.redis.incr(attempts_key);
-    await this.redis.expire(attempts_key, OTP_TTL_SEC);
-
-    if (!safeCompareOtp(otp, stored_hash)) throw new AuthOtpExpiredException();
-
-    await this.redis.del(otpKey(purpose, email));
-    await this.redis.del(attempts_key);
-  }
-
   // ─────────────────────────────────────────────────────────────────────────
-  // Step-up verification for the release-address change path
+  // Step-up verification — release-address change (email OTP scoped to loan)
   //
   // Used by LoansService.setReleaseAddress when the customer is CHANGING an
   // existing release address (NULL→value first-set is exempt). The OTP key
@@ -272,35 +248,50 @@ export class AuthService {
       select: { email: true },
     });
     const otp = this.generateOtp();
-    const key = releaseAddressOtpKey(user_id, loan_id);
+    const key = scopedOtpKey('release_address_change', user_id, loan_id);
     await this.redis.set(key, hashOtp(otp), 'EX', OTP_TTL_SEC);
-    await this.redis.del(releaseAddressOtpAttemptsKey(user_id, loan_id));
+    await this.redis.del(scopedOtpAttemptsKey('release_address_change', user_id, loan_id));
     await this.email_provider.sendOtp({ to: user.email, otp, purpose: 'release_address_change' });
   }
 
   async consumeReleaseAddressChangeOtp(user_id: string, loan_id: string, otp: string): Promise<void> {
-    const attempts_key = releaseAddressOtpAttemptsKey(user_id, loan_id);
-    const attempts_raw = await this.redis.get(attempts_key);
-    const attempts = attempts_raw ? parseInt(attempts_raw, 10) : 0;
-    if (attempts >= OTP_MAX_ATTEMPTS) throw new AuthOtpMaxAttemptsException();
+    return this.consumeScopedOtp('release_address_change', user_id, otp, loan_id);
+  }
 
-    const stored_hash = await this.redis.get(releaseAddressOtpKey(user_id, loan_id));
-    if (!stored_hash) throw new AuthOtpExpiredException();
+  // ─────────────────────────────────────────────────────────────────────────
+  // Transaction-PIN OTPs — scoped to user_id only (no resource id needed
+  // because PINs are user-global). TransactionPinService delegates email
+  // delivery here so we keep all OTP discipline (TTL, attempts, hashing) in
+  // one place.
+  // ─────────────────────────────────────────────────────────────────────────
 
-    await this.redis.incr(attempts_key);
-    await this.redis.expire(attempts_key, OTP_TTL_SEC);
+  async sendTransactionPinOtp(
+    user_id: string,
+    purpose: 'transaction_pin_set' | 'transaction_pin_change' | 'transaction_pin_disable',
+  ): Promise<void> {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where:  { id: user_id },
+      select: { email: true },
+    });
+    const otp = this.generateOtp();
+    await this.redis.set(scopedOtpKey(purpose, user_id), hashOtp(otp), 'EX', OTP_TTL_SEC);
+    await this.redis.del(scopedOtpAttemptsKey(purpose, user_id));
+    await this.email_provider.sendOtp({ to: user.email, otp, purpose });
+  }
 
-    if (!safeCompareOtp(otp, stored_hash)) throw new AuthOtpExpiredException();
-
-    await this.redis.del(releaseAddressOtpKey(user_id, loan_id));
-    await this.redis.del(attempts_key);
+  async consumeTransactionPinOtp(
+    user_id: string,
+    purpose: 'transaction_pin_set' | 'transaction_pin_change' | 'transaction_pin_disable',
+    otp: string,
+  ): Promise<void> {
+    return this.consumeScopedOtp(purpose, user_id, otp);
   }
 
   // Verifies a TOTP code against the user's stored secret. Caller is
   // expected to have already checked user.totp_enabled — if not enabled,
   // throws Auth2faRequiredException (treated as configuration error since
   // step-up flows shouldn't request TOTP from non-2FA users). Wrong code
-  // throws AuthInvalidCredentialsException, matching the login flow.
+  // throws AuthInvalidCredentialsException.
   async verifyTotpForUser(user_id: string, totp_code: string): Promise<void> {
     const user = await this.prisma.user.findUniqueOrThrow({
       where:  { id: user_id },
@@ -313,12 +304,81 @@ export class AuthService {
     const result = await totpVerify({ secret, token: totp_code });
     if (!result.valid) throw new AuthInvalidCredentialsException();
   }
+
+  // ── Private helpers ────────────────────────────────────────────────────────
+
+  private generateOtp(): string {
+    return String(randomInt(0, 1_000_000)).padStart(OTP_LENGTH, '0');
+  }
+
+  private async sendEmailOtp(purpose: EmailScopedPurpose, email: string): Promise<void> {
+    const otp = this.generateOtp();
+    await this.redis.set(emailOtpKey(purpose, email), hashOtp(otp), 'EX', OTP_TTL_SEC);
+    await this.redis.del(emailOtpAttemptsKey(purpose, email));
+    await this.email_provider.sendOtp({ to: email, otp, purpose });
+  }
+
+  private async consumeEmailOtp(
+    purpose: EmailScopedPurpose,
+    email: string,
+    otp: string,
+  ): Promise<void> {
+    const attempts_key = emailOtpAttemptsKey(purpose, email);
+    const attempts_raw = await this.redis.get(attempts_key);
+    const attempts = attempts_raw ? parseInt(attempts_raw, 10) : 0;
+
+    if (attempts >= OTP_MAX_ATTEMPTS) throw new AuthOtpMaxAttemptsException();
+
+    const stored_hash = await this.redis.get(emailOtpKey(purpose, email));
+    if (!stored_hash) throw new AuthOtpExpiredException();
+
+    await this.redis.incr(attempts_key);
+    await this.redis.expire(attempts_key, OTP_TTL_SEC);
+
+    if (!safeCompareOtp(otp, stored_hash)) throw new AuthOtpExpiredException();
+
+    await this.redis.del(emailOtpKey(purpose, email));
+    await this.redis.del(attempts_key);
+  }
+
+  private async consumeScopedOtp(
+    purpose: Exclude<OtpPurpose, EmailScopedPurpose>,
+    user_id: string,
+    otp: string,
+    resource_id?: string,
+  ): Promise<void> {
+    const attempts_key = scopedOtpAttemptsKey(purpose, user_id, resource_id);
+    const attempts_raw = await this.redis.get(attempts_key);
+    const attempts = attempts_raw ? parseInt(attempts_raw, 10) : 0;
+    if (attempts >= OTP_MAX_ATTEMPTS) throw new AuthOtpMaxAttemptsException();
+
+    const stored_hash = await this.redis.get(scopedOtpKey(purpose, user_id, resource_id));
+    if (!stored_hash) throw new AuthOtpExpiredException();
+
+    await this.redis.incr(attempts_key);
+    await this.redis.expire(attempts_key, OTP_TTL_SEC);
+
+    if (!safeCompareOtp(otp, stored_hash)) throw new AuthOtpExpiredException();
+
+    await this.redis.del(scopedOtpKey(purpose, user_id, resource_id));
+    await this.redis.del(attempts_key);
+  }
 }
 
-function releaseAddressOtpKey(user_id: string, loan_id: string): string {
-  return `auth:otp:release_address_change:${user_id}:${loan_id}`;
+function scopedOtpKey(
+  purpose: Exclude<OtpPurpose, EmailScopedPurpose>,
+  user_id: string,
+  resource_id?: string,
+): string {
+  const tail = resource_id ? `:${resource_id}` : '';
+  return `auth:otp:${purpose}:${user_id}${tail}`;
 }
 
-function releaseAddressOtpAttemptsKey(user_id: string, loan_id: string): string {
-  return `auth:otp_attempts:release_address_change:${user_id}:${loan_id}`;
+function scopedOtpAttemptsKey(
+  purpose: Exclude<OtpPurpose, EmailScopedPurpose>,
+  user_id: string,
+  resource_id?: string,
+): string {
+  const tail = resource_id ? `:${resource_id}` : '';
+  return `auth:otp_attempts:${purpose}:${user_id}${tail}`;
 }

@@ -52,6 +52,14 @@ export const SATS_PER_BTC              = new Decimal('100000000');
 export const ALERT_COOLDOWN_SEC        = 86_400;
 export const IDEMPOTENCY_TTL_SEC       = 86_400;
 export const SESSION_TTL_SEC           = 86_400;
+
+// Transaction PIN (customer step-up factor — see CLAUDE.md §5.4a).
+// Stored as Argon2id hash. After TRANSACTION_PIN_MAX_ATTEMPTS consecutive
+// wrong tries the PIN is locked for TRANSACTION_PIN_LOCKOUT_SEC; the
+// successful_check counter resets on any correct submission.
+export const TRANSACTION_PIN_LENGTH       = 6;
+export const TRANSACTION_PIN_MAX_ATTEMPTS = 5;
+export const TRANSACTION_PIN_LOCKOUT_SEC  = 900;       // 15 min
 export const OPS_SESSION_TTL_SEC       = 28_800;       // 8h fixed, no sliding (docs/ops-module.md §9)
 export const OPS_CHALLENGE_TTL_SEC     = 300;          // 5min — login → verify-2fa window
 export const OPS_ENROLMENT_TTL_SEC     = 900;          // 15min — login → enrol-2fa window

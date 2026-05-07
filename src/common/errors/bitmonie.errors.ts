@@ -532,11 +532,16 @@ export class LoanDisabledException extends BitmonieException {
 
 // ── AUTH ────────────────────────────────────────────────────────
 
+// Generic "rejected" credential. Customer auth is passwordless, so this is
+// raised for: wrong login OTP (we surface `AUTH_OTP_EXPIRED` for TTL/empty,
+// but a code mismatch routes here too via timing-safe compare); a TOTP code
+// rejected during a 2FA-gated step-up; a transaction-PIN check routed here
+// when the dedicated `TransactionPinInvalidException` would leak intent.
 export class AuthInvalidCredentialsException extends BitmonieException {
   constructor() {
     super(
       'AUTH_INVALID_CREDENTIALS',
-      'Invalid email or password.',
+      'Invalid credentials.',
       HttpStatus.UNAUTHORIZED,
     );
   }
@@ -546,7 +551,7 @@ export class AuthOtpExpiredException extends BitmonieException {
   constructor() {
     super(
       'AUTH_OTP_EXPIRED',
-      'OTP has expired. Please request a new one.',
+      'OTP has expired or is invalid. Please request a new one.',
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
   }
@@ -562,12 +567,86 @@ export class AuthOtpMaxAttemptsException extends BitmonieException {
   }
 }
 
+// Raised when an authenticated step (e.g. disabling 2FA) requires the user
+// to prove possession of their TOTP authenticator and either no code was
+// submitted or the user has not enrolled. NOT raised at login — login is
+// passwordless and never asks for TOTP.
 export class Auth2faRequiredException extends BitmonieException {
   constructor() {
     super(
       'AUTH_2FA_REQUIRED',
-      'Login requires a TOTP code.',
+      'A TOTP code is required for this action.',
       HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+// ── TRANSACTION PIN ─────────────────────────────────────────────
+
+export class TransactionPinNotSetException extends BitmonieException {
+  constructor() {
+    super(
+      'TRANSACTION_PIN_NOT_SET',
+      'Transaction PIN is not set. Set one via POST /v1/auth/transaction-pin/set first.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
+export class TransactionPinAlreadySetException extends BitmonieException {
+  constructor() {
+    super(
+      'TRANSACTION_PIN_ALREADY_SET',
+      'Transaction PIN is already set. Use POST /v1/auth/transaction-pin/change to change it.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
+export class TransactionPinInvalidException extends BitmonieException {
+  constructor() {
+    super(
+      'TRANSACTION_PIN_INVALID',
+      'Transaction PIN is incorrect.',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class TransactionPinLockedException extends BitmonieException {
+  constructor(context: { unlocks_at: string }) {
+    super(
+      'TRANSACTION_PIN_LOCKED',
+      'Transaction PIN is locked due to too many wrong attempts. Try again after the lockout window.',
+      HttpStatus.TOO_MANY_REQUESTS,
+      [{ field: 'unlocks_at', issue: context.unlocks_at }],
+    );
+  }
+}
+
+// ── STEP-UP (transaction factor: PIN OR TOTP) ───────────────────
+
+// User submitted a sensitive request that requires a step-up factor but
+// did not provide one (or provided neither pin nor totp_code).
+export class TransactionFactorRequiredException extends BitmonieException {
+  constructor() {
+    super(
+      'TRANSACTION_FACTOR_REQUIRED',
+      'This action requires a transaction PIN or TOTP code. Submit one of `transaction_pin` or `totp_code`.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+// Hard prerequisite for sensitive ops (e.g. changing the release address):
+// the user must have at least one of {transaction PIN, TOTP} configured.
+// If both are unset, refuse — there is no factor to step up against.
+export class TransactionFactorNotSetException extends BitmonieException {
+  constructor() {
+    super(
+      'TRANSACTION_FACTOR_NOT_SET',
+      'Set a transaction PIN or enable 2FA before performing this action.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
     );
   }
 }

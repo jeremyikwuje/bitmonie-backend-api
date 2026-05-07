@@ -150,22 +150,24 @@ export class LoansController {
     description:
       'First-set (NULL → value) is allowed with just an authenticated session. ' +
       'CHANGING an existing address requires step-up verification: email OTP always, ' +
-      'plus TOTP if the user has 2FA enabled. Request the email OTP via ' +
+      'plus EITHER the user\'s transaction PIN OR a TOTP code (the user must have at ' +
+      'least one of them configured). Request the email OTP via ' +
       'POST /v1/loans/:id/release-address/request-change-otp before submitting. ' +
       'Refused once collateral has been released — that address is bound to the actual send.',
   })
   @ApiResponse({ status: 204 })
-  @ApiResponse({ status: 401, description: 'Wrong TOTP code' })
+  @ApiResponse({ status: 401, description: 'PIN or TOTP rejected' })
   @ApiResponse({ status: 409, description: 'Loan already released' })
-  @ApiResponse({ status: 422, description: 'Email OTP missing/invalid/expired or 2FA code missing' })
+  @ApiResponse({ status: 422, description: 'Email OTP missing/invalid/expired, transaction factor missing, or no factor configured' })
   async setReleaseAddress(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SetReleaseAddressDto,
   ): Promise<void> {
     await this.loans.setReleaseAddress(user.id, id, dto.collateral_release_address, {
-      email_otp: dto.email_otp,
-      totp_code: dto.totp_code,
+      email_otp:       dto.email_otp,
+      transaction_pin: dto.transaction_pin,
+      totp_code:       dto.totp_code,
     });
   }
 

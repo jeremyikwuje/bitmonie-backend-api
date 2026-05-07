@@ -38,7 +38,7 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 
 | Module | Purpose |
 |---|---|
-| `auth` | Sessions, email OTP, 2FA (TOTP), password reset |
+| `auth` | Passwordless customer login (email OTP), sessions, 2FA (TOTP), transaction PIN — see §5.13 |
 | `kyc` | BVN/NIN verification — required before first loan; provisions the user's permanent NGN repayment VA on tier-1 success |
 | `user-repayment-accounts` | One permanent PalmPay virtual account per user (tied to BVN), reused across every loan |
 | `disbursement-accounts` | Add/remove/default payout destinations (BANK / MOBILE_MONEY / CRYPTO_ADDRESS) — max 5 per kind; name-matched against User row first, KYC legal_name fallback |
@@ -153,8 +153,8 @@ Provider name lives in `processing_provider`, `triggered_by_id`, etc. — as dat
 - **Address is optional indefinitely.** A loan can sit at REPAID with `collateral_released_at IS NULL` waiting for the customer to enter their address via `PATCH /v1/loans/:id/release-address`. The worker picks it up the moment the address is set.
 - **Customer endpoint accepts changes, but step-up verified.** `PATCH /v1/loans/:id/release-address`:
   - First-set (NULL → value): authenticated session is sufficient.
-  - Change (value → value): requires step-up — email OTP (always) plus TOTP if the user has 2FA enabled.
-  Closes the attack vector of a compromised customer account swapping the address right before release. The customer first calls `POST /v1/loans/:id/release-address/request-change-otp` which emails a 6-digit code scoped to (user, loan), then submits the new address with `email_otp` (and `totp_code` when 2FA is on) on the PATCH. The OTP is single-use, expires in 15 min, and uses the same Redis attempts-counter discipline as the auth-flow OTPs.
+  - Change (value → value): requires step-up — email OTP (always) PLUS one of {transaction PIN, TOTP code}. The user must have at least one factor configured; if neither is set, refuse with `TRANSACTION_FACTOR_NOT_SET`. When both are configured the customer picks per request.
+  Closes the attack vector of a compromised customer account swapping the address right before release. The customer first calls `POST /v1/loans/:id/release-address/request-change-otp` which emails a 6-digit code scoped to (user, loan), then submits the new address with `email_otp` and one of (`transaction_pin`, `totp_code`) on the PATCH. The OTP is single-use, expires in 15 min, and uses the same Redis attempts-counter discipline as the auth-flow OTPs.
   After release, `setReleaseAddress` rejects with `CollateralAlreadyReleasedException` (409) — the address is now bound to the actual send and is part of loan history.
 - **Send failure semantics.** Standard failure (provider rejected the send): worker keeps retrying; ops alerted once per loan per 24h via Redis dedupe. Critical failure (provider sent successfully but DB stamp failed): page ops every time without dedupe — real money has moved without the loan reflecting it; manual reconciliation required before any retry.
 
@@ -240,7 +240,9 @@ The legacy `POST /v1/loans/:id/claim-inflow` endpoint is **deprecated** but stil
 - Never log: BVN, NIN, account numbers, session tokens, API keys, Lightning secrets, BOLT11 invoice strings.
 - Never store raw BVN/NIN — only `encrypted_bvn` (AES-256-GCM) + `bvn_hash` (SHA-256+salt).
 - Never return encrypted fields in any response.
-- Argon2id for passwords. Sessions: 32-byte opaque token, SHA-256 hash in DB, HttpOnly Secure cookie.
+- Customer auth is **passwordless**. Login = email OTP only (`POST /v1/auth/login/request-otp` → `POST /v1/auth/login/verify-otp`). TOTP is NOT consulted at login by design — see §5.13.
+- Argon2id for the **transaction PIN** (customer step-up factor) and for the **OpsUser** password (internal staff, separate model — `OpsUser.password_hash`). Customer `User` has no password column.
+- Sessions: 32-byte opaque token, SHA-256 hash in DB, HttpOnly Secure cookie.
 - Rate limit all auth endpoints + public calculator.
 
 ### 5.9 Tracing & time
@@ -272,6 +274,33 @@ DTOs → class-validator + class-transformer. External API responses → Zod. Ne
 ### 5.12 Pagination
 
 Cursor-based only. No offset pagination.
+
+### 5.13 Customer auth model — passwordless + transaction-PIN step-up
+
+**Login is single-factor email OTP.** Customer `User` has no `password_hash` column. The flow:
+
+1. `POST /v1/auth/signup`            → email-only payload; OTP delivered to inbox.
+2. `POST /v1/auth/verify-email`      → consumes the verify OTP, marks `email_verified`.
+3. `POST /v1/auth/login/request-otp` → emails a `login`-purpose OTP (always 200, never leaks account existence).
+4. `POST /v1/auth/login/verify-otp`  → consumes it, mints a session.
+
+TOTP is **never** consulted at login — it would re-introduce the cognitive load passwordless was meant to remove. TOTP is repositioned as a transaction step-up factor only.
+
+**Transaction PIN** (`transaction_pin_hash`, Argon2id): opt-in second factor for sensitive ops. 6-digit numeric, lockout after `TRANSACTION_PIN_MAX_ATTEMPTS` wrong tries for `TRANSACTION_PIN_LOCKOUT_SEC`. Endpoints under `POST /v1/auth/transaction-pin/{request-set-otp, set, request-change-otp, change, request-disable-otp, disable}`. All mutations require an email OTP. Disable accepts EITHER current PIN OR TOTP code as the proof factor (recovery path when the user forgets the PIN but has their authenticator).
+
+**Step-up rule (currently applied to: release-address change).** A sensitive op:
+
+1. Requires the user to have **at least one of {transaction PIN, TOTP}** configured. Neither set → refuse with `TRANSACTION_FACTOR_NOT_SET`.
+2. Requires email OTP (scoped to the resource — see §5.4a release-address).
+3. Requires **exactly one of** `transaction_pin` or `totp_code` in the body. Neither → `TRANSACTION_FACTOR_REQUIRED`. Both submitted → `transaction_pin` wins (lenient on a typo'd unused field).
+
+The step-up rule lives in `StepUpService.verifyTransactionFactor`. Don't reach into `TransactionPinService.verifyPinOrThrow` or `AuthService.verifyTotpForUser` directly from a feature module — the preconditions belong in StepUp.
+
+**`/v1/auth/me`** returns `transaction_pin_set: boolean` so the web client can subtly nudge users to configure a factor. Don't aggressive-modal it; the dependency is enforced at the sensitive-op call site, not at session start.
+
+**OAuth** is deferred to v1.2. Don't scaffold an `OAuthProvider` interface or routes until a concrete provider is picked.
+
+**Ops auth (`OpsUser`) is unchanged** — internal staff still authenticate with email + password + TOTP via `/v1/ops/auth/*`. Different trust boundary, different model.
 
 ---
 

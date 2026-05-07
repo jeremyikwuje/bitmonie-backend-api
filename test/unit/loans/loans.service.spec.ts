@@ -18,6 +18,7 @@ import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/
 import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
 import { AuthService } from '@/modules/auth/auth.service';
+import { StepUpService } from '@/modules/auth/step-up.service';
 import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from '@/modules/loans/price-quote.provider.interface';
 import {
   COLLATERAL_PROVIDER,
@@ -27,7 +28,6 @@ import { PrismaService } from '@/database/prisma.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
 import {
   AddCollateralAlreadyPendingException,
-  Auth2faRequiredException,
   CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
@@ -43,6 +43,8 @@ import {
   ReleaseAddressNotYetSetException,
   ReleaseAddressOtpRequiredException,
   RepaymentAccountNotReadyException,
+  TransactionFactorNotSetException,
+  TransactionFactorRequiredException,
 } from '@/common/errors/bitmonie.errors';
 
 const USER_ID   = 'user-uuid-001';
@@ -50,23 +52,26 @@ const LOAN_ID   = 'loan-uuid-001';
 const ACCT_ID   = 'acct-uuid-001';
 
 const ACTIVE_USER: User = {
-  id:                   USER_ID,
-  email:                'ada@test.com',
-  email_verified:       true,
-  password_hash:        'hash',
-  totp_secret:          null,
-  totp_enabled:         false,
-  country:              'NG',
-  is_active:            true,
-  disbursement_enabled: true,
-  loan_enabled:         true,
-  kyc_tier:             1,
-  first_name:           'Ada',
-  middle_name:          null,
-  last_name:            'Obi',
-  date_of_birth:        null,
-  created_at:           new Date(),
-  updated_at:           new Date(),
+  id:                              USER_ID,
+  email:                           'ada@test.com',
+  email_verified:                  true,
+  totp_secret:                     null,
+  totp_enabled:                    false,
+  transaction_pin_hash:            null,
+  transaction_pin_set_at:          null,
+  transaction_pin_failed_attempts: 0,
+  transaction_pin_locked_until:    null,
+  country:                         'NG',
+  is_active:                       true,
+  disbursement_enabled:            true,
+  loan_enabled:                    true,
+  kyc_tier:                        1,
+  first_name:                      'Ada',
+  middle_name:                     null,
+  last_name:                       'Obi',
+  date_of_birth:                   null,
+  created_at:                      new Date(),
+  updated_at:                      new Date(),
 };
 
 const DEFAULT_ACCOUNT = {
@@ -153,6 +158,9 @@ function make_prisma() {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany:  jest.fn().mockResolvedValue([]),
     },
+    paymentRequest: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     user: {
       findUniqueOrThrow: jest.fn().mockResolvedValue({ totp_enabled: false }),
     },
@@ -186,6 +194,7 @@ describe('LoansService', () => {
   let loan_notifications: MockProxy<LoanNotificationsService>;
   let collateral_release: MockProxy<CollateralReleaseService>;
   let auth_service: MockProxy<AuthService>;
+  let step_up: MockProxy<StepUpService>;
   let redis: { set: jest.Mock; get: jest.Mock; del: jest.Mock };
 
   const SAT_RATE     = new Decimal('0.97');
@@ -210,6 +219,7 @@ describe('LoansService', () => {
     collateral_release  = mock<CollateralReleaseService>();
     collateral_release.releaseForLoan.mockResolvedValue({ status: 'released', reference: 'stub' });
     auth_service        = mock<AuthService>();
+    step_up             = mock<StepUpService>();
     redis               = { set: jest.fn().mockResolvedValue('OK'), get: jest.fn(), del: jest.fn() };
 
     user_repayment_accounts.ensureForUser.mockResolvedValue({
@@ -248,6 +258,7 @@ describe('LoansService', () => {
         { provide: LoanNotificationsService,     useValue: loan_notifications },
         { provide: CollateralReleaseService,     useValue: collateral_release },
         { provide: AuthService,                  useValue: auth_service },
+        { provide: StepUpService,                useValue: step_up },
       ],
     }).compile();
 
@@ -401,6 +412,39 @@ describe('LoansService', () => {
       prisma.loan.findFirst.mockResolvedValue(null);
       await expect(service.getLoan(USER_ID, 'other-loan')).rejects.toThrow(LoanNotFoundException);
     });
+
+    it('returns payment_request for PENDING_COLLATERAL so the loan-detail page can render the BOLT11', async () => {
+      prisma.loan.findFirst.mockResolvedValue({ ...(DB_LOAN as object), status_logs: [] } as never);
+      prisma.paymentRequest.findFirst.mockResolvedValue({
+        payment_request:   'lnbc1500u1...',
+        receiving_address: 'jeremy@blink.sv',
+        expires_at:        new Date('2026-05-05T14:32:00Z'),
+      } as never);
+
+      const result = await service.getLoan(USER_ID, LOAN_ID);
+
+      expect(result.payment_request).toEqual({
+        bolt11:            'lnbc1500u1...',
+        payment_uri:       'lightning:lnbc1500u1...',
+        receiving_address: 'jeremy@blink.sv',
+        expires_at:        new Date('2026-05-05T14:32:00Z'),
+        // BigInt → string per the JSON serialization shim in main.ts
+        amount_sat:        '515464',
+      });
+    });
+
+    it('returns payment_request=null for non-PENDING_COLLATERAL loans (no payment_request lookup)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as object),
+        status: LoanStatus.ACTIVE,
+        status_logs: [],
+      } as never);
+
+      const result = await service.getLoan(USER_ID, LOAN_ID);
+
+      expect(result.payment_request).toBeNull();
+      expect(prisma.paymentRequest.findFirst).not.toHaveBeenCalled();
+    });
   });
 
   // ── getRepaymentInstructions ──────────────────────────────────────────────────
@@ -545,6 +589,27 @@ describe('LoansService', () => {
       );
     });
 
+    it('change without any factor configured is rejected (TRANSACTION_FACTOR_NOT_SET)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                     LoanStatus.ACTIVE,
+        collateral_release_address: 'old@addr.sv',
+        collateral_released_at:     null,
+      } as never);
+      step_up.assertHasAnyFactorConfigured.mockRejectedValue(new TransactionFactorNotSetException());
+
+      await expect(
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', {
+          email_otp:       '482917',
+          transaction_pin: '142857',
+        }),
+      ).rejects.toThrow(TransactionFactorNotSetException);
+
+      // No OTP consumed — refused before the email check.
+      expect(auth_service.consumeReleaseAddressChangeOtp).not.toHaveBeenCalled();
+      expect(prisma.loan.update).not.toHaveBeenCalled();
+    });
+
     it('change without an email_otp is rejected (RELEASE_ADDRESS_OTP_REQUIRED)', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
@@ -561,67 +626,67 @@ describe('LoansService', () => {
       expect(prisma.loan.update).not.toHaveBeenCalled();
     });
 
-    it('change with valid email_otp + no 2FA succeeds', async () => {
+    it('change with email_otp + transaction_pin succeeds (PIN path)', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
         status:                     LoanStatus.ACTIVE,
         collateral_release_address: 'old@addr.sv',
         collateral_released_at:     null,
       } as never);
-      prisma.user.findUniqueOrThrow.mockResolvedValue({ totp_enabled: false } as never);
 
-      await service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', { email_otp: '482917' });
+      await service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', {
+        email_otp:       '482917',
+        transaction_pin: '142857',
+      });
 
       expect(auth_service.consumeReleaseAddressChangeOtp)
         .toHaveBeenCalledWith(USER_ID, LOAN_ID, '482917');
-      expect(auth_service.verifyTotpForUser).not.toHaveBeenCalled();
+      expect(step_up.verifyTransactionFactor)
+        .toHaveBeenCalledWith(USER_ID, { transaction_pin: '142857', totp_code: undefined });
       expect(prisma.loan.update).toHaveBeenCalledWith({
         where: { id: LOAN_ID },
         data:  { collateral_release_address: 'new@addr.sv' },
       });
     });
 
-    it('change with 2FA enabled but no totp_code is rejected (Auth2faRequiredException)', async () => {
+    it('change with email_otp + totp_code succeeds (TOTP path)', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
         status:                     LoanStatus.ACTIVE,
         collateral_release_address: 'old@addr.sv',
         collateral_released_at:     null,
       } as never);
-      prisma.user.findUniqueOrThrow.mockResolvedValue({ totp_enabled: true } as never);
-
-      await expect(
-        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', { email_otp: '482917' }),
-      ).rejects.toThrow(Auth2faRequiredException);
-
-      // Email OTP is consumed BEFORE the 2FA check (caller already proved
-      // possession of the email — the OTP is single-use). The TOTP guard
-      // surfaces afterwards if missing.
-      expect(auth_service.consumeReleaseAddressChangeOtp).toHaveBeenCalled();
-      expect(prisma.loan.update).not.toHaveBeenCalled();
-    });
-
-    it('change with 2FA enabled + valid email_otp + valid totp_code succeeds', async () => {
-      prisma.loan.findFirst.mockResolvedValue({
-        ...(DB_LOAN as Record<string, unknown>),
-        status:                     LoanStatus.ACTIVE,
-        collateral_release_address: 'old@addr.sv',
-        collateral_released_at:     null,
-      } as never);
-      prisma.user.findUniqueOrThrow.mockResolvedValue({ totp_enabled: true } as never);
 
       await service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', {
         email_otp: '482917',
         totp_code: '293041',
       });
 
-      expect(auth_service.consumeReleaseAddressChangeOtp)
-        .toHaveBeenCalledWith(USER_ID, LOAN_ID, '482917');
-      expect(auth_service.verifyTotpForUser).toHaveBeenCalledWith(USER_ID, '293041');
+      expect(step_up.verifyTransactionFactor)
+        .toHaveBeenCalledWith(USER_ID, { transaction_pin: undefined, totp_code: '293041' });
       expect(prisma.loan.update).toHaveBeenCalled();
     });
 
-    it('first-set (NULL → value) does NOT require email_otp / totp_code', async () => {
+    it('change with email_otp but neither factor is rejected (TRANSACTION_FACTOR_REQUIRED)', async () => {
+      prisma.loan.findFirst.mockResolvedValue({
+        ...(DB_LOAN as Record<string, unknown>),
+        status:                     LoanStatus.ACTIVE,
+        collateral_release_address: 'old@addr.sv',
+        collateral_released_at:     null,
+      } as never);
+      step_up.verifyTransactionFactor.mockRejectedValue(new TransactionFactorRequiredException());
+
+      await expect(
+        service.setReleaseAddress(USER_ID, LOAN_ID, 'new@addr.sv', { email_otp: '482917' }),
+      ).rejects.toThrow(TransactionFactorRequiredException);
+
+      // Email OTP is consumed BEFORE the factor check (single-use, already
+      // burned by the wrong call). Loan is not updated.
+      expect(auth_service.consumeReleaseAddressChangeOtp).toHaveBeenCalled();
+      expect(prisma.loan.update).not.toHaveBeenCalled();
+    });
+
+    it('first-set (NULL → value) does NOT require email_otp or any factor', async () => {
       prisma.loan.findFirst.mockResolvedValue({
         ...(DB_LOAN as Record<string, unknown>),
         status:                     LoanStatus.ACTIVE,
@@ -632,7 +697,8 @@ describe('LoansService', () => {
       await service.setReleaseAddress(USER_ID, LOAN_ID, 'first@addr.sv');
 
       expect(auth_service.consumeReleaseAddressChangeOtp).not.toHaveBeenCalled();
-      expect(auth_service.verifyTotpForUser).not.toHaveBeenCalled();
+      expect(step_up.verifyTransactionFactor).not.toHaveBeenCalled();
+      expect(step_up.assertHasAnyFactorConfigured).not.toHaveBeenCalled();
       expect(prisma.loan.update).toHaveBeenCalledWith({
         where: { id: LOAN_ID },
         data:  { collateral_release_address: 'first@addr.sv' },

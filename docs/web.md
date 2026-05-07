@@ -39,7 +39,7 @@ The web client enforces a linear gate before mounting the app shell. Three of th
 
 Once all four pass, the web client mounts `/`, `/loans`, etc. The `KycTierGuard` + `RequiresKyc(1)` on `POST /v1/loans/checkout` is still the authoritative server-side enforcement — the gate is convenience, not security.
 
-> Note: `GET /v1/auth/me` also exists and returns a *minimal* identity payload (`id, email, email_verified, totp_enabled, created_at`) but **not** `kyc_tier` or `repayment_account`. Use `users/me` for the gate; `auth/me` is unnecessary for the web client.
+> Note: `GET /v1/auth/me` also exists and returns a *minimal* identity payload (`id, email, email_verified, totp_enabled, transaction_pin_set, created_at`) but **not** `kyc_tier` or `repayment_account`. Use `users/me` for the gate; `auth/me` carries the security-flags the avatar sheet uses to render the "Set transaction PIN" / "Enable 2FA" nudges.
 
 ---
 
@@ -47,10 +47,9 @@ Once all four pass, the web client mounts `/`, `/loans`, etc. The `KycTierGuard`
 
 | Screen | Endpoints |
 |---|---|
-| `/signup` | `POST /v1/auth/signup` |
+| `/signup` | `POST /v1/auth/signup` (email-only — passwordless) |
 | `/verify-email` | `POST /v1/auth/verify-email`, `POST /v1/auth/resend-verification` |
-| `/login` | `POST /v1/auth/login` (incl. 2FA submit) |
-| `/forgot-password`, `/reset-password` | `POST /v1/auth/forgot-password`, `POST /v1/auth/reset-password` |
+| `/login` | `POST /v1/auth/login/request-otp` then `POST /v1/auth/login/verify-otp` (passwordless — see §4.1). TOTP is NOT consulted at login. |
 | `/kyc` | `POST /v1/kyc/tier-1`, `GET /v1/kyc/status` |
 | `/add-bank` + avatar-sheet bank management | `GET /v1/banks`, `POST /v1/disbursement-accounts`, `GET /v1/disbursement-accounts`, `PATCH /v1/disbursement-accounts/:id/default`, `DELETE /v1/disbursement-accounts/:id` |
 | **Top bar "You Owe" + Home attention banners** | **NEW** `GET /v1/me/summary` (§5.1) |
@@ -60,14 +59,59 @@ Once all four pass, the web client mounts `/`, `/loans`, etc. The `KycTierGuard`
 | Loans — list | `GET /v1/loans` |
 | Loans — inflows banner | `GET /v1/inflows/unmatched` (count + total — `me/summary` already carries this; full list only on tap-through) |
 | `/inflows` | `GET /v1/inflows/unmatched`, `POST /v1/inflows/:inflow_id/apply` (Idempotency-Key) |
-| Loan detail (PENDING_COLLATERAL) | `GET /v1/loans/:id`, `POST /v1/loans/:id/cancel` |
+| Loan detail (PENDING_COLLATERAL) | `GET /v1/loans/:id` (response includes `payment_request: { bolt11, payment_uri, receiving_address, expires_at, amount_sat }` so the page can render the BOLT11 + QR + countdown after a reload — null on non-PENDING loans), `POST /v1/loans/:id/cancel` |
 | Loan detail (ACTIVE) | `GET /v1/loans/:id`, `GET /v1/loans/:id/repayment-instructions`, `POST /v1/loans/:id/add-collateral` (Idempotency-Key) |
-| Loan detail — set/change release address | `POST /v1/loans/:id/release-address/request-change-otp`, `PATCH /v1/loans/:id/release-address` |
-| Avatar sheet — Profile / Security | `GET /v1/users/me`, `GET /v1/auth/2fa/setup`, `POST /v1/auth/2fa/confirm`, `POST /v1/auth/2fa/disable`, `POST /v1/auth/logout`, `POST /v1/auth/logout-all` |
+| Loan detail — set/change release address | `POST /v1/loans/:id/release-address/request-change-otp`, `PATCH /v1/loans/:id/release-address` (change requires email OTP + one of `transaction_pin` / `totp_code` — see §4.2) |
+| Avatar sheet — Profile / Security | `GET /v1/users/me`, `GET /v1/auth/2fa/setup`, `POST /v1/auth/2fa/confirm`, `POST /v1/auth/2fa/disable`, `POST /v1/auth/logout`, `POST /v1/auth/logout-all` — plus the transaction-PIN endpoints under `/v1/auth/transaction-pin/*` (see §4.3) |
 | Avatar sheet — Repayment account | `GET /v1/users/me` → `repayment_account: { virtual_account_no, virtual_account_name, bank_name, provider } \| null` (already nested in profile response — no extra call) |
 | Avatar sheet — Rates | `GET /v1/rates` — public, no auth. Returns `{ rates: [{ pair, rate_buy, rate_sell, fetched_at }] }` for SAT_NGN / BTC_NGN / USDT_NGN. Returns 422 if the feed is stale. |
 
-The web client does not call any deprecated endpoint. `POST /v1/loans/:id/claim-inflow` is replaced end-to-end by `GET /v1/inflows/unmatched` + `POST /v1/inflows/:id/apply`.
+The web client does not call any deprecated endpoint. `POST /v1/loans/:id/claim-inflow` is replaced end-to-end by `GET /v1/inflows/unmatched` + `POST /v1/inflows/:id/apply`. `POST /v1/auth/login` (legacy password) and `POST /v1/auth/forgot-password` / `reset-password` are removed entirely — customer auth is passwordless.
+
+### 4.1 Passwordless login flow
+
+Two-step, no password ever:
+
+1. **Request a code.** `POST /v1/auth/login/request-otp` with `{ email }`. Always returns 200 — never leaks whether the email is registered. If registered + verified, a 6-digit OTP is emailed (`auth:otp:login:<email>` in Redis, 15-min TTL).
+2. **Submit the code.** `POST /v1/auth/login/verify-otp` with `{ email, otp }`. On success: session cookie is set + `{ token, expires_in }` is returned in the body for mobile clients. **TOTP is not consulted here** — login is single-factor by design. Sensitive transactional ops (currently: changing the release address) use a separate step-up factor; see §4.2.
+
+The verify endpoint surfaces `AUTH_OTP_EXPIRED` (422) for wrong / missing / expired codes and `AUTH_OTP_MAX_ATTEMPTS` (429) after 5 wrong tries within the 15-min window. Hitting max attempts requires the user to start over with a fresh code.
+
+### 4.2 Transaction step-up — release-address change
+
+`PATCH /v1/loans/:id/release-address` is the only endpoint today that requires step-up. The rules:
+
+- **First-set** (`collateral_release_address` was NULL): authenticated session is sufficient. No OTP, no factor.
+- **Change** (`collateral_release_address` was non-NULL): requires
+  1. The user has at least ONE of `{transaction_pin, totp_enabled}` configured. If neither, the request is refused with `TRANSACTION_FACTOR_NOT_SET` (422). The web client should drive the user to the security panel before re-attempting.
+  2. An email OTP from `POST /v1/loans/:id/release-address/request-change-otp` (15-min TTL, scoped to (user, loan)).
+  3. EITHER `transaction_pin` OR `totp_code` in the PATCH body (whichever the user prefers when both are configured).
+- **Refused after release:** once `collateral_released_at` is set, the address is part of loan history. `CollateralAlreadyReleasedException` (409).
+
+Error matrix the web client should map to UX:
+
+| Code | HTTP | What the web client should do |
+|---|---|---|
+| `TRANSACTION_FACTOR_NOT_SET` | 422 | Show "Set a PIN or enable 2FA first" and link to the security panel. |
+| `RELEASE_ADDRESS_OTP_REQUIRED` | 422 | Re-trigger the request-change-otp flow. |
+| `TRANSACTION_FACTOR_REQUIRED` | 422 | Re-prompt for PIN/TOTP — the email OTP was already consumed, so it survives this. The user must request a fresh email OTP if they then go idle. |
+| `TRANSACTION_PIN_INVALID` | 401 | "Wrong PIN" — let the user retry. The PIN locks after 5 wrong attempts (`TRANSACTION_PIN_LOCKED`, 429). |
+| `TRANSACTION_PIN_LOCKED` | 429 | Show "PIN locked until {`unlocks_at`}" — `details[0]` carries the ISO timestamp. The user can switch to TOTP if they have it. |
+| `AUTH_INVALID_CREDENTIALS` | 401 | Generic "Wrong code" for TOTP rejections. |
+| `COLLATERAL_ALREADY_RELEASED` | 409 | Replace the form with a release-history view; the address is no longer changeable. |
+
+### 4.3 Transaction PIN management
+
+Customer-managed via:
+
+- `POST /v1/auth/transaction-pin/request-set-otp`            — emails the set-PIN OTP (refused with `TRANSACTION_PIN_ALREADY_SET` if a PIN already exists).
+- `POST /v1/auth/transaction-pin/set`                        — body `{ email_otp, transaction_pin }`. PIN is 6 digits.
+- `POST /v1/auth/transaction-pin/request-change-otp`         — for rotating an existing PIN.
+- `POST /v1/auth/transaction-pin/change`                     — body `{ current_transaction_pin, email_otp, new_transaction_pin }`.
+- `POST /v1/auth/transaction-pin/request-disable-otp`        — for removing the PIN.
+- `POST /v1/auth/transaction-pin/disable`                    — body `{ email_otp, current_transaction_pin? | totp_code? }` (recovery path: a user who forgot the PIN but has TOTP can still disable it).
+
+`GET /v1/auth/me` returns `transaction_pin_set: boolean` so the security panel can render the right call-to-action without an extra round-trip. Subtle nudge — don't blocking-modal the user into setting one. The hard requirement only fires at the sensitive-op call site (§4.2).
 
 ---
 

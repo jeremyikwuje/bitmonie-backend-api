@@ -1,7 +1,7 @@
 // Mock ESM-only / native dependencies before any imports load them
 jest.mock('argon2', () => ({
   hash: jest.fn().mockResolvedValue('$argon2id$mock'),
-  verify: jest.fn().mockResolvedValue(false), // default: wrong password; override per-test
+  verify: jest.fn().mockResolvedValue(false),
 }));
 jest.mock('otplib', () => ({
   generateSecret: jest.fn().mockReturnValue('BASE32TESTSECRET'),
@@ -23,7 +23,6 @@ import { CryptoService } from '@/common/crypto/crypto.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
 import { PrismaService } from '@/database/prisma.service';
 
-// Plain jest.fn() mock — avoids ts-jest issues with Prisma's complex generic return types
 function make_prisma() {
   return {
     user: {
@@ -48,9 +47,12 @@ function make_user(overrides: Record<string, unknown> = {}) {
     id: 'user-uuid',
     email: 'test@example.com',
     email_verified: true,
-    password_hash: 'hashed',
     totp_enabled: false,
     totp_secret: null as string | null,
+    transaction_pin_hash:            null as string | null,
+    transaction_pin_set_at:          null as Date | null,
+    transaction_pin_failed_attempts: 0,
+    transaction_pin_locked_until:    null as Date | null,
     created_at: new Date(),
     updated_at: new Date(),
     ...overrides,
@@ -90,18 +92,20 @@ describe('AuthService', () => {
     service = module.get(AuthService);
   });
 
-  // ── signup ──────────────────────────────────────────────────────────────────
+  // ── signup (passwordless) ───────────────────────────────────────────────────
 
   describe('signup', () => {
-    it('creates user and queues OTP when email is new', async () => {
+    it('creates user and queues verify-OTP when email is new', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
       prisma.user.create.mockResolvedValue(make_user({ email_verified: false }));
 
-      await service.signup({ email: 'NEW@EXAMPLE.COM', password: 'pass1234' });
+      await service.signup({ email: 'NEW@EXAMPLE.COM' });
 
       expect(prisma.user.create).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ email: 'new@example.com' }) }),
       );
+      // No password column should be touched.
+      expect(prisma.user.create.mock.calls[0][0].data).not.toHaveProperty('password_hash');
       expect(redis.set).toHaveBeenCalledWith(
         'auth:otp:verify:new@example.com',
         expect.any(String),
@@ -110,13 +114,22 @@ describe('AuthService', () => {
       );
     });
 
-    it('resends OTP silently when email already registered', async () => {
-      prisma.user.findUnique.mockResolvedValue(make_user());
+    it('resends verify-OTP silently when email is registered but unverified', async () => {
+      prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: false }));
 
-      await service.signup({ email: 'test@example.com', password: 'pass1234' });
+      await service.signup({ email: 'test@example.com' });
 
       expect(prisma.user.create).not.toHaveBeenCalled();
       expect(redis.set).toHaveBeenCalled();
+    });
+
+    it('silently no-ops when email is already registered AND verified', async () => {
+      prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: true }));
+
+      await service.signup({ email: 'test@example.com' });
+
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
     });
   });
 
@@ -150,8 +163,8 @@ describe('AuthService', () => {
     it('throws AUTH_OTP_EXPIRED when OTP not in Redis', async () => {
       prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: false }));
       redis.get
-        .mockResolvedValueOnce('0')   // attempts
-        .mockResolvedValueOnce(null); // no stored hash
+        .mockResolvedValueOnce('0')
+        .mockResolvedValueOnce(null);
 
       await expect(service.verifyEmail({ email: 'test@example.com', otp: '000000' }))
         .rejects.toMatchObject({ code: 'AUTH_OTP_EXPIRED' });
@@ -166,70 +179,71 @@ describe('AuthService', () => {
     });
   });
 
-  // ── login ───────────────────────────────────────────────────────────────────
+  // ── Passwordless login ──────────────────────────────────────────────────────
 
-  describe('login', () => {
-    it('throws AUTH_INVALID_CREDENTIALS for unknown email', async () => {
+  describe('requestLoginOtp', () => {
+    it('silently no-ops for unknown email (no leak)', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
-
-      await expect(service.login({ email: 'x@x.com', password: 'pass' }))
-        .rejects.toMatchObject({ code: 'AUTH_INVALID_CREDENTIALS' });
-    });
-
-    it('throws AUTH_EMAIL_NOT_VERIFIED when email unverified', async () => {
-      const argon2 = await import('argon2');
-      (argon2.verify as jest.Mock).mockResolvedValue(true);
-      prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: false }));
-
-      await expect(service.login({ email: 'test@example.com', password: 'pass' }))
-        .rejects.toMatchObject({ code: 'AUTH_EMAIL_NOT_VERIFIED' });
-    });
-
-    it('throws AUTH_2FA_REQUIRED when TOTP enabled but no code supplied', async () => {
-      const argon2 = await import('argon2');
-      (argon2.verify as jest.Mock).mockResolvedValue(true);
-      prisma.user.findUnique.mockResolvedValue(
-        make_user({ totp_enabled: true, totp_secret: 'enc' }),
-      );
-
-      await expect(service.login({ email: 'test@example.com', password: 'pass' }))
-        .rejects.toMatchObject({ code: 'AUTH_2FA_REQUIRED' });
-    });
-
-    it('returns token on successful login', async () => {
-      const argon2 = await import('argon2');
-      (argon2.verify as jest.Mock).mockResolvedValue(true);
-      prisma.user.findUnique.mockResolvedValue(make_user());
-      session_service.create.mockResolvedValue('session-token');
-
-      const result = await service.login({ email: 'test@example.com', password: 'pass' });
-
-      expect(result).toEqual({ token: 'session-token' });
-    });
-  });
-
-  // ── forgotPassword ──────────────────────────────────────────────────────────
-
-  describe('forgotPassword', () => {
-    it('returns silently for unknown email — no OTP sent', async () => {
-      prisma.user.findUnique.mockResolvedValue(null);
-
-      await service.forgotPassword({ email: 'unknown@example.com' });
-
+      await service.requestLoginOtp('unknown@example.com');
       expect(redis.set).not.toHaveBeenCalled();
     });
 
-    it('sends reset OTP for known email', async () => {
+    it('silently no-ops for unverified accounts', async () => {
+      prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: false }));
+      await service.requestLoginOtp('test@example.com');
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('writes login OTP to Redis under the login: namespace', async () => {
       prisma.user.findUnique.mockResolvedValue(make_user());
-
-      await service.forgotPassword({ email: 'test@example.com' });
-
+      await service.requestLoginOtp('TEST@example.com');
       expect(redis.set).toHaveBeenCalledWith(
-        'auth:otp:reset:test@example.com',
+        'auth:otp:login:test@example.com',
         expect.any(String),
         'EX',
         900,
       );
+    });
+  });
+
+  describe('verifyLoginOtp', () => {
+    it('throws AUTH_OTP_EXPIRED for unknown email', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      await expect(service.verifyLoginOtp({ email: 'x@x.com', otp: '000000' }))
+        .rejects.toMatchObject({ code: 'AUTH_OTP_EXPIRED' });
+    });
+
+    it('throws AUTH_EMAIL_NOT_VERIFIED for unverified email', async () => {
+      prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: false }));
+      await expect(service.verifyLoginOtp({ email: 'test@example.com', otp: '000000' }))
+        .rejects.toMatchObject({ code: 'AUTH_EMAIL_NOT_VERIFIED' });
+    });
+
+    it('throws AUTH_OTP_EXPIRED when no login OTP in Redis', async () => {
+      prisma.user.findUnique.mockResolvedValue(make_user());
+      redis.get
+        .mockResolvedValueOnce('0')   // attempts
+        .mockResolvedValueOnce(null); // no stored login OTP
+
+      await expect(service.verifyLoginOtp({ email: 'test@example.com', otp: '000000' }))
+        .rejects.toMatchObject({ code: 'AUTH_OTP_EXPIRED' });
+    });
+
+    it('mints session on matching OTP — does NOT consult TOTP', async () => {
+      const otp = '424242';
+      const otp_hash = createHash('sha256').update(otp).digest('hex');
+      // 2FA enabled to prove TOTP is intentionally skipped at login.
+      prisma.user.findUnique.mockResolvedValue(make_user({ totp_enabled: true, totp_secret: 'enc' }));
+      redis.get
+        .mockResolvedValueOnce('0')
+        .mockResolvedValueOnce(otp_hash);
+      session_service.create.mockResolvedValue('session-token');
+
+      const result = await service.verifyLoginOtp({ email: 'test@example.com', otp });
+
+      expect(result).toEqual({ token: 'session-token' });
+      // Login OTP key should be cleared after consumption.
+      expect(redis.del).toHaveBeenCalledWith('auth:otp:login:test@example.com');
     });
   });
 
@@ -255,6 +269,23 @@ describe('AuthService', () => {
       expect(result.secret).toBeTruthy();
       expect(result.otpauth_url).toContain('otpauth://totp/');
       expect(result.qr_code_uri).toContain('data:image/png;base64,');
+    });
+  });
+
+  // ── Transaction-PIN OTP delivery (delegated by TransactionPinService) ───────
+
+  describe('sendTransactionPinOtp', () => {
+    it('writes a scoped OTP under the user_id namespace', async () => {
+      prisma.user.findUniqueOrThrow.mockResolvedValue(make_user());
+
+      await service.sendTransactionPinOtp('user-uuid', 'transaction_pin_set');
+
+      expect(redis.set).toHaveBeenCalledWith(
+        'auth:otp:transaction_pin_set:user-uuid',
+        expect.any(String),
+        'EX',
+        900,
+      );
     });
   });
 });

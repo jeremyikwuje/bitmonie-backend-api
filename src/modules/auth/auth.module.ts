@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { TransactionPinService } from './transaction-pin.service';
+import { StepUpService } from './step-up.service';
 import { SessionService } from './session.service';
 import { DatabaseModule } from '@/database/database.module';
 import { CryptoModule } from '@/common/crypto/crypto.module';
@@ -20,6 +22,8 @@ import { RedisModule } from '@/database/redis.module';
   controllers: [AuthController],
   providers: [
     AuthService,
+    TransactionPinService,
+    StepUpService,
     SessionService,
     {
       provide: EMAIL_PROVIDER,
@@ -37,6 +41,6 @@ import { RedisModule } from '@/database/redis.module';
       },
     },
   ],
-  exports: [SessionService, AuthService, EMAIL_PROVIDER],
+  exports: [SessionService, AuthService, TransactionPinService, StepUpService, EMAIL_PROVIDER],
 })
 export class AuthModule {}

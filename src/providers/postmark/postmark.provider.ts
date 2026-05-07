@@ -3,6 +3,7 @@ import type {
   OtpEmailParams,
   TransactionalEmailParams,
 } from '@/modules/auth/email.provider.interface';
+import { buildOtpEmailContent } from '@/modules/auth/otp-email-content';
 import type { PostmarkConfig } from '@/config/providers.config';
 
 export class PostmarkProvider implements EmailProvider {
@@ -11,8 +12,8 @@ export class PostmarkProvider implements EmailProvider {
   constructor(private readonly config: PostmarkConfig) {}
 
   async sendOtp(params: OtpEmailParams): Promise<void> {
-    const { subject, text_body, html_body } = buildOtpEmail(params);
-    return this._send({ to: params.to, subject, text_body, html_body });
+    const { subject, text, html } = buildOtpEmailContent(params);
+    return this._send({ to: params.to, subject, text_body: text, html_body: html });
   }
 
   async sendTransactional(params: TransactionalEmailParams): Promise<void> {
@@ -44,33 +45,3 @@ export class PostmarkProvider implements EmailProvider {
   }
 }
 
-function buildOtpEmail(params: OtpEmailParams): { subject: string; text_body: string; html_body: string } {
-  switch (params.purpose) {
-    case 'verify':
-      return {
-        subject: 'Verify your Bitmonie account',
-        text_body: `Your Bitmonie verification code is: ${params.otp}\n\nThis code expires in 15 minutes. Do not share it with anyone.`,
-        html_body: `<p>Your Bitmonie verification code is:</p><h2>${params.otp}</h2><p>This code expires in 15 minutes. Do not share it with anyone.</p>`,
-      };
-    case 'reset':
-      return {
-        subject: 'Reset your Bitmonie password',
-        text_body: `Your Bitmonie password reset code is: ${params.otp}\n\nThis code expires in 15 minutes. If you did not request this, ignore this email.`,
-        html_body: `<p>Your Bitmonie password reset code is:</p><h2>${params.otp}</h2><p>This code expires in 15 minutes. If you did not request this, ignore this email.</p>`,
-      };
-    case 'release_address_change':
-      return {
-        subject: 'Confirm your Bitmonie collateral-release address change',
-        text_body:
-          `Someone — hopefully you — requested to change the Lightning address that will receive your collateral SAT after this loan is repaid.\n\n` +
-          `Your confirmation code is: ${params.otp}\n\n` +
-          `This code expires in 15 minutes.\n\n` +
-          `If this wasn't you, do NOT share this code. Contact support immediately at support@bitmonie.com — your account may be compromised.`,
-        html_body:
-          `<p>Someone — hopefully you — requested to change the Lightning address that will receive your collateral SAT after this loan is repaid.</p>` +
-          `<p>Your confirmation code is:</p><h2>${params.otp}</h2>` +
-          `<p>This code expires in 15 minutes.</p>` +
-          `<p><b>If this wasn't you</b>, do not share this code. Contact <a href="mailto:support@bitmonie.com">support@bitmonie.com</a> immediately — your account may be compromised.</p>`,
-      };
-  }
-}

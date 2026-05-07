@@ -34,7 +34,6 @@ import {
 } from '@/common/constants';
 import {
   AddCollateralAlreadyPendingException,
-  Auth2faRequiredException,
   CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
   DisbursementDisabledException,
@@ -54,6 +53,7 @@ import {
 import { UserRepaymentAccountsService } from '@/modules/user-repayment-accounts/user-repayment-accounts.service';
 import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
 import { AuthService } from '@/modules/auth/auth.service';
+import { StepUpService } from '@/modules/auth/step-up.service';
 import type { CheckoutLoanDto } from './dto/checkout-loan.dto';
 
 const CLAIM_INFLOW_WINDOW_MS  = 24 * 60 * 60 * 1000;
@@ -140,6 +140,7 @@ export class LoansService {
     private readonly notifications: LoanNotificationsService,
     private readonly collateral_release: CollateralReleaseService,
     private readonly auth_service: AuthService,
+    private readonly step_up: StepUpService,
   ) {}
 
   async checkoutLoan(user: User, dto: CheckoutLoanDto): Promise<CheckoutLoanResult> {
@@ -287,6 +288,33 @@ export class LoansService {
       as_of: new Date(),
     });
 
+    // For PENDING_COLLATERAL, surface the open payment request so the loan
+    // detail screen can render the BOLT11 + QR + countdown after a reload
+    // (the checkout response is fire-and-forget; without this the customer
+    // would lose access to their invoice the moment the page refreshes).
+    // Null for any other status — payment_requests are 1:1 with the
+    // PENDING_COLLATERAL phase per CLAUDE.md §5.7.
+    let payment_request = null;
+    if (loan.status === LoanStatus.PENDING_COLLATERAL) {
+      const pr = await this.prisma.paymentRequest.findFirst({
+        where: { source_type: 'LOAN', source_id: loan.id, status: 'PENDING' },
+        select: {
+          payment_request:   true, // BOLT11 string
+          receiving_address: true,
+          expires_at:        true,
+        },
+      });
+      if (pr) {
+        payment_request = {
+          bolt11:            pr.payment_request,
+          payment_uri:       pr.payment_request ? `lightning:${pr.payment_request}` : '',
+          receiving_address: pr.receiving_address,
+          expires_at:        pr.expires_at,
+          amount_sat:        loan.collateral_amount_sat.toString(),
+        };
+      }
+    }
+
     return {
       ...loan,
       outstanding: {
@@ -296,6 +324,7 @@ export class LoansService {
         total_outstanding_ngn: displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
         days_elapsed:          outstanding.days_elapsed,
       },
+      payment_request,
     };
   }
 
@@ -370,23 +399,24 @@ export class LoansService {
   //
   // Allowed transitions:
   //   NULL  → value   First-set. Authenticated session is sufficient — no OTP.
-  //   value → value   Change. Requires step-up: email OTP always; if the
-  //                   user has 2FA enabled, BOTH email OTP + TOTP. Closes
-  //                   the address-swap-before-release attack vector against
-  //                   a compromised session.
+  //   value → value   Change. Requires step-up: email OTP ALWAYS plus EITHER
+  //                   the user's transaction PIN OR a TOTP code. The user must
+  //                   have at least one of {transaction PIN, TOTP} configured
+  //                   — neither set → refuse outright (TransactionFactorNotSet)
+  //                   so a compromised email + session can't simply rotate
+  //                   the address before release.
   // Rejected:
   //   *     → *       After collateral_released_at is set — bound to the
   //                   actual send and part of the loan's history.
   //
-  // The change path requires the customer to first call
-  // requestReleaseAddressChangeOtp(user_id, loan_id) which emails a 6-digit
-  // OTP. The OTP is then submitted alongside the new address (and the TOTP
-  // code if 2FA is enabled).
+  // Flow: customer first calls requestReleaseAddressChangeOtp which emails
+  // a 6-digit OTP scoped to (user, loan), then submits the new address
+  // alongside (email_otp, transaction_pin OR totp_code) on the PATCH.
   async setReleaseAddress(
     user_id:  string,
     loan_id:  string,
     address:  string,
-    options?: { email_otp?: string; totp_code?: string },
+    options?: { email_otp?: string; transaction_pin?: string; totp_code?: string },
   ): Promise<void> {
     const loan = await this.prisma.loan.findFirst({ where: { id: loan_id, user_id } });
     if (!loan) throw new LoanNotFoundException();
@@ -405,21 +435,25 @@ export class LoansService {
     const is_change = loan.collateral_release_address !== null;
 
     if (is_change) {
-      // Step-up verification. Always require email OTP; require TOTP too if
-      // the user has 2FA enabled. The order matters: email first (cheap +
-      // single-use, so a wrong-OTP attempt is recorded), TOTP second (only
-      // after email succeeded — avoids leaking 2FA-status via timing).
+      // Step-up — order matters.
+      //
+      //   1. Confirm the user has SOME factor configured (PIN or TOTP). If
+      //      neither, refuse before consuming the email OTP — no point
+      //      burning a code on a request we can't accept anyway.
+      //   2. Email OTP (cheap, single-use; a wrong-OTP attempt is recorded
+      //      against the per-loan attempts counter).
+      //   3. Transaction factor (PIN OR TOTP) — exactly one. PIN failures
+      //      count toward the user's lockout state; TOTP failures don't
+      //      lock anything (otplib's 30s window self-protects).
+      await this.step_up.assertHasAnyFactorConfigured(user_id);
+
       if (!options?.email_otp) throw new ReleaseAddressOtpRequiredException();
       await this.auth_service.consumeReleaseAddressChangeOtp(user_id, loan_id, options.email_otp);
 
-      const user = await this.prisma.user.findUniqueOrThrow({
-        where:  { id: user_id },
-        select: { totp_enabled: true },
+      await this.step_up.verifyTransactionFactor(user_id, {
+        transaction_pin: options.transaction_pin,
+        totp_code:       options.totp_code,
       });
-      if (user.totp_enabled) {
-        if (!options.totp_code) throw new Auth2faRequiredException();
-        await this.auth_service.verifyTotpForUser(user_id, options.totp_code);
-      }
     }
 
     await this.prisma.loan.update({

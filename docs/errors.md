@@ -119,10 +119,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 | `KYC_ALREADY_VERIFIED` | 409 | Cannot re-verify |
 | `COLLATERAL_INVOICE_FAILED` | 500 | Could not create collateral payment request |
 | `DISBURSEMENT_TRANSFER_FAILED` | 500 | Could not initiate NGN transfer |
-| `AUTH_INVALID_CREDENTIALS` | 401 | Wrong email/password |
-| `AUTH_OTP_EXPIRED` | 422 | OTP expired — request a new one |
-| `AUTH_OTP_MAX_ATTEMPTS` | 429 | Too many OTP attempts |
-| `AUTH_2FA_REQUIRED` | 401 | Login requires TOTP code |
+| `AUTH_INVALID_CREDENTIALS` | 401 | Generic rejected-credential — wrong TOTP at step-up, etc. (login is passwordless; wrong login OTP surfaces as `AUTH_OTP_EXPIRED`) |
+| `AUTH_OTP_EXPIRED` | 422 | OTP expired or didn't match — request a new one |
+| `AUTH_OTP_MAX_ATTEMPTS` | 429 | Too many OTP attempts in the 15-min window — start over |
+| `AUTH_2FA_REQUIRED` | 401 | An action requires a TOTP code (e.g. disabling 2FA, TOTP-path step-up). NOT raised at login — login is single-factor email-OTP by design |
+| `AUTH_EMAIL_NOT_VERIFIED` | 422 | Login attempted before email verification |
+| `AUTH_EMAIL_ALREADY_VERIFIED` | 409 | verify-email called for an already-verified account |
+| `AUTH_2FA_ALREADY_ENABLED` / `AUTH_2FA_NOT_ENABLED` / `AUTH_2FA_SETUP_REQUIRED` | 409 / 400 / 400 | 2FA setup state machine |
+| `TRANSACTION_PIN_NOT_SET` | 409 | PIN endpoint called when no PIN is set — point to `/transaction-pin/set` |
+| `TRANSACTION_PIN_ALREADY_SET` | 409 | set called when a PIN already exists — use `/transaction-pin/change` |
+| `TRANSACTION_PIN_INVALID` | 401 | Wrong PIN |
+| `TRANSACTION_PIN_LOCKED` | 429 | 5 wrong attempts → 15-min lockout. `details[0].issue` carries `unlocks_at` ISO timestamp |
+| `TRANSACTION_FACTOR_REQUIRED` | 422 | Sensitive op called without `transaction_pin` or `totp_code` in body |
+| `TRANSACTION_FACTOR_NOT_SET` | 422 | Sensitive op called by a user with neither PIN nor TOTP configured — they must set one before retrying |
 | `IDEMPOTENCY_CONFLICT` | 409 | Duplicate Idempotency-Key in flight |
 | `REPAYMENT_ACCOUNT_NOT_READY` | 422 | User's permanent NGN repayment VA hasn't been provisioned yet (KYC tier-1 incomplete or backed by a non-supportable id type) |
 

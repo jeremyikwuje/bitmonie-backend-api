@@ -1,14 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsString, MinLength, MaxLength } from 'class-validator';
+import { IsEmail } from 'class-validator';
 
+// Passwordless signup. The only field is email — verification happens via
+// the OTP delivered to that inbox. KYC + names are collected later through
+// the profile / KYC modules, never here.
 export class SignupDto {
   @ApiProperty({ example: 'user@example.com' })
   @IsEmail()
   email!: string;
-
-  @ApiProperty({ example: 'SecurePass123!', minLength: 8, maxLength: 128 })
-  @IsString()
-  @MinLength(8)
-  @MaxLength(128)
-  password!: string;
 }

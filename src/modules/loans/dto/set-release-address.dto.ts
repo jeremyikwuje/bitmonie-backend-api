@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsOptional, IsString, Length, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, Length, Matches, MaxLength } from 'class-validator';
 
 export class SetReleaseAddressDto {
   @ApiProperty({ example: 'user@blink.sv', description: 'Lightning address for collateral release' })
@@ -25,10 +25,24 @@ export class SetReleaseAddressDto {
   email_otp?: string;
 
   @ApiPropertyOptional({
+    example: '142857',
+    description:
+      '6-digit transaction PIN. REQUIRED when changing an existing release ' +
+      'address — submit either this OR `totp_code` (not both). The user must ' +
+      'have at least one of {transaction PIN, TOTP} configured for the change ' +
+      'to be accepted at all.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[0-9]{6}$/, { message: 'transaction_pin must be exactly 6 digits' })
+  transaction_pin?: string;
+
+  @ApiPropertyOptional({
     example: '293041',
     description:
       '6-digit TOTP code from the customer\'s authenticator app. REQUIRED when ' +
-      'changing an existing release address AND the user has 2FA enabled.',
+      'changing an existing release address — submit either this OR ' +
+      '`transaction_pin` (not both).',
   })
   @IsOptional()
   @IsString()

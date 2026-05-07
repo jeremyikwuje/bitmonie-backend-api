@@ -168,14 +168,20 @@ datasource db {
 // ─────────────────────────────────────────
 
 model User {
-  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email           String        @unique @db.VarChar(255)
-  email_verified  Boolean       @default(false)
-  password_hash   String        @db.VarChar(512)
-  totp_secret     String?       @db.VarChar(512)  // encrypted AES-256-GCM
-  totp_enabled    Boolean       @default(false)
-  created_at      DateTime      @default(now()) @db.Timestamptz
-  updated_at      DateTime      @updatedAt @db.Timestamptz
+  id                              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email                           String   @unique @db.VarChar(255)
+  email_verified                  Boolean  @default(false)
+  // No password_hash — customer auth is passwordless (email-OTP login).
+  totp_secret                     String?  @db.VarChar(512)  // encrypted AES-256-GCM
+  totp_enabled                    Boolean  @default(false)
+  // Transaction PIN — opt-in second factor for sensitive ops (e.g. release-
+  // address change). Argon2id-hashed. Never asked at login.
+  transaction_pin_hash            String?  @db.VarChar(512)
+  transaction_pin_set_at          DateTime? @db.Timestamptz
+  transaction_pin_failed_attempts Int      @default(0)
+  transaction_pin_locked_until    DateTime? @db.Timestamptz
+  created_at                      DateTime @default(now()) @db.Timestamptz
+  updated_at                      DateTime @updatedAt @db.Timestamptz
 
   kyc                   Kyc?
   disbursement_accounts DisbursementAccount[]
@@ -1108,17 +1114,28 @@ app.enableCors({ credentials: true, origin: process.env.ALLOWED_ORIGIN });
 ## 10. REST API Endpoints
 
 ```
-# AUTH (no guard)
-POST   /v1/auth/signup
-POST   /v1/auth/login
-POST   /v1/auth/logout
-POST   /v1/auth/verify-email
+# AUTH — customer is passwordless (no `/login` or `/forgot-password`)
+POST   /v1/auth/signup                              # email-only payload, sends verify OTP
+POST   /v1/auth/verify-email                        # consumes verify OTP
 POST   /v1/auth/resend-verification
-POST   /v1/auth/forgot-password
-POST   /v1/auth/reset-password
-POST   /v1/auth/2fa/enable        # SessionGuard
-POST   /v1/auth/2fa/confirm       # SessionGuard
-POST   /v1/auth/2fa/disable       # SessionGuard
+POST   /v1/auth/login/request-otp                   # passwordless login step 1
+POST   /v1/auth/login/verify-otp                    # passwordless login step 2 — mints session
+POST   /v1/auth/logout                              # SessionGuard
+POST   /v1/auth/logout-all                          # SessionGuard
+GET    /v1/auth/2fa/setup                           # SessionGuard
+POST   /v1/auth/2fa/confirm                         # SessionGuard
+POST   /v1/auth/2fa/disable                         # SessionGuard
+GET    /v1/auth/me                                  # SessionGuard — returns transaction_pin_set + totp_enabled
+
+# Transaction PIN — opt-in transactional step-up factor
+POST   /v1/auth/transaction-pin/request-set-otp     # SessionGuard
+POST   /v1/auth/transaction-pin/set                 # SessionGuard
+POST   /v1/auth/transaction-pin/request-change-otp  # SessionGuard
+POST   /v1/auth/transaction-pin/change              # SessionGuard
+POST   /v1/auth/transaction-pin/request-disable-otp # SessionGuard
+POST   /v1/auth/transaction-pin/disable             # SessionGuard
+
+# OAuth — deferred to v1.2 (no scaffold today)
 
 # KYC (SessionGuard)
 POST   /v1/kyc/bvn
