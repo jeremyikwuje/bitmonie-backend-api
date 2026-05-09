@@ -19,7 +19,7 @@ import {
 //   collateral_ngn         = 500_000 / 0.60 ≈ 833_333.33
 //   collateral_sat         = ceil(833_333.33 / 0.97) = 859_107
 //   initial_collateral_usd = (859_107 / 100_000_000) × 65_000 ≈ $558.4226
-//   origination            = ceil(500_000 / 100_000) × 500 = 2,500
+//   origination            = waived (0)
 //   custody_units          = ceil(558.4226 / 100) = 6
 //   daily_custody_fee_ngn  = 6 × 100 = 600
 //   daily_interest_ngn     = 500_000 × 0.003 = 1,500
@@ -40,31 +40,19 @@ function calculate(overrides: Partial<{
   });
 }
 
-// ── Origination fee (ceil per N100k) ──────────────────────────────────────────
+// ── Origination fee (currently waived — ORIGINATION_FEE_PER_100K_NGN = 0) ─────
 
 describe('CalculatorService — origination fee', () => {
-  it('at principal = N500,000 → N2,500 (5 × 500)', () => {
-    expect(calculate().origination_fee_ngn).toEqual(new Decimal('2500'));
+  it('is waived at every supported principal', () => {
+    const principals = ['10000', '150000', '333000', '500000', '10000000'];
+    for (const p of principals) {
+      const result = calculate({ principal_ngn: new Decimal(p) });
+      expect(result.origination_fee_ngn).toEqual(new Decimal('0'));
+    }
   });
 
-  it('ceils per N100,000 block — N150,000 → N1,000 (2 × 500)', () => {
-    const result = calculate({ principal_ngn: new Decimal('150000') });
-    expect(result.origination_fee_ngn).toEqual(new Decimal('1000'));
-  });
-
-  it('minimum loan (N10,000) pays N500 (1 × 500, floor of ceil rule)', () => {
-    const result = calculate({ principal_ngn: new Decimal('10000') });
-    expect(result.origination_fee_ngn).toEqual(new Decimal('500'));
-  });
-
-  it('maximum self-serve (N10,000,000) pays N50,000 (100 × 500)', () => {
-    const result = calculate({ principal_ngn: new Decimal('10000000') });
-    expect(result.origination_fee_ngn).toEqual(new Decimal('50000'));
-  });
-
-  it('scales as ORIGINATION_FEE_PER_100K_NGN × ceil(principal / 100k)', () => {
+  it('still scales as ORIGINATION_FEE_PER_100K_NGN × ceil(principal / 100k)', () => {
     const result = calculate({ principal_ngn: new Decimal('333000') });
-    // ceil(3.33) = 4 → 4 × 500 = 2000
     expect(result.origination_fee_ngn).toEqual(ORIGINATION_FEE_PER_100K_NGN.mul(4));
   });
 });
@@ -120,10 +108,9 @@ describe('CalculatorService — daily interest', () => {
 // ── Disclosure (net disbursement) ─────────────────────────────────────────────
 
 describe('CalculatorService — disclosure', () => {
-  it('amount_to_receive_ngn = principal − origination', () => {
+  it('amount_to_receive_ngn = principal − origination (origination currently 0)', () => {
     const result = calculate();
-    // 500_000 − 2,500 = 497,500
-    expect(result.amount_to_receive_ngn).toEqual(new Decimal('497500'));
+    expect(result.amount_to_receive_ngn).toEqual(PRINCIPAL);
   });
 });
 

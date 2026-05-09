@@ -357,8 +357,8 @@ describe('LoansService', () => {
         daily_total_ngn:         expect.any(String),
         amount_to_receive_ngn:   expect.any(String),
       });
-      // Disclosure: principal 300_000 − origination 1_500 = 298_500 to receive.
-      expect(result.fee_breakdown.amount_to_receive_ngn).toBe('298500');
+      // Disclosure: origination currently waived → customer receives full principal.
+      expect(result.fee_breakdown.amount_to_receive_ngn).toBe('300000');
     });
 
     it('stamps terms_accepted_at on loan.create — proves consumer-protection consent', async () => {

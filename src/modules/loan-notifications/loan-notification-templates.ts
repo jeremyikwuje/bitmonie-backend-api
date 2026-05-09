@@ -182,6 +182,7 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
   const daily_interest   = NGN(p.daily_interest_ngn);
   const daily_custody    = NGN(p.daily_custody_fee_ngn);
   const sats             = formatSats(p.collateral_amount_sat);
+  const has_origination  = parseFloat(p.origination_fee_ngn) > 0;
 
   return {
     subject: `Your Bitmonie loan ${sid} is awaiting collateral`,
@@ -189,8 +190,9 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
       `${greet(p.first_name)},\n\n` +
       `Your Bitmonie loan ${sid} has been created. We're now waiting for your BTC collateral.\n\n` +
       `  Loan amount:        ${principal}\n` +
-      `  Origination fee:    −${origination}\n` +
-      `  You will receive:   ${amount_receive}\n` +
+      (has_origination
+        ? `  Origination fee:    −${origination}\n  You will receive:   ${amount_receive}\n`
+        : '') +
       `  Daily interest:     ${daily_interest}\n` +
       `  Daily custody:      ${daily_custody}\n` +
       `  Collateral needed:  ${sats}\n\n` +
@@ -203,8 +205,9 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
       `<p>Your Bitmonie loan <code>${sid}</code> has been created. We're now waiting for your BTC collateral.</p>` +
       `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
         row('Loan amount',        principal) +
-        row('Origination fee',    `−${origination}`) +
-        row('You will receive',   amount_receive) +
+        (has_origination
+          ? row('Origination fee',  `−${origination}`) + row('You will receive', amount_receive)
+          : '') +
         row('Daily interest',     daily_interest) +
         row('Daily custody',      daily_custody) +
         row('Collateral needed',  sats) +
@@ -226,25 +229,35 @@ export function buildCollateralReceivedEmail(p: CollateralReceivedParams): Notif
   const net_amount      = NGN(p.amount_to_receive_ngn);
   const daily_interest  = NGN(p.daily_interest_ngn);
   const daily_custody   = NGN(p.daily_custody_fee_ngn);
+  const has_origination = parseFloat(p.origination_fee_ngn) > 0;
+
+  const lede_text = has_origination
+    ? `${net_amount} is being disbursed to your default account now (${principal} less ${origination} origination fee).`
+    : `${net_amount} is being disbursed to your default account now.`;
+  const lede_html = has_origination
+    ? `<b>${net_amount}</b> is being disbursed to your default account now (${principal} less ${origination} origination fee).`
+    : `<b>${net_amount}</b> is being disbursed to your default account now.`;
 
   return {
     subject: `Bitmonie loan ${sid} — collateral confirmed, disbursing now`,
     text_body:
       `${greet(p.first_name)},\n\n` +
-      `We've received your BTC collateral for loan ${sid}. ${net_amount} is being disbursed to your default account now (${principal} less ${origination} origination fee).\n\n` +
+      `We've received your BTC collateral for loan ${sid}. ${lede_text}\n\n` +
       `  Loan amount:     ${principal}\n` +
-      `  Origination fee: −${origination}\n` +
-      `  You'll receive:  ${net_amount}\n` +
+      (has_origination
+        ? `  Origination fee: −${origination}\n  You'll receive:  ${net_amount}\n`
+        : '') +
       `  Daily interest:  ${daily_interest}\n` +
       `  Daily custody:   ${daily_custody}\n\n` +
       `Repay any time. Interest (0.3%/day on outstanding principal) and custody accrue daily until you repay.${FOOTER_TEXT}`,
     html_body:
       `<p>${greet(p.first_name)},</p>` +
-      `<p>We've received your BTC collateral for loan <code>${sid}</code>. <b>${net_amount}</b> is being disbursed to your default account now (${principal} less ${origination} origination fee).</p>` +
+      `<p>We've received your BTC collateral for loan <code>${sid}</code>. ${lede_html}</p>` +
       `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
         row('Loan amount',     principal) +
-        row('Origination fee', `−${origination}`) +
-        row("You'll receive",  net_amount) +
+        (has_origination
+          ? row('Origination fee', `−${origination}`) + row("You'll receive", net_amount)
+          : '') +
         row('Daily interest',  daily_interest) +
         row('Daily custody',   daily_custody) +
       `</table>` +
@@ -263,6 +276,7 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
   const daily_interest = NGN(p.daily_interest_ngn);
   const daily_custody  = NGN(p.daily_custody_fee_ngn);
   const account_line   = p.account_name ? `${p.account_unique} (${p.account_name})` : p.account_unique;
+  const has_origination = parseFloat(p.origination_fee_ngn) > 0;
 
   return {
     subject: `Bitmonie loan ${sid} — ${amount} disbursed`,
@@ -270,8 +284,9 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
       `${greet(p.first_name)},\n\n` +
       `${amount} has been sent to your account for loan ${sid}.\n\n` +
       `  Loan amount:    ${principal}\n` +
-      `  Origination fee: −${origination}\n` +
-      `  You received:   ${amount}\n\n` +
+      (has_origination
+        ? `  Origination fee: −${origination}\n  You received:   ${amount}\n\n`
+        : '\n') +
       `  Bank:           ${p.bank_name}\n` +
       `  Account:        ${account_line}\n\n` +
       `Daily charges accrue:\n` +
@@ -286,8 +301,9 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
       `<p><b>${amount}</b> has been sent to your account for loan <code>${sid}</code>.</p>` +
       `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
         row('Loan amount',     principal) +
-        row('Origination fee', `−${origination}`) +
-        row('You received',    amount) +
+        (has_origination
+          ? row('Origination fee', `−${origination}`) + row('You received', amount)
+          : '') +
         row('Bank',            p.bank_name) +
         row('Account',         account_line) +
         row('Daily interest',  daily_interest) +

@@ -27,10 +27,10 @@ export const MIN_LIQUIDATION_RATE_FRACTION = new Decimal('0.5');
 // ── Fee model (v1.1 — accrual-based) ────────────────────────────────────────
 // See docs/repayment-matching-redesign.md §1, §3, §4.
 //
-// Origination:  ceil(principal_ngn / 100_000) × 500          — one-time, upfront
+// Origination:  waived (0) — customer receives full principal at disbursement
 // Interest:     0.3% daily on outstanding principal           — simple, non-compounding
 // Custody:      ceil(initial_collateral_usd / 100) × 100      — fixed at origination, per day
-export const ORIGINATION_FEE_PER_100K_NGN = new Decimal('500');
+export const ORIGINATION_FEE_PER_100K_NGN = new Decimal('0');
 export const DAILY_INTEREST_RATE_BPS      = 30;                    // 30 bps = 0.3%
 export const CUSTODY_FEE_PER_100_USD_NGN  = new Decimal('100');
 
