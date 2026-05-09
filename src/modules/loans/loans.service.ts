@@ -70,15 +70,12 @@ export interface CheckoutLoanResult {
   receiving_address:      string;
   expires_at:             Date;
   fee_breakdown: {
-    origination_fee_ngn:          string;
-    daily_custody_fee_ngn:        string;
-    daily_interest_rate_bps:      number;
-    projected_interest_ngn:       string;
-    projected_custody_ngn:        string;
-    projected_total_ngn:          string;
-    amount_to_receive_ngn:        string;
-    amount_to_repay_estimate_ngn: string;
-    duration_days:                number;
+    origination_fee_ngn:     string;
+    daily_custody_fee_ngn:   string;
+    daily_interest_rate_bps: number;
+    daily_interest_ngn:      string;       // 0.3% × principal at day 0
+    daily_total_ngn:         string;       // daily_interest + daily_custody
+    amount_to_receive_ngn:   string;       // principal − origination
   };
 }
 
@@ -164,12 +161,9 @@ export class LoansService {
 
     const calc = this.calculator.calculate({
       principal_ngn: dto.principal_decimal,
-      duration_days: dto.duration_days,
       sat_ngn_rate:  sat_rates.rate_sell,
       btc_usd_rate,
     });
-
-    const due_at = new Date(Date.now() + dto.duration_days * 24 * 60 * 60 * 1000);
 
     let loan;
     try {
@@ -185,14 +179,12 @@ export class LoansService {
             daily_interest_rate_bps:    calc.daily_interest_rate_bps,
             daily_custody_fee_ngn:      calc.daily_custody_fee_ngn,
             initial_collateral_usd:    calc.initial_collateral_usd,
-            duration_days:              dto.duration_days,
             sat_ngn_rate_at_creation:   calc.sat_ngn_rate_at_creation,
             collateral_release_address: dto.collateral_release_address,
             status:                     LoanStatus.PENDING_COLLATERAL,
             // DTO validation has already enforced dto.terms_accepted === true.
             // Stamp the moment of acceptance for the consumer-protection audit.
             terms_accepted_at:          new Date(),
-            due_at,
           },
         });
 
@@ -238,17 +230,19 @@ export class LoansService {
     // swallowed inside the notifications service so a flaky email provider
     // can never break checkout.
     await this.notifications.notifyLoanCreated({
-      loan_id:                      loan.id,
-      user_id:                      user.id,
-      principal_ngn:                dto.principal_decimal,
-      origination_fee_ngn:          calc.origination_fee_ngn,
-      amount_to_receive_ngn:        calc.amount_to_receive_ngn,
-      amount_to_repay_estimate_ngn: calc.amount_to_repay_estimate_ngn,
-      collateral_amount_sat:        calc.collateral_amount_sat,
-      duration_days:                dto.duration_days,
-      expires_at:                   payment_request_record.expires_at,
-      payment_request:              bolt11,
+      loan_id:                loan.id,
+      user_id:                user.id,
+      principal_ngn:          dto.principal_decimal,
+      origination_fee_ngn:    calc.origination_fee_ngn,
+      amount_to_receive_ngn:  calc.amount_to_receive_ngn,
+      daily_interest_ngn:     calc.daily_interest_ngn,
+      daily_custody_fee_ngn:  calc.daily_custody_fee_ngn,
+      collateral_amount_sat:  calc.collateral_amount_sat,
+      expires_at:             payment_request_record.expires_at,
+      payment_request:        bolt11,
     });
+
+    const daily_total_ngn = calc.daily_interest_ngn.plus(calc.daily_custody_fee_ngn);
 
     return {
       loan_id:               loan.id,
@@ -258,15 +252,12 @@ export class LoansService {
       receiving_address:     payment_request_record.receiving_address,
       expires_at:            payment_request_record.expires_at,
       fee_breakdown: {
-        origination_fee_ngn:          displayNgn(calc.origination_fee_ngn, 'ceil'),
-        daily_custody_fee_ngn:        displayNgn(calc.daily_custody_fee_ngn, 'ceil'),
-        daily_interest_rate_bps:      calc.daily_interest_rate_bps,
-        projected_interest_ngn:       displayNgn(calc.projected_interest_ngn, 'ceil'),
-        projected_custody_ngn:        displayNgn(calc.projected_custody_ngn, 'ceil'),
-        projected_total_ngn:          displayNgn(calc.projected_total_ngn, 'ceil'),
-        amount_to_receive_ngn:        displayNgn(calc.amount_to_receive_ngn, 'floor'),
-        amount_to_repay_estimate_ngn: displayNgn(calc.amount_to_repay_estimate_ngn, 'ceil'),
-        duration_days:                dto.duration_days,
+        origination_fee_ngn:     displayNgn(calc.origination_fee_ngn, 'ceil'),
+        daily_custody_fee_ngn:   displayNgn(calc.daily_custody_fee_ngn, 'ceil'),
+        daily_interest_rate_bps: calc.daily_interest_rate_bps,
+        daily_interest_ngn:      displayNgn(calc.daily_interest_ngn, 'ceil'),
+        daily_total_ngn:         displayNgn(daily_total_ngn, 'ceil'),
+        amount_to_receive_ngn:   displayNgn(calc.amount_to_receive_ngn, 'floor'),
       },
     };
   }
@@ -282,11 +273,43 @@ export class LoansService {
     });
     if (!loan) throw new LoanNotFoundException();
 
+    const as_of = new Date();
     const outstanding = this.accrual.compute({
       loan,
       repayments: loan.repayments.map(this._toAccrualRepayment),
-      as_of: new Date(),
+      as_of,
     });
+
+    // ── Coverage + margin-call surface (v1.2 no-duration model) ─────────────
+    // Coverage = current collateral NGN value / total outstanding. Only
+    // meaningful for ACTIVE loans (PENDING_COLLATERAL has no collateral yet;
+    // terminal statuses are static). For ACTIVE loans we read the live
+    // SAT/NGN rate from the price feed; if the feed is stale we surface
+    // null rather than show a misleading number.
+    let coverage_ratio: string | null = null;
+    let margin_call_active = false;
+    if (loan.status === LoanStatus.ACTIVE && loan.collateral_received_at) {
+      try {
+        const sat_rates = await this.price_feed.getCurrentRate(AssetPair.SAT_NGN);
+        const collateral_ngn = new Decimal(loan.collateral_amount_sat.toString())
+          .mul(sat_rates.rate_sell);
+        if (outstanding.total_outstanding_ngn.gt(0)) {
+          coverage_ratio = collateral_ngn.div(outstanding.total_outstanding_ngn).toFixed(4);
+        }
+      } catch {
+        coverage_ratio = null;
+      }
+      try {
+        const flag = await this.redis.get(REDIS_KEYS.COVERAGE_MARGIN_CALL_NOTIFIED(loan.id));
+        margin_call_active = flag !== null;
+      } catch {
+        margin_call_active = false;
+      }
+    }
+
+    const days_active = loan.collateral_received_at
+      ? Math.floor((as_of.getTime() - loan.collateral_received_at.getTime()) / 86_400_000)
+      : 0;
 
     // For PENDING_COLLATERAL, surface the open payment request so the loan
     // detail screen can render the BOLT11 + QR + countdown after a reload
@@ -324,6 +347,9 @@ export class LoansService {
         total_outstanding_ngn: displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
         days_elapsed:          outstanding.days_elapsed,
       },
+      coverage_ratio,
+      days_active,
+      margin_call_active,
       payment_request,
     };
   }

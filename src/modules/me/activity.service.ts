@@ -33,9 +33,8 @@ const REASON_TO_TYPE: Partial<Record<string, ActivityType>> = {
   [LoanReasonCodes.LIQUIDATION_TRIGGERED]:  'LOAN_LIQUIDATED',
   [LoanReasonCodes.INVOICE_EXPIRED]:        'LOAN_EXPIRED',
   [LoanReasonCodes.CUSTOMER_CANCELLED]:     'LOAN_CANCELLED',
-  // Deliberately omitted: LIQUIDATION_COMPLETED, LIQUIDATION_REVERSED_BAD_RATE,
-  // MATURITY_GRACE_STARTED, MATURITY_GRACE_EXPIRED — these are internal /
-  // duplicative of user-visible types above.
+  // Deliberately omitted: LIQUIDATION_COMPLETED, LIQUIDATION_REVERSED_BAD_RATE
+  // — internal / duplicative of user-visible types above.
 };
 
 const UNTRUSTED_UNMATCHED_REASONS = new Set([

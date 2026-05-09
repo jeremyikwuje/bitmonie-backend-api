@@ -3,12 +3,15 @@ import Decimal from 'decimal.js';
 import { displayNgn } from '@/common/formatting/ngn-display';
 import { PrismaService } from '@/database/prisma.service';
 import { EMAIL_PROVIDER, type EmailProvider } from '@/modules/auth/email.provider.interface';
+import { DAILY_INTEREST_RATE_BPS } from '@/common/constants';
 import {
   buildCollateralReceivedEmail,
   buildCollateralReleasedEmail,
   buildCollateralToppedUpEmail,
+  buildCoverageWarnEmail,
   buildLoanCreatedEmail,
   buildLoanDisbursedEmail,
+  buildMarginCallEmail,
   buildRepaymentEmail,
   type RepaymentAccountSummary,
 } from './loan-notification-templates';
@@ -23,16 +26,16 @@ import {
 // is the source of truth — a missed email never blocks a loan transition.
 
 export interface NotifyLoanCreatedParams {
-  loan_id:                      string;
-  user_id:                      string;
-  principal_ngn:                Decimal;
-  origination_fee_ngn:          Decimal;
-  amount_to_receive_ngn:        Decimal;
-  amount_to_repay_estimate_ngn: Decimal;
-  collateral_amount_sat:        bigint;
-  duration_days:                number;
-  expires_at:                   Date;
-  payment_request:              string;
+  loan_id:                string;
+  user_id:                string;
+  principal_ngn:          Decimal;
+  origination_fee_ngn:    Decimal;
+  amount_to_receive_ngn:  Decimal;
+  daily_interest_ngn:     Decimal;
+  daily_custody_fee_ngn:  Decimal;
+  collateral_amount_sat:  bigint;
+  expires_at:             Date;
+  payment_request:        string;
 }
 
 export interface NotifyCollateralReceivedParams {
@@ -77,6 +80,23 @@ export interface NotifyCollateralReleasedParams {
   released_at:        Date;
 }
 
+// Coverage-tier customer nudges (v1.2 no-duration / margin-call model). Both
+// expect the worker to have computed coverage % and outstanding NGN already —
+// the service only loads user + repayment VA + collateral SAT and renders.
+export interface NotifyCoverageWarnParams {
+  loan_id:          string;
+  user_id:          string;
+  coverage_percent: string;     // "118" — collateral as % of outstanding
+  outstanding_ngn:  Decimal;
+}
+
+export interface NotifyMarginCallParams {
+  loan_id:          string;
+  user_id:          string;
+  coverage_percent: string;     // "112" — collateral as % of outstanding
+  outstanding_ngn:  Decimal;
+}
+
 @Injectable()
 export class LoanNotificationsService {
   private readonly logger = new Logger(LoanNotificationsService.name);
@@ -91,16 +111,16 @@ export class LoanNotificationsService {
     if (!user) return;
 
     const email = buildLoanCreatedEmail({
-      first_name:                   user.first_name,
-      loan_id:                      params.loan_id,
-      principal_ngn:                displayNgn(params.principal_ngn, 'ceil'),
-      origination_fee_ngn:          displayNgn(params.origination_fee_ngn, 'ceil'),
-      amount_to_receive_ngn:        displayNgn(params.amount_to_receive_ngn, 'floor'),
-      amount_to_repay_estimate_ngn: displayNgn(params.amount_to_repay_estimate_ngn, 'ceil'),
-      collateral_amount_sat:        params.collateral_amount_sat,
-      duration_days:                params.duration_days,
-      expires_at:                   params.expires_at,
-      payment_request:              params.payment_request,
+      first_name:            user.first_name,
+      loan_id:               params.loan_id,
+      principal_ngn:         displayNgn(params.principal_ngn, 'ceil'),
+      origination_fee_ngn:   displayNgn(params.origination_fee_ngn, 'ceil'),
+      amount_to_receive_ngn: displayNgn(params.amount_to_receive_ngn, 'floor'),
+      daily_interest_ngn:    displayNgn(params.daily_interest_ngn, 'ceil'),
+      daily_custody_fee_ngn: displayNgn(params.daily_custody_fee_ngn, 'ceil'),
+      collateral_amount_sat: params.collateral_amount_sat,
+      expires_at:            params.expires_at,
+      payment_request:       params.payment_request,
     });
 
     await this._send(user.email, email, { event: 'loan_created', loan_id: params.loan_id });
@@ -112,10 +132,9 @@ export class LoanNotificationsService {
       this.prisma.loan.findUnique({
         where: { id: params.loan_id },
         select: {
-          principal_ngn:       true,
-          origination_fee_ngn: true,
-          duration_days:       true,
-          due_at:              true,
+          principal_ngn:         true,
+          origination_fee_ngn:   true,
+          daily_custody_fee_ngn: true,
         },
       }),
     ]);
@@ -134,6 +153,10 @@ export class LoanNotificationsService {
     const principal_decimal   = new Decimal(loan.principal_ngn.toString());
     const origination_decimal = new Decimal(loan.origination_fee_ngn.toString());
     const net_decimal         = principal_decimal.minus(origination_decimal);
+    const daily_custody       = new Decimal(loan.daily_custody_fee_ngn.toString());
+    // Day-0 daily interest (drops as principal pays down — surfaced as the
+    // headline rate; future repayments lower it piecewise).
+    const daily_interest = principal_decimal.mul(DAILY_INTEREST_RATE_BPS).div(10_000);
 
     const email = buildCollateralReceivedEmail({
       first_name:            user.first_name,
@@ -141,8 +164,8 @@ export class LoanNotificationsService {
       principal_ngn:         displayNgn(principal_decimal, 'ceil'),
       origination_fee_ngn:   displayNgn(origination_decimal, 'ceil'),
       amount_to_receive_ngn: displayNgn(net_decimal, 'floor'),
-      duration_days:         loan.duration_days,
-      due_at:                loan.due_at,
+      daily_interest_ngn:    displayNgn(daily_interest, 'ceil'),
+      daily_custody_fee_ngn: displayNgn(daily_custody, 'ceil'),
     });
 
     await this._send(user.email, email, { event: 'collateral_received', loan_id: params.loan_id });
@@ -153,7 +176,11 @@ export class LoanNotificationsService {
       this._loadUser(params.user_id),
       this.prisma.loan.findUnique({
         where:  { id: params.loan_id },
-        select: { due_at: true, principal_ngn: true, origination_fee_ngn: true },
+        select: {
+          principal_ngn:         true,
+          origination_fee_ngn:   true,
+          daily_custody_fee_ngn: true,
+        },
       }),
       this._loadRepaymentAccount(params.user_id),
     ]);
@@ -175,17 +202,22 @@ export class LoanNotificationsService {
       return;
     }
 
+    const principal_decimal = new Decimal(loan.principal_ngn.toString());
+    const daily_custody     = new Decimal(loan.daily_custody_fee_ngn.toString());
+    const daily_interest    = principal_decimal.mul(DAILY_INTEREST_RATE_BPS).div(10_000);
+
     const email = buildLoanDisbursedEmail({
-      first_name:          user.first_name,
-      loan_id:             params.loan_id,
-      amount_ngn:          displayNgn(params.amount_ngn, 'floor'),
-      principal_ngn:       displayNgn(new Decimal(loan.principal_ngn.toString()), 'ceil'),
-      origination_fee_ngn: displayNgn(new Decimal(loan.origination_fee_ngn.toString()), 'ceil'),
-      bank_name:           params.bank_name,
-      account_unique:      params.account_unique,
-      account_name:        params.account_name,
-      due_at:              loan.due_at,
-      repayment_account:   va,
+      first_name:            user.first_name,
+      loan_id:               params.loan_id,
+      amount_ngn:            displayNgn(params.amount_ngn, 'floor'),
+      principal_ngn:         displayNgn(principal_decimal, 'ceil'),
+      origination_fee_ngn:   displayNgn(new Decimal(loan.origination_fee_ngn.toString()), 'ceil'),
+      daily_interest_ngn:    displayNgn(daily_interest, 'ceil'),
+      daily_custody_fee_ngn: displayNgn(daily_custody, 'ceil'),
+      bank_name:             params.bank_name,
+      account_unique:        params.account_unique,
+      account_name:          params.account_name,
+      repayment_account:     va,
     });
 
     await this._send(user.email, email, { event: 'loan_disbursed', loan_id: params.loan_id });
@@ -280,6 +312,85 @@ export class LoanNotificationsService {
     });
 
     await this._send(user.email, email, { event: 'collateral_released', loan_id: params.loan_id });
+  }
+
+  // Customer coverage-warning email — fired by the liquidation-monitor worker
+  // when collateral coverage first crosses below COVERAGE_WARN_TIER (1.20).
+  // The worker handles dedupe (Redis SETNX); this method only renders + sends.
+  async notifyCoverageWarn(params: NotifyCoverageWarnParams): Promise<void> {
+    const [user, loan, va] = await Promise.all([
+      this._loadUser(params.user_id),
+      this.prisma.loan.findUnique({
+        where:  { id: params.loan_id },
+        select: { collateral_amount_sat: true },
+      }),
+      this._loadRepaymentAccount(params.user_id),
+    ]);
+    if (!user || !loan) {
+      this.logger.warn(
+        { event: 'coverage_warn', loan_id: params.loan_id, user_id: params.user_id },
+        'Notification skipped — user or loan not found',
+      );
+      return;
+    }
+    if (!va) {
+      this.logger.warn(
+        { event: 'coverage_warn', loan_id: params.loan_id, user_id: params.user_id },
+        'Notification skipped — repayment VA not provisioned',
+      );
+      return;
+    }
+
+    const email = buildCoverageWarnEmail({
+      first_name:            user.first_name,
+      loan_id:               params.loan_id,
+      coverage_percent:      params.coverage_percent,
+      outstanding_ngn:       displayNgn(params.outstanding_ngn, 'ceil'),
+      collateral_amount_sat: loan.collateral_amount_sat,
+      repayment_account:     va,
+    });
+
+    await this._send(user.email, email, { event: 'coverage_warn', loan_id: params.loan_id });
+  }
+
+  // Margin-call email — fired by the liquidation-monitor worker when coverage
+  // crosses below COVERAGE_MARGIN_CALL_TIER (1.15). Urgent. No promised window:
+  // the worker still auto-liquidates the moment coverage hits 1.10, regardless
+  // of whether the customer has read this email.
+  async notifyMarginCall(params: NotifyMarginCallParams): Promise<void> {
+    const [user, loan, va] = await Promise.all([
+      this._loadUser(params.user_id),
+      this.prisma.loan.findUnique({
+        where:  { id: params.loan_id },
+        select: { collateral_amount_sat: true },
+      }),
+      this._loadRepaymentAccount(params.user_id),
+    ]);
+    if (!user || !loan) {
+      this.logger.warn(
+        { event: 'margin_call', loan_id: params.loan_id, user_id: params.user_id },
+        'Notification skipped — user or loan not found',
+      );
+      return;
+    }
+    if (!va) {
+      this.logger.warn(
+        { event: 'margin_call', loan_id: params.loan_id, user_id: params.user_id },
+        'Notification skipped — repayment VA not provisioned',
+      );
+      return;
+    }
+
+    const email = buildMarginCallEmail({
+      first_name:            user.first_name,
+      loan_id:               params.loan_id,
+      coverage_percent:      params.coverage_percent,
+      outstanding_ngn:       displayNgn(params.outstanding_ngn, 'ceil'),
+      collateral_amount_sat: loan.collateral_amount_sat,
+      repayment_account:     va,
+    });
+
+    await this._send(user.email, email, { event: 'margin_call', loan_id: params.loan_id });
   }
 
   private async _loadUser(user_id: string): Promise<{ email: string; first_name: string | null } | null> {

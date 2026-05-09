@@ -30,7 +30,6 @@ const BPS_DENOMINATOR = new Decimal('10000');
 const URGENCY: Record<AttentionKind, number> = {
   LIQUIDATION_RISK:         100,
   PENDING_COLLATERAL:        80,
-  OVERDUE_GRACE:             60,
   AWAITING_RELEASE_ADDRESS:  30,
 };
 
@@ -127,8 +126,9 @@ export class MeService {
       }
     }
 
-    // ACTIVE → OVERDUE_GRACE and LIQUIDATION_RISK are independent flags
-    // (a loan can hit both — emit two cards so neither is hidden).
+    // ACTIVE → LIQUIDATION_RISK when collateral coverage drops below ALERT_THRESHOLD.
+    // Loans are open-term in v1.2 — there's no due_at and no maturity overdue
+    // state to surface; the only ACTIVE-loan attention path is coverage-driven.
     if (active_loans.length > 0) {
       // SAT/NGN buy rate: what we'd pay to buy back SAT, the conservative side
       // for liquidation evaluation (matches calculator.service initial_alert_rate).
@@ -137,23 +137,6 @@ export class MeService {
       const sat_ngn = await this.price_feed.getCurrentRate(AssetPair.SAT_NGN);
 
       for (const loan of active_loans) {
-        // OVERDUE_GRACE — past due_at, still in 7-day grace window
-        if (loan.due_at <= as_of) {
-          const days_into_grace = Math.ceil(
-            (as_of.getTime() - loan.due_at.getTime()) / 86_400_000,
-          );
-          attention.push({
-            loan_id: loan.id,
-            kind: 'OVERDUE_GRACE',
-            urgency: URGENCY.OVERDUE_GRACE,
-            title: `${formatNgn(new Decimal(loan.principal_ngn.toString()))} loan is overdue`,
-            subtitle: `Day ${days_into_grace} of 7-day grace — repay or top up collateral`,
-            expires_at: new Date(
-              loan.due_at.getTime() + 7 * 86_400_000,
-            ).toISOString(),
-          });
-        }
-
         // LIQUIDATION_RISK — collateral_ngn < ALERT_THRESHOLD × outstanding
         const outstanding = active_outstandings.get(loan.id);
         if (!outstanding || outstanding.lte(0)) continue;

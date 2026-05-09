@@ -6,15 +6,12 @@ import {
   DAILY_INTEREST_RATE_BPS,
   LIQUIDATION_THRESHOLD,
   LOAN_LTV_PERCENT,
-  MAX_LOAN_DURATION_DAYS,
-  MIN_LOAN_DURATION_DAYS,
   ORIGINATION_FEE_PER_100K_NGN,
   SATS_PER_BTC,
 } from '@/common/constants';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 //   principal      = N500,000
-//   duration       = 30 days
 //   sat_ngn_rate   = N0.97            (≈ N97M / BTC — round for easy math)
 //   btc_usd_rate   = $65,000          (Blink — BTC/USD direct quote)
 //
@@ -25,24 +22,19 @@ import {
 //   origination            = ceil(500_000 / 100_000) × 500 = 2,500
 //   custody_units          = ceil(558.4226 / 100) = 6
 //   daily_custody_fee_ngn  = 6 × 100 = 600
-//   projected_interest     = 500_000 × 0.003 × 30 = 45,000
-//   projected_custody      = 600 × 30 = 18,000
-//   projected_total        = 500_000 + 2,500 + 45,000 + 18,000 = 565,500
+//   daily_interest_ngn     = 500_000 × 0.003 = 1,500
 
 const PRINCIPAL    = new Decimal('500000');
-const DURATION     = 30;
 const SAT_RATE     = new Decimal('0.97');
 const BTC_USD_RATE = new Decimal('65000');
 
 function calculate(overrides: Partial<{
   principal_ngn: Decimal;
-  duration_days: number;
   sat_ngn_rate:  Decimal;
   btc_usd_rate:  Decimal;
 }> = {}) {
   return new CalculatorService().calculate({
     principal_ngn: overrides.principal_ngn ?? PRINCIPAL,
-    duration_days: overrides.duration_days ?? DURATION,
     sat_ngn_rate:  overrides.sat_ngn_rate  ?? SAT_RATE,
     btc_usd_rate:  overrides.btc_usd_rate  ?? BTC_USD_RATE,
   });
@@ -105,61 +97,33 @@ describe('CalculatorService — daily custody fee', () => {
   });
 });
 
-// ── Projections ───────────────────────────────────────────────────────────────
+// ── Daily interest (day-0 disclosure, drops piecewise as principal repays) ────
 
-describe('CalculatorService — projections', () => {
-  it('projected_interest = principal × 0.003 × duration', () => {
+describe('CalculatorService — daily interest', () => {
+  it('daily_interest_ngn = principal × 0.003 at day 0', () => {
     const result = calculate();
-    // 500_000 × 0.003 × 30 = 45,000
-    expect(result.projected_interest_ngn).toEqual(new Decimal('45000'));
+    // 500_000 × 0.003 = 1,500
+    expect(result.daily_interest_ngn).toEqual(new Decimal('1500'));
   });
 
-  it('projected_custody = daily_custody_fee × duration', () => {
-    const result = calculate();
-    // 600 × 30 = 18,000
-    expect(result.projected_custody_ngn).toEqual(new Decimal('18000'));
-  });
-
-  it('projected_total = principal + origination + projected_interest + projected_custody', () => {
-    const result = calculate();
-    // 500_000 + 2,500 + 45,000 + 18,000 = 565,500
-    expect(result.projected_total_ngn).toEqual(new Decimal('565500'));
+  it('scales linearly with principal', () => {
+    const small = calculate({ principal_ngn: new Decimal('100000') });
+    const large = calculate({ principal_ngn: new Decimal('500000') });
+    expect(large.daily_interest_ngn).toEqual(small.daily_interest_ngn.mul(5));
   });
 
   it('daily_interest_rate_bps is the constant (30 = 0.3%)', () => {
     expect(calculate().daily_interest_rate_bps).toBe(DAILY_INTEREST_RATE_BPS);
   });
-
-  it('scales linearly with duration', () => {
-    const r30 = calculate({ duration_days: 30 });
-    const r60 = calculate({ duration_days: 60 });
-    expect(r60.projected_interest_ngn).toEqual(r30.projected_interest_ngn.mul(2));
-    expect(r60.projected_custody_ngn).toEqual(r30.projected_custody_ngn.mul(2));
-  });
 });
 
-// ── Disclosure (net disbursement + repayment estimate) ────────────────────────
+// ── Disclosure (net disbursement) ─────────────────────────────────────────────
 
 describe('CalculatorService — disclosure', () => {
   it('amount_to_receive_ngn = principal − origination', () => {
     const result = calculate();
     // 500_000 − 2,500 = 497,500
     expect(result.amount_to_receive_ngn).toEqual(new Decimal('497500'));
-  });
-
-  it('amount_to_repay_estimate_ngn = principal + projected_interest + projected_custody (origination NOT included — netted upfront)', () => {
-    const result = calculate();
-    // 500_000 + 45,000 + 18,000 = 563,000
-    expect(result.amount_to_repay_estimate_ngn).toEqual(new Decimal('563000'));
-  });
-
-  it('repay − receive = origination + interest + custody (true cost of credit)', () => {
-    const result = calculate();
-    const true_cost = result.amount_to_repay_estimate_ngn.minus(result.amount_to_receive_ngn);
-    const all_fees  = result.origination_fee_ngn
-      .plus(result.projected_interest_ngn)
-      .plus(result.projected_custody_ngn);
-    expect(true_cost).toEqual(all_fees);
   });
 });
 
@@ -241,26 +205,6 @@ describe('CalculatorService — input validation', () => {
 
   it('accepts principal exactly at MAX (N10,000,000)', () => {
     expect(() => calculate({ principal_ngn: new Decimal('10000000') })).not.toThrow();
-  });
-
-  it('throws LOAN_DURATION_INVALID when duration < 1 day', () => {
-    expect(() => calculate({ duration_days: 0 })).toThrow(
-      expect.objectContaining({ code: 'LOAN_DURATION_INVALID' }),
-    );
-  });
-
-  it('throws LOAN_DURATION_INVALID when duration > 90 days (v1.1 max)', () => {
-    expect(() => calculate({ duration_days: MAX_LOAN_DURATION_DAYS + 1 })).toThrow(
-      expect.objectContaining({ code: 'LOAN_DURATION_INVALID' }),
-    );
-  });
-
-  it('accepts duration exactly at MIN (1 day)', () => {
-    expect(() => calculate({ duration_days: MIN_LOAN_DURATION_DAYS })).not.toThrow();
-  });
-
-  it('accepts duration exactly at MAX (90 days)', () => {
-    expect(() => calculate({ duration_days: MAX_LOAN_DURATION_DAYS })).not.toThrow();
   });
 
   it('throws PRICE_FEED_STALE when sat_ngn_rate is zero', () => {

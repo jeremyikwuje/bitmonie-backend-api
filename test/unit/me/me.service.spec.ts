@@ -22,7 +22,6 @@ function make_loan(overrides: Partial<{
   status: LoanStatus;
   principal_ngn: string;
   collateral_amount_sat: bigint;
-  due_at: Date;
   collateral_release_address: string | null;
   collateral_received_at: Date | null;
   daily_interest_rate_bps: number;
@@ -36,7 +35,6 @@ function make_loan(overrides: Partial<{
     status: overrides.status ?? LoanStatus.ACTIVE,
     principal_ngn: new Decimal(overrides.principal_ngn ?? '500000'),
     collateral_amount_sat: overrides.collateral_amount_sat ?? 1_500_000n,
-    due_at: overrides.due_at ?? new Date('2099-01-01'),
     collateral_release_address: overrides.collateral_release_address ?? null,
     collateral_received_at: overrides.collateral_received_at ?? new Date('2026-01-01'),
     daily_interest_rate_bps: overrides.daily_interest_rate_bps ?? 30,
@@ -126,22 +124,6 @@ describe('MeService', () => {
     expect(result.active_loan_count).toBe(0);
   });
 
-  it('emits OVERDUE_GRACE for an ACTIVE loan past its due_at', async () => {
-    const yesterday = new Date(Date.now() - 86_400_000);
-    prisma.loan.findMany.mockResolvedValue([
-      make_loan({ id: 'loan-overdue', due_at: yesterday }),
-    ]);
-
-    const result = await service.getSummary(USER_ID);
-
-    const card = result.attention.find((c) => c.kind === 'OVERDUE_GRACE');
-    expect(card).toBeDefined();
-    expect(card?.loan_id).toBe('loan-overdue');
-    expect(card?.subtitle).toMatch(/Day \d of 7-day grace/);
-    // grace expires 7 days after due_at
-    expect(card?.expires_at).toBeDefined();
-  });
-
   it('emits LIQUIDATION_RISK when collateral_ngn < 1.20 × outstanding', async () => {
     // Set the rate low so 1.5M SAT × low_rate < 1.20 × ~₦500,000 outstanding.
     // 1.5M sat = 0.015 BTC. To make collateral_ngn = ₦500,000, we need
@@ -188,8 +170,7 @@ describe('MeService', () => {
     expect(result.attention).toEqual([]);
   });
 
-  it('sorts attention DESC by urgency: LIQUIDATION_RISK > PENDING > OVERDUE > AWAITING', async () => {
-    const yesterday = new Date(Date.now() - 86_400_000);
+  it('sorts attention DESC by urgency: LIQUIDATION_RISK > PENDING > AWAITING', async () => {
     price_feed.getCurrentRate.mockResolvedValue({
       rate_buy: new Decimal('0.1'),
       rate_sell: new Decimal('0.095'),
@@ -201,13 +182,13 @@ describe('MeService', () => {
         status: LoanStatus.PENDING_COLLATERAL,
         collateral_received_at: null,
       }),
-      make_loan({ id: 'loan-overdue', due_at: yesterday }),
+      make_loan({ id: 'loan-active' }),
     ]);
 
     const result = await service.getSummary(USER_ID);
 
-    // loan-overdue produces both OVERDUE_GRACE and LIQUIDATION_RISK (low rate),
-    // so we expect 4 cards. First must be LIQUIDATION_RISK.
+    // loan-active produces LIQUIDATION_RISK (low rate). First must be LIQUIDATION_RISK,
+    // last must be AWAITING_RELEASE_ADDRESS.
     expect(result.attention[0].kind).toBe('LIQUIDATION_RISK');
     expect(result.attention[result.attention.length - 1].kind).toBe('AWAITING_RELEASE_ADDRESS');
     // Strict urgency ordering

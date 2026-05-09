@@ -6,9 +6,7 @@ import {
   DAILY_INTEREST_RATE_BPS,
   LIQUIDATION_THRESHOLD,
   LOAN_LTV_PERCENT,
-  MAX_LOAN_DURATION_DAYS,
   MAX_SELFSERVE_LOAN_NGN,
-  MIN_LOAN_DURATION_DAYS,
   MIN_LOAN_NGN,
   ORIGINATION_FEE_PER_100K_NGN,
   SATS_PER_BTC,
@@ -16,13 +14,11 @@ import {
 import {
   LoanAmountTooHighException,
   LoanAmountTooLowException,
-  LoanDurationInvalidException,
   PriceFeedStaleException,
 } from '@/common/errors/bitmonie.errors';
 
 export interface CalculatorInput {
   principal_ngn: Decimal;
-  duration_days: number;
   sat_ngn_rate: Decimal;      // Quidax — for collateral sizing in SAT
   btc_usd_rate: Decimal;      // Blink — for initial_collateral_usd derivation
 }
@@ -33,7 +29,7 @@ export interface CalculatorResult {
   origination_fee_ngn:       Decimal;      // ceil(principal / 100k) × 500
   daily_custody_fee_ngn:     Decimal;      // ceil(initial_collateral_usd / 100) × 100; fixed for life of loan
   daily_interest_rate_bps:   number;       // 30 → 0.3%
-  duration_days:             number;
+  daily_interest_ngn:        Decimal;      // 0.3% × principal at day 0 (drops as customer repays principal)
 
   // Collateral sizing
   collateral_amount_sat:     bigint;
@@ -41,16 +37,8 @@ export interface CalculatorResult {
   ltv_percent:               Decimal;
   sat_ngn_rate_at_creation:  Decimal;
 
-  // Projections for the chosen term (customer-facing estimates; actual values accrue)
-  projected_interest_ngn:    Decimal;      // 0.003 × principal × duration
-  projected_custody_ngn:     Decimal;      // daily_custody × duration
-  projected_total_ngn:       Decimal;      // principal + origination + projected_interest + projected_custody
-
-  // Disclosure (FCCPC / CBN consumer-protection — see docs/repayment-matching-redesign.md)
-  amount_to_receive_ngn:        Decimal;   // principal − origination — what hits the customer's bank
-  amount_to_repay_estimate_ngn: Decimal;   // principal + projected_interest + projected_custody
-                                           // — what the customer pays back over the chosen term
-                                           // (estimate; actual interest + custody accrue daily)
+  // Disclosure (FCCPC / CBN consumer-protection)
+  amount_to_receive_ngn:     Decimal;      // principal − origination — what hits the customer's bank
 
   // Display-only thresholds (UI shows "liquidation if BTC drops to X")
   // Not stored on Loan — liquidation monitor recomputes against live outstanding.
@@ -67,7 +55,7 @@ export class CalculatorService {
   calculate(input: CalculatorInput): CalculatorResult {
     this._validate(input);
 
-    const { principal_ngn, duration_days, sat_ngn_rate, btc_usd_rate } = input;
+    const { principal_ngn, sat_ngn_rate, btc_usd_rate } = input;
 
     // ── Collateral sizing ──────────────────────────────────────────────────
     // At 60% LTV: collateral_ngn = principal / 0.60.
@@ -81,8 +69,7 @@ export class CalculatorService {
       .div(SATS_PER_BTC)
       .mul(btc_usd_rate);
 
-    // ── Origination fee (one-time) ─────────────────────────────────────────
-    // ceil(principal / 100_000) × 500
+    // ── Origination fee (one-time, netted at disbursement) ─────────────────
     const origination_units = principal_ngn.div(HUNDRED_K_NGN).ceil();
     const origination_fee_ngn = origination_units.mul(ORIGINATION_FEE_PER_100K_NGN);
 
@@ -91,26 +78,13 @@ export class CalculatorService {
     const custody_units = initial_collateral_usd.div(USD_FEE_UNIT).ceil();
     const daily_custody_fee_ngn = custody_units.mul(CUSTODY_FEE_PER_100_USD_NGN);
 
-    // ── Projections (estimate for chosen duration — actual accrues daily) ──
-    const interest_per_day = principal_ngn.mul(DAILY_INTEREST_RATE_BPS).div(BPS_DENOMINATOR);
-    const projected_interest_ngn = interest_per_day.mul(duration_days);
-    const projected_custody_ngn  = daily_custody_fee_ngn.mul(duration_days);
-    const projected_total_ngn = principal_ngn
-      .plus(origination_fee_ngn)
-      .plus(projected_interest_ngn)
-      .plus(projected_custody_ngn);
+    // ── Daily interest at day 0 ────────────────────────────────────────────
+    // Drops piecewise as the customer repays principal — surfaced here as a
+    // checkout-time disclosure so the customer sees what each idle day costs.
+    const daily_interest_ngn = principal_ngn.mul(DAILY_INTEREST_RATE_BPS).div(BPS_DENOMINATOR);
 
-    // ── Disclosure (net disbursement + estimated repayment) ────────────────
-    // amount_to_receive   = principal − origination (origination is netted at
-    //                       disbursement; customer never pays it back).
-    // amount_to_repay     = principal + projected_interest + projected_custody
-    //                       — origination is NOT in this number; it was already
-    //                       collected via the spread between disbursed and
-    //                       repaid. Estimate only — interest/custody accrue daily.
-    const amount_to_receive_ngn        = principal_ngn.minus(origination_fee_ngn);
-    const amount_to_repay_estimate_ngn = principal_ngn
-      .plus(projected_interest_ngn)
-      .plus(projected_custody_ngn);
+    // ── Disclosure: net disbursement (origination netted upfront) ──────────
+    const amount_to_receive_ngn = principal_ngn.minus(origination_fee_ngn);
 
     // ── Display-only thresholds — based on principal alone at day 0 ────────
     const sat_decimal = new Decimal(collateral_amount_sat.toString());
@@ -122,19 +96,14 @@ export class CalculatorService {
       origination_fee_ngn,
       daily_custody_fee_ngn,
       daily_interest_rate_bps: DAILY_INTEREST_RATE_BPS,
-      duration_days,
+      daily_interest_ngn,
 
       collateral_amount_sat,
       initial_collateral_usd,
       ltv_percent: LOAN_LTV_PERCENT,
       sat_ngn_rate_at_creation: sat_ngn_rate,
 
-      projected_interest_ngn,
-      projected_custody_ngn,
-      projected_total_ngn,
-
       amount_to_receive_ngn,
-      amount_to_repay_estimate_ngn,
 
       initial_liquidation_rate_ngn,
       initial_alert_rate_ngn,
@@ -142,7 +111,7 @@ export class CalculatorService {
   }
 
   private _validate(input: CalculatorInput): void {
-    const { principal_ngn, duration_days, sat_ngn_rate, btc_usd_rate } = input;
+    const { principal_ngn, sat_ngn_rate, btc_usd_rate } = input;
 
     if (sat_ngn_rate.lte(0) || btc_usd_rate.lte(0)) {
       throw new PriceFeedStaleException({ last_updated_ms: 0 });
@@ -154,13 +123,6 @@ export class CalculatorService {
 
     if (principal_ngn.gt(MAX_SELFSERVE_LOAN_NGN)) {
       throw new LoanAmountTooHighException({ maximum_ngn: MAX_SELFSERVE_LOAN_NGN.toFixed(0) });
-    }
-
-    if (duration_days < MIN_LOAN_DURATION_DAYS || duration_days > MAX_LOAN_DURATION_DAYS) {
-      throw new LoanDurationInvalidException({
-        min: MIN_LOAN_DURATION_DAYS,
-        max: MAX_LOAN_DURATION_DAYS,
-      });
     }
   }
 }

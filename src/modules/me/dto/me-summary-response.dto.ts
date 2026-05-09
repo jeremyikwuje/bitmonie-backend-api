@@ -2,7 +2,6 @@ import { ApiProperty } from '@nestjs/swagger';
 
 export type AttentionKind =
   | 'PENDING_COLLATERAL'
-  | 'OVERDUE_GRACE'
   | 'LIQUIDATION_RISK'
   | 'AWAITING_RELEASE_ADDRESS';
 
@@ -11,7 +10,7 @@ export class AttentionCardDto {
   loan_id!: string;
 
   @ApiProperty({
-    enum: ['PENDING_COLLATERAL', 'OVERDUE_GRACE', 'LIQUIDATION_RISK', 'AWAITING_RELEASE_ADDRESS'],
+    enum: ['PENDING_COLLATERAL', 'LIQUIDATION_RISK', 'AWAITING_RELEASE_ADDRESS'],
     description: 'Why this loan needs the user. Drives the card icon + tone client-side.',
   })
   kind!: AttentionKind;
@@ -33,8 +32,8 @@ export class AttentionCardDto {
   @ApiProperty({
     required: false,
     description:
-      'ISO-8601 deadline relevant to this card (invoice expiry for PENDING_COLLATERAL, ' +
-      'grace expiry for OVERDUE_GRACE). Absent when no time pressure exists.',
+      'ISO-8601 deadline relevant to this card (e.g. invoice expiry for PENDING_COLLATERAL). ' +
+      'Absent when no time pressure exists.',
     example: '2026-05-05T14:32:00Z',
   })
   expires_at?: string;

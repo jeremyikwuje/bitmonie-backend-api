@@ -497,7 +497,6 @@ model Loan {
 
   principal_ngn       Decimal @db.Decimal(20, 2)
   origination_fee_ngn Decimal @db.Decimal(20, 2)
-  duration_days       Int
 
   // Accrual-based fee inputs (v1.1) — see docs/repayment-matching-redesign.md §3
   daily_interest_rate_bps Int     @default(30) // 30 bps = 0.3% daily on outstanding principal
@@ -527,8 +526,6 @@ model Loan {
   liquidation_reference   String?   @db.VarChar(512)
   liquidation_rate_actual Decimal?  @db.Decimal(20, 6)
   surplus_released_sat    BigInt?
-
-  due_at DateTime @db.Timestamptz
 
   // Stamped at checkout when the customer ticks the loan-terms checkbox in
   // the DTO. Required for FCCPC / CBN consumer-protection disclosure: proves

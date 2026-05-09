@@ -22,23 +22,18 @@ export class LoansLimitsDto {
   min_partial_repayment_ngn!: string;
 }
 
-export class LoansDurationsDto {
-  @ApiProperty({ example: 1 })
-  min_duration_days!: number;
-
-  @ApiProperty({ example: 90 })
-  max_duration_days!: number;
-
-  @ApiProperty({ example: 7, description: 'Grace window after due_at before maturity-driven liquidation' })
-  grace_period_days!: number;
-}
-
 export class LoansCollateralDto {
   @ApiProperty({ example: '0.60', description: 'Initial loan-to-value — principal_ngn / collateral_ngn at origination' })
   ltv_percent!: string;
 
   @ApiProperty({ example: '1.10', description: 'Liquidation triggers when collateral_ngn < threshold × total outstanding' })
   liquidation_threshold!: string;
+
+  @ApiProperty({ example: '1.20', description: 'Customer coverage WARN tier — informational notice fires when coverage drops below this' })
+  coverage_warn_tier!: string;
+
+  @ApiProperty({ example: '1.15', description: 'Customer MARGIN CALL tier — urgent notice fires when coverage drops below this' })
+  coverage_margin_call_tier!: string;
 
   @ApiProperty({ example: 1800, description: 'Initial collateral invoice expiry (seconds)' })
   invoice_expiry_sec!: number;
@@ -53,9 +48,6 @@ export class LoansConfigDto {
 
   @ApiProperty({ type: LoansLimitsDto })
   limits!: LoansLimitsDto;
-
-  @ApiProperty({ type: LoansDurationsDto })
-  durations!: LoansDurationsDto;
 
   @ApiProperty({ type: LoansCollateralDto })
   collateral!: LoansCollateralDto;

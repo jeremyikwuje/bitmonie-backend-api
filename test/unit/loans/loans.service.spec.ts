@@ -108,7 +108,6 @@ const DB_LOAN = {
   daily_interest_rate_bps:  30,
   daily_custody_fee_ngn:    new Decimal('300'),
   initial_collateral_usd:   new Decimal('250'),
-  duration_days:            7,
   sat_ngn_rate_at_creation: new Decimal('0.97'),
   ltv_percent:              new Decimal('0.60'),
   collateral_release_address:   null,
@@ -116,7 +115,6 @@ const DB_LOAN = {
   collateral_release_reference: null,
   repayments:               [],
   status_logs:              [],
-  due_at:                   new Date(Date.now() + 7 * 86400_000),
   created_at:               new Date(),
   updated_at:               new Date(),
 } as never;
@@ -202,7 +200,6 @@ describe('LoansService', () => {
 
   const CHECKOUT_DTO = {
     principal_ngn:    300_000,
-    duration_days:    7,
     terms_accepted:   true,
     principal_decimal: new Decimal('300000'),
   } as never;
@@ -353,15 +350,12 @@ describe('LoansService', () => {
       expect(result.receiving_address).toBe('pay_hash_001');
       expect(result.expires_at).toBeInstanceOf(Date);
       expect(result.fee_breakdown).toMatchObject({
-        origination_fee_ngn:          expect.any(String),
-        daily_custody_fee_ngn:        expect.any(String),
-        daily_interest_rate_bps:      30,
-        projected_interest_ngn:       expect.any(String),
-        projected_custody_ngn:        expect.any(String),
-        projected_total_ngn:          expect.any(String),
-        amount_to_receive_ngn:        expect.any(String),
-        amount_to_repay_estimate_ngn: expect.any(String),
-        duration_days:                7,
+        origination_fee_ngn:     expect.any(String),
+        daily_custody_fee_ngn:   expect.any(String),
+        daily_interest_rate_bps: 30,
+        daily_interest_ngn:      expect.any(String),
+        daily_total_ngn:         expect.any(String),
+        amount_to_receive_ngn:   expect.any(String),
       });
       // Disclosure: principal 300_000 − origination 1_500 = 298_500 to receive.
       expect(result.fee_breakdown.amount_to_receive_ngn).toBe('298500');

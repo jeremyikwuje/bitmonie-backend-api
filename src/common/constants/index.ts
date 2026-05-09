@@ -5,6 +5,19 @@ export const LOAN_LTV_PERCENT          = new Decimal('0.60');
 export const LIQUIDATION_THRESHOLD     = new Decimal('1.10');
 export const ALERT_THRESHOLD           = new Decimal('1.20');
 
+// Customer-facing coverage-tier nudges (v1.2 — no-duration, margin-call model).
+// Coverage = collateral_ngn / total_outstanding_ngn. Higher = healthier.
+//
+//   ≥ COVERAGE_WARN_TIER          : healthy, no notification
+//   < COVERAGE_WARN_TIER (1.20)   : informational "your collateral is dropping"
+//   < COVERAGE_MARGIN_CALL_TIER   : urgent margin call — top up or repay immediately
+//   < LIQUIDATION_THRESHOLD       : auto-liquidate (no grace, no time guarantee)
+//
+// Tier crossings de-dupe via Redis (COVERAGE_WARN_NOTIFIED / COVERAGE_MARGIN_CALL_NOTIFIED)
+// and clear on recovery so a future re-deterioration re-fires.
+export const COVERAGE_WARN_TIER        = new Decimal('1.20');
+export const COVERAGE_MARGIN_CALL_TIER = new Decimal('1.15');
+
 // Sanity floor for the liquidation monitor: a current SAT/NGN rate below this
 // fraction of the loan's `sat_ngn_rate_at_creation` is treated as a likely
 // feed glitch — the cycle skips liquidation and pages ops instead of seizing
@@ -33,9 +46,6 @@ export const MIN_PARTIAL_REPAYMENT_NGN = new Decimal('10000');
 export const INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN = new Decimal('0.50');
 
 export const MAX_DISBURSEMENT_ACCOUNTS_PER_KIND = 5;
-export const MAX_LOAN_DURATION_DAYS    = 90;
-export const MIN_LOAN_DURATION_DAYS    = 1;
-export const LOAN_GRACE_PERIOD_DAYS    = 7;
 
 export const COLLATERAL_INVOICE_EXPIRY_SEC = 1800;
 export const COLLATERAL_TOPUP_EXPIRY_SEC   = 1800;
@@ -74,7 +84,11 @@ export const REDIS_KEYS = {
   COLLATERAL_TOPUP_PENDING: (receiving_address: string) =>
     `collateral_topup:pending:${receiving_address}`,
   ALERT_SENT: (loan_id: string) => `liquidation:alert_sent:${loan_id}`,
-  REMINDER_SENT: (loan_id: string, slot: string) => `reminder_sent:${loan_id}:${slot}`,
+  // Coverage-tier customer nudge dedupe (v1.2). State, not cache — no TTL.
+  // Set when coverage crosses below the tier; cleared on recovery (above tier)
+  // by the liquidation-monitor worker. A future re-deterioration re-fires once.
+  COVERAGE_WARN_NOTIFIED:        (loan_id: string) => `coverage:warn_notified:${loan_id}`,
+  COVERAGE_MARGIN_CALL_NOTIFIED: (loan_id: string) => `coverage:margin_call_notified:${loan_id}`,
   // Held while a collateral-release attempt is in-flight (post-commit
   // hand-off in creditInflow, the ops endpoint, and the safety-net worker
   // all SETNX this so they can't race + double-send).
@@ -100,8 +114,6 @@ export const LoanReasonCodes = {
   LIQUIDATION_TRIGGERED:         'LIQUIDATION_TRIGGERED',
   LIQUIDATION_COMPLETED:         'LIQUIDATION_COMPLETED',
   LIQUIDATION_REVERSED_BAD_RATE: 'LIQUIDATION_REVERSED_BAD_RATE',
-  MATURITY_GRACE_STARTED:        'MATURITY_GRACE_STARTED',
-  MATURITY_GRACE_EXPIRED:        'MATURITY_GRACE_EXPIRED',
   INVOICE_EXPIRED:               'INVOICE_EXPIRED',
   CUSTOMER_CANCELLED:            'CUSTOMER_CANCELLED',
 } as const;

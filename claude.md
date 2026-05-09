@@ -49,13 +49,13 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 | `disbursements` + `outflows` | Two-layer outbound payment system |
 | `webhooks` | Inbound provider events (collateral, disbursement, collection) |
 | `ops-alerts` | Internal ops-paging emails (unmatched inflows, credit failures); uses the same `EmailProvider` interface as auth OTP |
-| `workers` | Price feed, liquidation monitor, payment-request expiry, loan-maturity expiry, **loan-reminder** (T−7d / T−1d / T / daily through 7-day grace / final), **outflow-reconciler** (stale PROCESSING outflows), **collateral-release** (REPAID loans with NULL `collateral_released_at` + address SET) |
-| `calculator` | Public bidirectional loan quote engine — projections only (actual fees accrue) — no auth |
+| `workers` | Price feed, **liquidation monitor** (also fires customer coverage-tier nudges at 1.20 / 1.15 with recovery-aware Redis dedupe), payment-request invoice expiry, **outflow-reconciler** (stale PROCESSING outflows), **collateral-release** (REPAID loans with NULL `collateral_released_at` + address SET) |
+| `calculator` | Public loan quote engine — daily rates only, no projections (loans are open-term) — no auth |
 | `get-quote` | Large-loan enquiry form (> N10M) — human follow-up |
 
 **Deferred — do NOT scaffold:** USDT/USDC collateral, on-chain BTC, hardware/car collateral, yield/savings, naira wallet, admin dashboard, referrals, mobile apps, wallet balances of any kind, SAT-rail repayments, narration-based webhook matching, provider-native email templating (v1.2).
 
-> `partial repayments`, `add-collateral`, and a 7-day `maturity grace period` are **in scope** in v1.1 (formerly deferred in v1.0). Loan extensions beyond grace remain deferred — past T+7d we liquidate.
+> v1.2 removes loan duration entirely. Loans are **open-term** — customers borrow, accrual ticks daily, and the only forced-close path is LTV breach (collateral coverage `< 1.10`). Customer-facing nudges fire at coverage `< 1.20` (WARN) and `< 1.15` (MARGIN_CALL). See `docs/anytime-loans.md`. `partial repayments` and `add-collateral` remain **in scope** as before.
 
 If a task pulls toward a still-deferred feature, stub it and move on.
 
@@ -331,14 +331,13 @@ Terminal: `REPAID`, `LIQUIDATED`, `EXPIRED`, `CANCELLED`. No further transitions
 | `ACTIVE` | `ACTIVE` | Collateral top-up inflow matched | `COLLATERAL_TOPPED_UP` |
 | `ACTIVE` | `REPAID` | Final repayment closes outstanding to 0 | `REPAYMENT_COMPLETED` |
 | `ACTIVE` | `LIQUIDATED` | Liquidation monitor — `collateral_ngn < 1.10 × outstanding` | `LIQUIDATION_TRIGGERED` |
-| `ACTIVE` | `LIQUIDATED` | Loan-maturity worker — past `due_at + LOAN_GRACE_PERIOD_DAYS` | `MATURITY_GRACE_EXPIRED` |
 
-**Grace period:** loans that reach `due_at` enter a 7-day grace (`LOAN_GRACE_PERIOD_DAYS`). Interest + custody continue to accrue normally. Reminders fire daily through grace via `workers/loan-reminder.worker.ts`. Past T+7d, loan-expiry worker forces liquidation.
+**Open-term loans (v1.2).** No `due_at`, no maturity worker, no 7-day grace. The only forced-close path is LTV breach (`collateral_ngn < 1.10 × total outstanding`). Customer-facing nudges fire from the same liquidation-monitor sweep at coverage `< 1.20` (WARN) and `< 1.15` (MARGIN_CALL); recovery-aware dedupe via Redis. Daily interest (0.3% on outstanding principal) and daily custody accrue until repayment — even at flat BTC, accrual eventually pushes outstanding past the liquidation line, so loans self-terminate. See `docs/anytime-loans.md`.
 
 `StatusTrigger` enum: `CUSTOMER | SYSTEM | COLLATERAL_WEBHOOK | DISBURSEMENT_WEBHOOK` (role, not provider).
 
 `reason_code` values are standardized — add new ones to `LoanReasonCodes` before using:
-`LOAN_CREATED, COLLATERAL_CONFIRMED, DISBURSEMENT_CONFIRMED, REPAYMENT_PARTIAL_NGN, REPAYMENT_COMPLETED, COLLATERAL_TOPPED_UP, COLLATERAL_RELEASED, LIQUIDATION_TRIGGERED, LIQUIDATION_COMPLETED, MATURITY_GRACE_STARTED, MATURITY_GRACE_EXPIRED, INVOICE_EXPIRED, CUSTOMER_CANCELLED.`
+`LOAN_CREATED, COLLATERAL_CONFIRMED, DISBURSEMENT_CONFIRMED, REPAYMENT_PARTIAL_NGN, REPAYMENT_COMPLETED, COLLATERAL_TOPPED_UP, COLLATERAL_RELEASED, LIQUIDATION_TRIGGERED, LIQUIDATION_COMPLETED, LIQUIDATION_REVERSED_BAD_RATE, INVOICE_EXPIRED, CUSTOMER_CANCELLED.`
 
 ---
 
@@ -538,9 +537,10 @@ CUSTODY_FEE_PER_100_USD_NGN  = 100             // ceil(initial_collateral_usd / 
 MIN_LOAN_NGN                 = 10_000
 MAX_SELFSERVE_LOAN_NGN       = 10_000_000
 MIN_PARTIAL_REPAYMENT_NGN    = 10_000          // floor; below → unmatched, ops-paged
-MIN_LOAN_DURATION_DAYS       = 1
-MAX_LOAN_DURATION_DAYS       = 90
-LOAN_GRACE_PERIOD_DAYS       = 7
+// Customer-facing coverage-tier nudges (recovery-aware Redis dedupe in
+// the liquidation-monitor worker). Liquidation still triggers at 1.10.
+COVERAGE_WARN_TIER           = 1.20            // informational "your collateral is dropping"
+COVERAGE_MARGIN_CALL_TIER    = 1.15            // urgent "top up or repay immediately"
 
 MAX_DISBURSEMENT_ACCOUNTS_PER_KIND = 5         // per (user, kind)
 DISBURSEMENT_NAME_MATCH_THRESHOLD  = 0.85
@@ -568,7 +568,7 @@ Three components, all `Decimal`:
 
 Day boundary: `ceil((as_of − collateral_received_at) / 24h)`. Partial days count as full — a repayment 2 hours after origination still incurs 1 day of interest + custody.
 
-The calculator returns **projections** for a chosen term (not fixed totals — actual values accrue). Outstanding is always computed live by `AccrualService.compute(...)`.
+Loans are **open-term** — there is no chosen term to project against. The calculator returns daily rates only (`origination_fee_ngn`, `daily_interest_ngn`, `daily_custody_fee_ngn`) plus collateral sizing + display thresholds; the customer multiplies by the days they intend to hold. Outstanding is always computed live by `AccrualService.compute(...)`.
 
 **Worked example.** N500,000 principal, $625 USD-equivalent collateral at origination, 60-day term:
 
@@ -623,7 +623,14 @@ Each phase must have passing tests before the next begins.
 | 13 | `AccrualService` (pure) + `CalculatorService` rewrite (projections, BTC/USD via Blink) | All accrual property tests pass; calculator returns projections not fixed totals |
 | 14 | `LoansService.creditInflow` (waterfall + atomic credit) + `add-collateral` + `claim-inflow` endpoints | Webhook → credit; partial repayment keeps loan ACTIVE; full repayment closes; top-up increments collateral |
 | 15 | `user-repayment-accounts` (rename from per-loan); PalmPay collection rewrite (no narration, amount + claim path); ops alerts via `OpsAlertsService` | Auto-credit on single ACTIVE; unmatched paths page ops; idempotent on duplicate webhook |
-| 16 | `loan-reminder` worker (T−7d / T−1d / T / daily through grace / final) | Each (loan, slot) fires once via Redis dedup; missed slots are not backfilled |
+| 16 | `loan-reminder` worker (T−7d / T−1d / T / daily through grace / final) | **Removed in v1.2** — loans are open-term, no due date. See phase 17. |
+
+**v1.2 phases (shipped 2026-05-08):**
+
+| Phase | Build | Acceptance |
+|---|---|---|
+| 17 | Drop `loans.duration_days` + `loans.due_at`; remove `MIN/MAX_LOAN_DURATION_DAYS` + `LOAN_GRACE_PERIOD_DAYS` + `MATURITY_GRACE_*` reason codes; delete `loan-reminder` worker + reminder templates; strip duration from `CheckoutLoanDto` + `CalculatorService` (single output shape, daily rates only) | Migration clean, `tsc --noEmit` clean, jest green |
+| 18 | Extend `liquidation-monitor` with three-tier coverage evaluation (WARN < 1.20, MARGIN_CALL < 1.15, LIQUIDATE < 1.10) + recovery-aware Redis dedupe; add `notifyCoverageWarn` + `notifyMarginCall` to `LoanNotificationsService` | Each tier fires once per crossing; recovery clears dedupe; emails sent via worker's `EmailProvider` |
 
 ---
 

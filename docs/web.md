@@ -159,10 +159,10 @@ Fields:
 - `daily_accrual_ngn` — total amount the user's outstanding will grow by tomorrow if they take no action: interest + custody, summed across every `ACTIVE` loan. Interest is computed against the current outstanding principal (post-repayments), so partial repayments lower it. Custody is fixed at origination and accrues regardless of repayments. Drives the "₦X accrues daily" urgency line on Home. `"0"` when no `ACTIVE` loans.
 - `active_loan_count` — count of loans in `ACTIVE`. `PENDING_COLLATERAL` excluded — it has zero outstanding.
 - `attention[]` — loans needing user action, sorted by `urgency` desc. Web renders this as the peek-stack on Home (top card visible, others peek with a `+N more` indicator). Empty array when nothing needs attention.
-  - `kind` enum: `PENDING_COLLATERAL`, `OVERDUE_GRACE`, `LIQUIDATION_RISK` (`collateral_ngn < ALERT_THRESHOLD × outstanding`, i.e. 1.20×), `AWAITING_RELEASE_ADDRESS` (REPAID with NULL `collateral_release_address`).
+  - `kind` enum: `PENDING_COLLATERAL`, `LIQUIDATION_RISK` (`collateral_ngn < ALERT_THRESHOLD × outstanding`, i.e. 1.20×), `AWAITING_RELEASE_ADDRESS` (REPAID with NULL `collateral_release_address`). v1.2 removed `OVERDUE_GRACE` — loans are open-term, no due date.
   - `urgency` is a stable integer the server computes; web sorts on it. Don't promise a particular range — just sort desc.
-  - `title` / `subtitle` are display-ready strings. Server owns the copy so it stays consistent with email/reminder tone.
-  - `expires_at` — soonest deadline relevant to that card (invoice expiry, grace expiry). Optional.
+  - `title` / `subtitle` are display-ready strings. Server owns the copy so it stays consistent with the customer-email tone.
+  - `expires_at` — soonest deadline relevant to that card (e.g. invoice expiry for `PENDING_COLLATERAL`). Optional.
 - `unmatched_inflow_count` / `unmatched_inflow_total_ngn` — drives the Loans-tab inflows banner without forcing the client to call `/v1/inflows/unmatched` until the user taps in. `total_ngn` is `displayNgn(..., 'ceil')`.
 
 **Caching:** none. Computed live. Cheap because it scans only the user's own ACTIVE loans + a single COUNT on unmatched inflows.
@@ -258,7 +258,7 @@ These are duplicated in the web repo's `CLAUDE.md`; restated here so backend dev
 - Outflow attempt history — ops only.
 - Webhook log — ops only.
 - Auth session list / device list — out of scope for v1. "Logout everywhere" exists via `POST /v1/auth/logout-all` from the avatar sheet.
-- Per-loan reminder schedule — the customer just receives the emails; they don't need to inspect the schedule.
+- Per-loan reminder schedule — v1.2 removed maturity reminders entirely (no due date). Customer-facing notifications around loan health are coverage-tier nudges (WARN at 1.20, MARGIN_CALL at 1.15) sent from the liquidation-monitor worker; the customer just receives the emails, no surface to inspect.
 
 ---
 

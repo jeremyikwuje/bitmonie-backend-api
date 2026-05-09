@@ -63,19 +63,12 @@ function makeService(loan: LoanRow | null) {
   const audit_write = jest.fn().mockResolvedValue(undefined);
   const ops_audit = { write: audit_write } as unknown as OpsAuditService;
 
-  // The reminders diagnostic uses Redis but restoreFromBadLiquidation tests
-  // don't — provide a stub that throws if hit so a regression that adds
-  // unintended Redis traffic to the restore path is loud.
-  const redis = {
-    pipeline: () => { throw new Error('redis.pipeline() is not expected on this code path'); },
-  } as unknown as import('ioredis').default;
-
   const collateral_release = {
     releaseForLoan: jest.fn().mockRejectedValue(
       new Error('collateral_release.releaseForLoan() is not expected on this code path'),
     ),
   } as unknown as import('@/modules/loans/collateral-release.service').CollateralReleaseService;
-  const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, redis);
+  const service = new OpsLoansService(prisma as never, ops_audit, collateral_release);
   return { service, prisma, tx, audit_write };
 }
 
@@ -203,125 +196,6 @@ describe('OpsLoansService.restoreFromBadLiquidation', () => {
   });
 });
 
-// ── getReminders (diagnostic) ─────────────────────────────────────────────────
-
-describe('OpsLoansService.getReminders', () => {
-  const DUE_AT = new Date('2026-04-29T18:00:00.000Z');
-
-  // Builds a service that returns a fake `loan` from prisma and a Redis
-  // pipeline that returns the supplied per-key replies, in the order
-  // `getReminders` issues them: heartbeat first, then for each slot an
-  // EXISTS reply followed by a TTL reply.
-  function makeService(opts: {
-    loan: { id: string; due_at: Date } | null;
-    heartbeat_raw: string | null;
-    // Map from slot name → { exists: 0|1, ttl: number } where ttl follows
-    // ioredis sentinels: -2 = no key, -1 = no TTL, >=0 = remaining seconds.
-    slot_state: Record<string, { exists: 0 | 1; ttl: number }>;
-    now?: Date;
-  }) {
-    const { REMINDER_SLOTS } = jest.requireActual('@/modules/loans/reminder-templates') as {
-      REMINDER_SLOTS: Array<{ slot: string; offset_hours: number }>;
-    };
-
-    const replies: Array<[Error | null, unknown]> = [[null, opts.heartbeat_raw]];
-    for (const { slot } of REMINDER_SLOTS) {
-      const s = opts.slot_state[slot] ?? { exists: 0, ttl: -2 };
-      replies.push([null, s.exists]);
-      replies.push([null, s.ttl]);
-    }
-
-    const pipeline = {
-      get:    jest.fn().mockReturnThis(),
-      exists: jest.fn().mockReturnThis(),
-      ttl:    jest.fn().mockReturnThis(),
-      exec:   jest.fn().mockResolvedValue(replies),
-    };
-    const redis = { pipeline: () => pipeline } as unknown as import('ioredis').default;
-
-    const prisma = {
-      loan: { findUnique: jest.fn().mockResolvedValue(opts.loan) },
-    };
-    const ops_audit = { write: jest.fn() } as unknown as OpsAuditService;
-
-    if (opts.now) jest.useFakeTimers().setSystemTime(opts.now);
-
-    const collateral_release = {
-    releaseForLoan: jest.fn().mockRejectedValue(
-      new Error('collateral_release.releaseForLoan() is not expected on this code path'),
-    ),
-  } as unknown as import('@/modules/loans/collateral-release.service').CollateralReleaseService;
-  const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, redis);
-    return { service, prisma, pipeline };
-  }
-
-  afterEach(() => jest.useRealTimers());
-
-  it('throws LoanNotFoundException when the loan does not exist', async () => {
-    const { service } = makeService({ loan: null, heartbeat_raw: null, slot_state: {} });
-    await expect(service.getReminders(LOAN_ID)).rejects.toBeInstanceOf(LoanNotFoundException);
-  });
-
-  it('returns expected_slot=t_maturity for a loan that hit due_at hours ago, and reports the dedup-present slot', async () => {
-    // 4h past maturity → slot table for the worker is t_maturity.
-    const now = new Date(DUE_AT.getTime() + 4 * 3_600_000);
-    // Earlier slots already deduped (worker fired them last week / yesterday);
-    // t_maturity not yet sent (this is the production scenario the endpoint
-    // is meant to expose).
-    const { service } = makeService({
-      loan:          { id: LOAN_ID, due_at: DUE_AT },
-      heartbeat_raw: String(now.getTime() - 10 * 60 * 1000), // 10min old → healthy
-      slot_state: {
-        t_minus_7d: { exists: 1, ttl: 7_500_000 },
-        t_minus_1d: { exists: 1, ttl: 7_500_000 },
-        t_maturity: { exists: 0, ttl: -2 }, // not sent yet
-      },
-      now,
-    });
-
-    const out = await service.getReminders(LOAN_ID);
-
-    expect(out.loan_id).toBe(LOAN_ID);
-    expect(out.due_at).toEqual(DUE_AT);
-    expect(out.hours_from_due).toBeCloseTo(4, 6);
-    expect(out.expected_slot).toBe('t_maturity');
-
-    const t_maturity = out.slots.find((s) => s.slot === 't_maturity')!;
-    expect(t_maturity.dedup_present).toBe(false);
-    expect(t_maturity.ttl_seconds).toBeNull();
-
-    const t_minus_1d = out.slots.find((s) => s.slot === 't_minus_1d')!;
-    expect(t_minus_1d.dedup_present).toBe(true);
-    expect(t_minus_1d.ttl_seconds).toBe(7_500_000);
-  });
-
-  it('reports worker_heartbeat=null when the worker has never written a heartbeat', async () => {
-    const { service } = makeService({
-      loan:          { id: LOAN_ID, due_at: DUE_AT },
-      heartbeat_raw: null, // scheduler has not booted yet
-      slot_state:    {},
-      now:           new Date(DUE_AT.getTime() + 4 * 3_600_000),
-    });
-    const out = await service.getReminders(LOAN_ID);
-    expect(out.worker_heartbeat).toBeNull();
-  });
-
-  it('marks heartbeat unhealthy when older than 2× the worker tick interval', async () => {
-    const now = new Date(DUE_AT.getTime() + 4 * 3_600_000);
-    // 3h old > 2h healthy threshold → unhealthy. This is the "scheduler
-    // crashed silently" signature.
-    const { service } = makeService({
-      loan:          { id: LOAN_ID, due_at: DUE_AT },
-      heartbeat_raw: String(now.getTime() - 3 * 60 * 60 * 1000),
-      slot_state:    {},
-      now,
-    });
-    const out = await service.getReminders(LOAN_ID);
-    expect(out.worker_heartbeat?.healthy).toBe(false);
-    expect(out.worker_heartbeat?.age_seconds).toBe(3 * 3600);
-  });
-});
-
 // ── releaseCollateral ──────────────────────────────────────────────────────
 
 describe('OpsLoansService.releaseCollateral', () => {
@@ -348,10 +222,7 @@ describe('OpsLoansService.releaseCollateral', () => {
       releaseForLoan: release_mock,
     } as unknown as CollateralReleaseService;
 
-    const redis = {
-      pipeline: () => { throw new Error('redis.pipeline() unexpected'); },
-    } as unknown as import('ioredis').default;
-    const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, redis);
+    const service = new OpsLoansService(prisma as never, ops_audit, collateral_release);
     return { service, audit_write, release_mock };
   }
 

@@ -61,8 +61,8 @@ export class LoansController {
   }
 
   @Get('calculate')
-  @ApiOperation({ summary: 'Public loan fee quote calculator (projections; actual fees accrue daily)' })
-  @ApiResponse({ status: 200, description: 'Projections + locked-at-origination fees returned' })
+  @ApiOperation({ summary: 'Public loan fee quote calculator (daily rates only — loans are open-term, no projections)' })
+  @ApiResponse({ status: 200, description: 'Daily rates + locked-at-origination fees returned' })
   async calculateLoan(@Query() dto: CalculateLoanDto) {
     const [sat_rates, btc_usd_rate] = await Promise.all([
       this.price_feed.getCurrentRate(AssetPair.SAT_NGN),
@@ -71,13 +71,12 @@ export class LoansController {
     const principal = new Decimal(dto.principal_ngn);
     const result = this.calculator.calculate({
       principal_ngn: principal,
-      duration_days: dto.duration_days,
       sat_ngn_rate:  sat_rates.rate_sell,
       btc_usd_rate,
     });
+    const daily_total_ngn = result.daily_interest_ngn.plus(result.daily_custody_fee_ngn);
     return {
       principal_ngn:                displayNgn(principal, 'ceil'),
-      duration_days:                dto.duration_days,
       ltv_percent:                  result.ltv_percent.toFixed(2),
 
       collateral_amount_sat:        result.collateral_amount_sat.toString(),
@@ -88,16 +87,11 @@ export class LoansController {
       origination_fee_ngn:          displayNgn(result.origination_fee_ngn, 'ceil'),
       daily_custody_fee_ngn:        displayNgn(result.daily_custody_fee_ngn, 'ceil'),
       daily_interest_rate_bps:      result.daily_interest_rate_bps,
+      daily_interest_ngn:           displayNgn(result.daily_interest_ngn, 'ceil'),
+      daily_total_ngn:              displayNgn(daily_total_ngn, 'ceil'),
 
-      // Estimates for the chosen duration — customer pays us → ceil
-      projected_interest_ngn:       displayNgn(result.projected_interest_ngn, 'ceil'),
-      projected_custody_ngn:        displayNgn(result.projected_custody_ngn, 'ceil'),
-      projected_total_ngn:          displayNgn(result.projected_total_ngn, 'ceil'),
-
-      // Disclosure — what the customer's bank receives (we pay → floor) vs.
-      // what they pay back (customer pays us → ceil).
+      // Disclosure — what the customer's bank receives (we pay → floor)
       amount_to_receive_ngn:        displayNgn(result.amount_to_receive_ngn, 'floor'),
-      amount_to_repay_estimate_ngn: displayNgn(result.amount_to_repay_estimate_ngn, 'ceil'),
 
       // Rates — keep precision (UI displays these as price-style figures)
       initial_liquidation_rate_ngn: result.initial_liquidation_rate_ngn.toFixed(6),

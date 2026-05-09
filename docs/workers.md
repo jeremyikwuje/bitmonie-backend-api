@@ -24,12 +24,13 @@ Or run individual workers when iterating on one:
 pnpm worker:price-feed
 pnpm worker:liquidation
 pnpm worker:loan-expiry
-pnpm worker:loan-reminder
 ```
 
 The API never bundles workers in-process — if the API restarts, workers keep running, and vice versa.
 
-**Prod (Docker Compose):** `docker compose --profile prod up` builds one image and runs five services from it (`api`, `worker-price-feed`, `worker-liquidation`, `worker-loan-expiry`, `worker-loan-reminder`) — each overriding `CMD` to a different `dist/workers/*.worker.js` entry. Same pattern on any orchestrator: one image, N services, one process per service.
+**Prod (Docker Compose):** `docker compose --profile prod up` builds one image and runs four services from it (`api`, `worker-price-feed`, `worker-liquidation`, `worker-loan-expiry`) — each overriding `CMD` to a different `dist/workers/*.worker.js` entry. Same pattern on any orchestrator: one image, N services, one process per service.
+
+> **v1.2 — `loan-reminder` removed.** Loans are open-term (no due date, no maturity), so there are no due-date-cadence reminders to fire. The liquidation-monitor worker now handles all customer-facing notifications around loan health (coverage-tier nudges at 1.20 / 1.15). See [anytime-loans.md](anytime-loans.md).
 
 ---
 
@@ -58,38 +59,52 @@ On fetch failure:
 ---
 
 ## liquidation-monitor
-**File:** `workers/liquidation-monitor/index.ts`
+**File:** `workers/liquidation-monitor.worker.ts`
 **Schedule:** every 30 seconds
-**Purpose:** check all ACTIVE loans against current SAT/NGN. Alert at 120%, liquidate at 110%.
+**Purpose:** liquidate ACTIVE loans whose collateral coverage drops below 1.10, fire customer-facing nudges at the WARN (1.20) and MARGIN_CALL (1.15) tiers, and page ops at 1.20.
 
 ```
 1. Fetch current SAT/NGN rate from Redis
-   → If price:stale flag is set: LOG WARNING, skip all liquidations, exit cycle
-   → Never liquidate at a stale rate
+   → If price:stale flag is set: LOG WARNING, skip cycle (never liquidate on a stale rate)
+   → If rate non-positive or unparsable: SET price:stale, page ops, abort cycle
 
 2. Query all loans WHERE status = 'ACTIVE'  (FOR UPDATE SKIP LOCKED)
+   Pull repayments for those loans in one batch query (needed for accrual).
 
 3. For each loan:
-   a. current_value_ngn = collateral_amount_sat * current_sat_ngn_rate
-   b. ratio = current_value_ngn / principal_ngn
+   a. outstanding = AccrualService.compute({ loan, repayments, as_of })
+   b. coverage = (collateral_sat × current_rate) / outstanding.total_outstanding_ngn
 
-   c. IF ratio <= LIQUIDATION_THRESHOLD (1.10):
-      → Inside Prisma transaction:
-        1. Sell SAT via the active collateral provider at current rate
-        2. Recover principal_ngn
-        3. surplus_sat = collateral - amount_to_recover_principal
-        4. If surplus > 0 AND release_address set:
-             → Send surplus SAT to release address
-        5. UPDATE loan: status = LIQUIDATED, liquidated_at, liquidation_rate_actual, surplus_released_sat
-        6. logTransition(tx): LIQUIDATION_COMPLETED
-        7. Notify customer: email + SMS
+   c. Per-loan sanity: if current_rate < rate_at_creation × MIN_LIQUIDATION_RATE_FRACTION
+      (default 0.5), skip + page ops. Catches single-feed glitches before they
+      cascade across the book.
 
-   d. ELSE IF ratio <= ALERT_THRESHOLD (1.20):
-      → Check Redis: alert_sent:{loan_id} (24h TTL)
-      → If not set: send alert email + in-app notification, SET key with 24h TTL
+   d. IF coverage <= LIQUIDATION_THRESHOLD (1.10):
+      → Liquidate inside a Prisma transaction:
+          UPDATE loan SET status=LIQUIDATED, liquidated_at, liquidation_rate_actual
+          INSERT loan_status_logs (LIQUIDATION_COMPLETED)
+      → After commit, swap seized BTC to USD via Blink (best-effort; logged on failure)
+      → Continue to next loan (skip nudge / ops-alert paths)
 
-4. SET worker:liquidation:last_run = now()
+   e. Customer coverage-tier nudges (recovery-aware Redis dedupe):
+      IF coverage >= COVERAGE_WARN_TIER (1.20):
+        DEL coverage:warn_notified:{loan_id}, coverage:margin_call_notified:{loan_id}
+      ELSE:
+        SETNX coverage:warn_notified:{loan_id} → on first set, email customer (WARN)
+        IF coverage >= COVERAGE_MARGIN_CALL_TIER (1.15):
+          DEL coverage:margin_call_notified:{loan_id}
+        ELSE:
+          SETNX coverage:margin_call_notified:{loan_id} → on first set, email customer (MARGIN_CALL)
+
+   f. Ops-internal alert (24h dedupe — separate from customer nudges):
+      IF coverage <= ALERT_THRESHOLD (1.20):
+        check Redis: liquidation:alert_sent:{loan_id}
+        if not set: SET with 24h TTL, log structured ops alert
+
+4. SET worker:liquidation_monitor:last_run = now()
 ```
+
+The customer-tier dedupe keys carry **no TTL** — they're state, not cache. They clear on recovery (coverage rises back above the tier), so a future re-deterioration re-fires the notice once. That's why a fast oscillation around the WARN line doesn't spam the customer: only crossings (above → below) trigger a send.
 
 ---
 

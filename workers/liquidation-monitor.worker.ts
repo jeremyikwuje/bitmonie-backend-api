@@ -1,25 +1,51 @@
 /**
  * Liquidation Monitor Worker — standalone Node.js process (NOT NestJS).
- * Checks all ACTIVE loans against current SAT/NGN rate every 30s.
- * Alerts at 120% LTV, liquidates at 110% LTV.
+ *
+ * Single sweep per tick over every ACTIVE loan, three responsibilities:
+ *
+ *   1. Liquidate at coverage ≤ 1.10 (LIQUIDATION_THRESHOLD).
+ *   2. Customer-facing coverage nudges with recovery-aware Redis dedupe:
+ *        coverage <  1.20 (COVERAGE_WARN_TIER)        → "your collateral is dropping"
+ *        coverage <  1.15 (COVERAGE_MARGIN_CALL_TIER) → "MARGIN CALL — top up or repay now"
+ *      Each tier's dedupe key is cleared the moment coverage rises back above
+ *      that tier so a future re-deterioration re-fires once.
+ *   3. Ops-internal alert at coverage ≤ 1.20 (ALERT_THRESHOLD), 24h dedupe.
+ *
  * Run with: ts-node -r tsconfig-paths/register workers/liquidation-monitor.worker.ts
  */
 
-import { PrismaClient, LoanStatus, StatusTrigger } from '@prisma/client';
+import {
+  PrismaClient,
+  LoanStatus,
+  StatusTrigger,
+} from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import Redis from 'ioredis';
 import Decimal from 'decimal.js';
 import {
-  LIQUIDATION_THRESHOLD,
-  ALERT_THRESHOLD,
   ALERT_COOLDOWN_SEC,
+  ALERT_THRESHOLD,
+  COVERAGE_MARGIN_CALL_TIER,
+  COVERAGE_WARN_TIER,
+  LIQUIDATION_THRESHOLD,
+  LoanReasonCodes,
   MIN_LIQUIDATION_RATE_FRACTION,
   REDIS_KEYS,
-  LoanReasonCodes,
 } from '@/common/constants';
+import { displayNgn } from '@/common/formatting/ngn-display';
 import { AccrualService } from '@/modules/loans/accrual.service';
 import { BlinkProvider } from '@/providers/blink/blink.provider';
+import { MailgunProvider } from '@/providers/mailgun/mailgun.provider';
+import { ResendProvider } from '@/providers/resend/resend.provider';
+import { PostmarkProvider } from '@/providers/postmark/postmark.provider';
+import type { EmailProvider } from '@/modules/auth/email.provider.interface';
+import { EMAIL_PROVIDER_CONFIG, EmailProviderName } from '@/config/email.config';
+import {
+  buildCoverageWarnEmail,
+  buildMarginCallEmail,
+  type RepaymentAccountSummary,
+} from '@/modules/loan-notifications/loan-notification-templates';
 
 const WORKER_INTERVAL_MS = parseInt(process.env.WORKER_LIQUIDATION_INTERVAL_MS ?? '30000', 10);
 const INTERNAL_ALERT_EMAIL = process.env.INTERNAL_ALERT_EMAIL ?? 'ops@bitmonie.com';
@@ -30,6 +56,9 @@ export interface LiquidationDeps {
   log: (level: string, event: string, extra?: Record<string, unknown>) => void;
   blink: { swapBtcToUsd: (amount_sat: bigint) => Promise<void> };
   accrual: AccrualService;
+  // Customer-nudge email send. Optional in tests so unit tests don't need
+  // to wire up an email provider — passing undefined just suppresses the email.
+  send_email?: (params: { to: string; subject: string; text_body: string; html_body: string }) => Promise<void>;
 }
 
 function defaultLog(level: string, event: string, extra: Record<string, unknown> = {}): void {
@@ -39,7 +68,7 @@ function defaultLog(level: string, event: string, extra: Record<string, unknown>
 }
 
 export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> {
-  const { prisma, redis, log, blink, accrual } = deps;
+  const { prisma, redis, log, blink, accrual, send_email } = deps;
 
   // 1. Skip if price is stale
   const stale = await redis.get(REDIS_KEYS.PRICE_STALE);
@@ -140,6 +169,8 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
 
   let liquidated = 0;
   let alerted = 0;
+  let warn_sent = 0;
+  let margin_call_sent = 0;
   let suspicious_skipped = 0;
   const as_of = new Date();
 
@@ -211,8 +242,31 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
           error: err instanceof Error ? err.message : String(err),
         });
       }
-    } else if (ratio.lte(ALERT_THRESHOLD)) {
-      // Alert — check cooldown
+      continue;
+    }
+
+    // ── Customer-tier nudges (recovery-aware Redis dedupe) ──────────────────
+    try {
+      const result = await evaluateCoverageTiers({
+        prisma,
+        redis,
+        log,
+        send_email,
+        loan,
+        ratio,
+        outstanding_ngn: outstanding.total_outstanding_ngn,
+      });
+      warn_sent += result.warn_sent ? 1 : 0;
+      margin_call_sent += result.margin_call_sent ? 1 : 0;
+    } catch (err) {
+      log('error', 'coverage_nudge_failed', {
+        loan_id: loan.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // ── Ops-internal alert at coverage ≤ ALERT_THRESHOLD (24h dedupe) ───────
+    if (ratio.lte(ALERT_THRESHOLD)) {
       const alert_key = REDIS_KEYS.ALERT_SENT(loan.id);
       const already_alerted = await redis.get(alert_key);
       if (!already_alerted) {
@@ -233,13 +287,163 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
 
   await redis.set(REDIS_KEYS.WORKER_HEARTBEAT('liquidation_monitor'), Date.now().toString());
 
-  if (active_loans.length > 0 || liquidated > 0 || alerted > 0 || suspicious_skipped > 0) {
+  if (active_loans.length > 0 || liquidated > 0 || alerted > 0 || suspicious_skipped > 0 || warn_sent > 0 || margin_call_sent > 0) {
     log('info', 'cycle_complete', {
       checked: active_loans.length,
       liquidated,
       alerted,
+      warn_sent,
+      margin_call_sent,
       suspicious_skipped,
       rate: current_rate.toFixed(6),
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Coverage-tier evaluation (recovery-aware dedupe)
+//
+// `ratio` is collateral_ngn / total_outstanding_ngn. Higher = healthier.
+// Caller has already established `ratio > LIQUIDATION_THRESHOLD` — this
+// function only handles the WARN and MARGIN_CALL tiers + recovery clears.
+// ─────────────────────────────────────────────────────────────────────────────
+async function evaluateCoverageTiers(params: {
+  prisma: PrismaClient;
+  redis: Redis;
+  log: LiquidationDeps['log'];
+  send_email: LiquidationDeps['send_email'];
+  loan: { id: string; user_id: string; collateral_amount_sat: bigint };
+  ratio: Decimal;
+  outstanding_ngn: Decimal;
+}): Promise<{ warn_sent: boolean; margin_call_sent: boolean }> {
+  const { prisma, redis, log, send_email, loan, ratio, outstanding_ngn } = params;
+  const warn_key = REDIS_KEYS.COVERAGE_WARN_NOTIFIED(loan.id);
+  const mc_key   = REDIS_KEYS.COVERAGE_MARGIN_CALL_NOTIFIED(loan.id);
+
+  // Healthy: clear both keys (recovery from any prior tier).
+  if (ratio.gte(COVERAGE_WARN_TIER)) {
+    await redis.del(warn_key, mc_key);
+    return { warn_sent: false, margin_call_sent: false };
+  }
+
+  // Below WARN tier — fire WARN once across BTC drawdowns and recoveries.
+  // SETNX returns 'OK' on first set, null when key already exists.
+  let warn_sent = false;
+  const warn_first = await redis.set(warn_key, '1', 'NX');
+  if (warn_first === 'OK') {
+    await sendCoverageNotice({
+      prisma, log, send_email,
+      loan, ratio, outstanding_ngn, kind: 'warn',
+    });
+    warn_sent = true;
+  }
+
+  // Above MARGIN_CALL tier (between 1.15 and 1.20): clear MARGIN_CALL recovery.
+  if (ratio.gte(COVERAGE_MARGIN_CALL_TIER)) {
+    await redis.del(mc_key);
+    return { warn_sent, margin_call_sent: false };
+  }
+
+  // Below MARGIN_CALL tier — fire MARGIN_CALL once.
+  let margin_call_sent = false;
+  const mc_first = await redis.set(mc_key, '1', 'NX');
+  if (mc_first === 'OK') {
+    await sendCoverageNotice({
+      prisma, log, send_email,
+      loan, ratio, outstanding_ngn, kind: 'margin_call',
+    });
+    margin_call_sent = true;
+  }
+
+  return { warn_sent, margin_call_sent };
+}
+
+// Loads user + repayment-account, renders the appropriate template, and
+// dispatches via the worker's email provider. Best-effort — a missing user,
+// missing VA, or provider failure is logged but doesn't throw (the dedupe
+// key is already set, so we won't retry until coverage recovers and re-drops).
+async function sendCoverageNotice(params: {
+  prisma: PrismaClient;
+  log: LiquidationDeps['log'];
+  send_email: LiquidationDeps['send_email'];
+  loan: { id: string; user_id: string; collateral_amount_sat: bigint };
+  ratio: Decimal;
+  outstanding_ngn: Decimal;
+  kind: 'warn' | 'margin_call';
+}): Promise<void> {
+  const { prisma, log, send_email, loan, ratio, outstanding_ngn, kind } = params;
+  if (!send_email) {
+    // Test path — dedupe still works, no email sent.
+    return;
+  }
+
+  const [user, va] = await Promise.all([
+    prisma.user.findUnique({
+      where:  { id: loan.user_id },
+      select: { email: true, first_name: true },
+    }),
+    prisma.userRepaymentAccount.findUnique({
+      where:  { user_id: loan.user_id },
+      select: { virtual_account_no: true, virtual_account_name: true, bank_name: true },
+    }),
+  ]);
+
+  if (!user) {
+    log('warn', 'coverage_nudge_skipped_no_user', { loan_id: loan.id, kind });
+    return;
+  }
+  if (!va) {
+    log('warn', 'coverage_nudge_skipped_no_va', { loan_id: loan.id, user_id: loan.user_id, kind });
+    return;
+  }
+
+  // Coverage as a percent string with 0 decimals — "118" / "112". Customer
+  // doesn't need 4-decimal precision; the round figure communicates the
+  // urgency cleanly.
+  const coverage_percent = ratio.mul(100).toFixed(0);
+
+  const repayment_account: RepaymentAccountSummary = {
+    virtual_account_no:   va.virtual_account_no,
+    virtual_account_name: va.virtual_account_name,
+    bank_name:            va.bank_name,
+  };
+
+  const email = kind === 'warn'
+    ? buildCoverageWarnEmail({
+        first_name:            user.first_name,
+        loan_id:               loan.id,
+        coverage_percent,
+        outstanding_ngn:       displayNgn(outstanding_ngn, 'ceil'),
+        collateral_amount_sat: loan.collateral_amount_sat,
+        repayment_account,
+      })
+    : buildMarginCallEmail({
+        first_name:            user.first_name,
+        loan_id:               loan.id,
+        coverage_percent,
+        outstanding_ngn:       displayNgn(outstanding_ngn, 'ceil'),
+        collateral_amount_sat: loan.collateral_amount_sat,
+        repayment_account,
+      });
+
+  try {
+    await send_email({
+      to:        user.email,
+      subject:   email.subject,
+      text_body: email.text_body,
+      html_body: email.html_body,
+    });
+    log('info', 'coverage_nudge_sent', {
+      loan_id:          loan.id,
+      user_id:          loan.user_id,
+      kind,
+      coverage_percent,
+    });
+  } catch (err) {
+    log('error', 'coverage_nudge_send_failed', {
+      loan_id: loan.id,
+      kind,
+      error: err instanceof Error ? err.message : String(err),
     });
   }
 }
@@ -279,6 +483,32 @@ async function liquidateLoan(
   });
 }
 
+function buildEmailProvider(): EmailProvider {
+  switch (EMAIL_PROVIDER_CONFIG) {
+    case EmailProviderName.Mailgun:
+      return new MailgunProvider({
+        api_key:      process.env.MAILGUN_API_KEY      ?? '',
+        domain:       process.env.MAILGUN_DOMAIN       ?? '',
+        region:       (process.env.MAILGUN_REGION as 'us' | 'eu') ?? 'us',
+        from_address: process.env.EMAIL_FROM_ADDRESS ?? '',
+        from_name:    process.env.EMAIL_FROM_NAME    ?? 'Bitmonie',
+      });
+    case EmailProviderName.Resend:
+      return new ResendProvider({
+        api_key:      process.env.RESEND_API_KEY      ?? '',
+        from_address: process.env.RESEND_FROM_ADDRESS ?? '',
+        from_name:    process.env.RESEND_FROM_NAME    ?? 'Bitmonie',
+      });
+    case EmailProviderName.Postmark:
+      return new PostmarkProvider({
+        server_token:   process.env.POSTMARK_SERVER_TOKEN  ?? '',
+        from_address:   process.env.POSTMARK_FROM_ADDRESS  ?? '',
+        from_name:      process.env.POSTMARK_FROM_NAME     ?? 'Bitmonie',
+        message_stream: process.env.POSTMARK_MESSAGE_STREAM,
+      });
+  }
+}
+
 async function main(): Promise<void> {
   const DATABASE_URL = process.env.DATABASE_URL;
   const REDIS_URL    = process.env.REDIS_URL;
@@ -299,10 +529,13 @@ async function main(): Promise<void> {
   });
 
   const accrual = new AccrualService();
+  const email_provider = buildEmailProvider();
+  const send_email: LiquidationDeps['send_email'] = (params) =>
+    email_provider.sendTransactional(params);
 
-  const deps: LiquidationDeps = { prisma, redis, log: defaultLog, blink, accrual };
+  const deps: LiquidationDeps = { prisma, redis, log: defaultLog, blink, accrual, send_email };
 
-  defaultLog('info', 'started', { interval_ms: WORKER_INTERVAL_MS });
+  defaultLog('info', 'started', { interval_ms: WORKER_INTERVAL_MS, email_provider: EMAIL_PROVIDER_CONFIG });
   await redis.ping();
   await runLiquidationCycle(deps);
 
