@@ -9,7 +9,7 @@ each service overrides its config-as-code path to a toml in this folder.
 |-----------------------------|-------------------------------------------|--------------------------------------------|
 | `api`                       | `railway.toml` (root)                     | NestJS HTTP API                            |
 | `worker-price-feed`         | `railway/worker-price-feed.toml`          | SAT/NGN, BTC/NGN, USDT/NGN poller (30s)    |
-| `worker-liquidation`        | `railway/worker-liquidation.toml`         | Liquidation monitor + customer coverage-tier nudges (30s) |
+| `worker-liquidation`        | `railway/worker-liquidation.toml`         | Liquidation monitor + customer coverage-tier nudges (30s) + collateral-release cycle (5m) |
 | `worker-outflow-reconciler` | `railway/worker-outflow-reconciler.toml`  | Stale-PROCESSING outflow reconciliation    |
 | `worker-scheduler`          | `railway/worker-scheduler.toml`           | loan-expiry + disbursement-on-hold-digest + webhook-log-prune |
 
@@ -62,3 +62,12 @@ the `worker-scheduler` service:
 | `WORKER_LOAN_REMINDER_INTERVAL_MS`           | `3600000` (1h) | T−7d / T−1d / T / grace / final reminders |
 | `WORKER_DISBURSEMENT_DIGEST_INTERVAL_MS`     | `86400000` (1d)| daily digest of `ON_HOLD` disbursements   |
 | `WORKER_WEBHOOK_LOG_PRUNE_INTERVAL_MS`       | `86400000` (1d)| delete `webhook_logs` rows older than `WEBHOOK_LOG_RETENTION_DAYS` (90) |
+
+## Adjusting liquidation-monitor intervals
+
+`worker-liquidation` runs two cycles on independent intervals:
+
+| Env var                                      | Default        | Cycle                          |
+|----------------------------------------------|----------------|--------------------------------|
+| `WORKER_LIQUIDATION_INTERVAL_MS`             | `30000` (30s)  | liquidation sweep + coverage-tier nudges + ops alerts |
+| `WORKER_COLLATERAL_RELEASE_INTERVAL_MS`      | `300000` (5m)  | release SAT for REPAID loans with NULL `collateral_released_at` + address SET |

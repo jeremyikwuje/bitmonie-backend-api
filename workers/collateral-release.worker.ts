@@ -1,5 +1,10 @@
 /**
- * Collateral Release Worker — standalone Node.js process (NOT NestJS).
+ * Collateral Release Cycle — hosted by the liquidation-monitor worker.
+ *
+ * NOT a standalone Node process. The cycle function below is invoked on its
+ * own setInterval inside `liquidation-monitor.worker.ts` so the two loan-
+ * monitoring sweeps (LIVE coverage / collateral release) share the same
+ * Railway service. See `railway/README.md` for the deployment topology.
  *
  * Safety net for the post-commit fire-and-forget release in
  * LoansService.creditInflow. Periodically scans loans where:
@@ -14,35 +19,16 @@
  * elsewhere is skipped cleanly (status=in_flight return, no error).
  *
  * On send failure: the service emits an ops alert (rate-limited to one
- * per 24h per loan via Redis dedupe), and the worker just keeps trying on
+ * per 24h per loan via Redis dedupe), and the cycle just keeps trying on
  * each tick. When the customer (or ops) updates the release address via
  * PATCH /v1/loans/:id/release-address or POST /v1/ops/loans/:id/release-collateral,
  * the dedupe key is cleared so the next failure pages ops fresh.
- *
- * Run with: ts-node -r tsconfig-paths/register workers/collateral-release.worker.ts
  */
 
 import { PrismaClient, LoanStatus } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
 import Redis from 'ioredis';
-import { ConfigService } from '@nestjs/config';
 import { REDIS_KEYS } from '@/common/constants';
 import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
-import { LoanStatusService } from '@/modules/loans/loan-status.service';
-import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
-import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
-import { BlinkProvider } from '@/providers/blink/blink.provider';
-import { MailgunProvider } from '@/providers/mailgun/mailgun.provider';
-import { ResendProvider } from '@/providers/resend/resend.provider';
-import { PostmarkProvider } from '@/providers/postmark/postmark.provider';
-import type { EmailProvider } from '@/modules/auth/email.provider.interface';
-import type { PrismaService } from '@/database/prisma.service';
-import { EMAIL_PROVIDER_CONFIG, EmailProviderName } from '@/config/email.config';
-
-const WORKER_INTERVAL_MS = parseInt(
-  process.env.WORKER_COLLATERAL_RELEASE_INTERVAL_MS ?? '300000',  // 5 min default
-  10,
-);
 
 // Cap how many loans a single tick processes. Prevents a one-time backlog
 // (e.g. provider was down for hours) from holding the Redis lock + DB
@@ -55,12 +41,6 @@ export interface CollateralReleaseWorkerDeps {
   collateral_release: CollateralReleaseService;
   log: (level: string, event: string, extra?: Record<string, unknown>) => void;
   now?: () => Date;
-}
-
-function defaultLog(level: string, event: string, extra: Record<string, unknown> = {}): void {
-  process.stdout.write(
-    JSON.stringify({ level, worker: 'collateral_release', event, time: new Date().toISOString(), ...extra }) + '\n',
-  );
 }
 
 type EligibleRow = {
@@ -153,92 +133,5 @@ export async function runCollateralReleaseCycle(deps: CollateralReleaseWorkerDep
     send_failed,
     not_eligible,
     errors,
-  });
-}
-
-function buildEmailProvider(): EmailProvider {
-  switch (EMAIL_PROVIDER_CONFIG) {
-    case EmailProviderName.Mailgun:
-      return new MailgunProvider({
-        api_key:      process.env.MAILGUN_API_KEY      ?? '',
-        domain:       process.env.MAILGUN_DOMAIN       ?? '',
-        region:       (process.env.MAILGUN_REGION as 'us' | 'eu') ?? 'us',
-        from_address: process.env.EMAIL_FROM_ADDRESS ?? '',
-        from_name:    process.env.EMAIL_FROM_NAME    ?? 'Bitmonie',
-      });
-    case EmailProviderName.Resend:
-      return new ResendProvider({
-        api_key:      process.env.RESEND_API_KEY      ?? '',
-        from_address: process.env.RESEND_FROM_ADDRESS ?? '',
-        from_name:    process.env.RESEND_FROM_NAME    ?? 'Bitmonie',
-      });
-    case EmailProviderName.Postmark:
-      return new PostmarkProvider({
-        server_token:   process.env.POSTMARK_SERVER_TOKEN  ?? '',
-        from_address:   process.env.POSTMARK_FROM_ADDRESS  ?? '',
-        from_name:      process.env.POSTMARK_FROM_NAME     ?? 'Bitmonie',
-        message_stream: process.env.POSTMARK_MESSAGE_STREAM,
-      });
-  }
-}
-
-class WorkerConfigService {
-  get<T>(): T {
-    return { internal_alert_email: process.env.INTERNAL_ALERT_EMAIL ?? null } as unknown as T;
-  }
-}
-
-async function main(): Promise<void> {
-  const DATABASE_URL = process.env.DATABASE_URL;
-  const REDIS_URL    = process.env.REDIS_URL;
-  if (!DATABASE_URL) { console.error('DATABASE_URL is required'); process.exit(1); }
-  if (!REDIS_URL)    { console.error('REDIS_URL is required');    process.exit(1); }
-
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: DATABASE_URL }) });
-  const redis  = new Redis(REDIS_URL);
-  redis.on('error', (err) => defaultLog('error', 'redis_error', { error: err.message }));
-
-  // The same Blink provider the API uses. Cast PrismaClient → PrismaService
-  // is safe (the latter just extends the former).
-  const blink = new BlinkProvider({
-    api_key:        process.env.BLINK_API_KEY        ?? '',
-    base_url:       process.env.BLINK_BASE_URL        ?? 'https://api.blink.sv',
-    wallet_btc_id:  process.env.BLINK_WALLET_BTC_ID   ?? '',
-    wallet_usd_id:  process.env.BLINK_WALLET_USD_ID   ?? '',
-    account_id:     process.env.BLINK_ACCOUNT_ID      ?? '',
-    webhook_secret: process.env.BLINK_WEBHOOK_SECRET  ?? '',
-  });
-
-  const prisma_as_service = prisma as unknown as PrismaService;
-  const email_provider    = buildEmailProvider();
-  const ops_alerts        = new OpsAlertsService(email_provider, new WorkerConfigService() as unknown as ConfigService);
-  const loan_status       = new LoanStatusService();
-  const loan_notifications = new LoanNotificationsService(email_provider, prisma_as_service);
-  const collateral_release = new CollateralReleaseService(
-    prisma_as_service,
-    blink,
-    loan_status,
-    ops_alerts,
-    redis,
-    loan_notifications,
-  );
-
-  const deps: CollateralReleaseWorkerDeps = { prisma, redis, collateral_release, log: defaultLog };
-
-  defaultLog('info', 'started', { interval_ms: WORKER_INTERVAL_MS });
-  await redis.ping();
-  await runCollateralReleaseCycle(deps);
-
-  setInterval(() => {
-    runCollateralReleaseCycle(deps).catch((err) =>
-      defaultLog('error', 'unhandled_error', { error: String(err) }),
-    );
-  }, WORKER_INTERVAL_MS);
-}
-
-if (require.main === module) {
-  main().catch((err) => {
-    console.error('Worker failed to start:', err);
-    process.exit(1);
   });
 }

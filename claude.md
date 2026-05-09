@@ -49,7 +49,7 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 | `disbursements` + `outflows` | Two-layer outbound payment system |
 | `webhooks` | Inbound provider events (collateral, disbursement, collection) |
 | `ops-alerts` | Internal ops-paging emails (unmatched inflows, credit failures); uses the same `EmailProvider` interface as auth OTP |
-| `workers` | Price feed, **liquidation monitor** (also fires customer coverage-tier nudges at 1.20 / 1.15 with recovery-aware Redis dedupe), payment-request invoice expiry, **outflow-reconciler** (stale PROCESSING outflows), **collateral-release** (REPAID loans with NULL `collateral_released_at` + address SET) |
+| `workers` | Price feed, **liquidation monitor** (also fires customer coverage-tier nudges at 1.20 / 1.15 with recovery-aware Redis dedupe AND runs the collateral-release cycle for REPAID loans with NULL `collateral_released_at` + address SET), payment-request invoice expiry, **outflow-reconciler** (stale PROCESSING outflows) |
 | `calculator` | Public loan quote engine — daily rates only, no projections (loans are open-term) — no auth |
 | `get-quote` | Large-loan enquiry form (> N10M) — human follow-up |
 
@@ -149,8 +149,8 @@ Provider name lives in `processing_provider`, `triggered_by_id`, etc. — as dat
 - **Release pipeline (CollateralReleaseService).** Three callers converge on the same service method, coordinated by a per-loan Redis SETNX lock so a customer never gets double-paid:
   1. **Post-commit fire-and-forget** in `LoansService.creditInflow`: when a repayment closes a loan to REPAID, `releaseForLoan(loan_id)` is called outside the credit transaction. Does not block the credit response.
   2. **Ops endpoint** `POST /v1/ops/loans/:id/release-collateral`: ops trigger when the auto path is wedged (provider outage, etc.). Audit row written first, release attempt runs after the audit commits — same pattern as the disbursement retry endpoint.
-  3. **`collateral-release` worker** (5-min default tick): scans loans where `status=REPAID AND collateral_released_at IS NULL AND collateral_release_address IS NOT NULL`. Safety net for transient failures and for cases where the customer set their address only after REPAID.
-- **Address is optional indefinitely.** A loan can sit at REPAID with `collateral_released_at IS NULL` waiting for the customer to enter their address via `PATCH /v1/loans/:id/release-address`. The worker picks it up the moment the address is set.
+  3. **Collateral-release cycle inside the liquidation-monitor worker** (5-min default tick, `WORKER_COLLATERAL_RELEASE_INTERVAL_MS`): scans loans where `status=REPAID AND collateral_released_at IS NULL AND collateral_release_address IS NOT NULL`. Safety net for transient failures and for cases where the customer set their address only after REPAID. Hosted by `liquidation-monitor.worker.ts` so both loan-monitoring sweeps share the same Railway service — neither sweep blocks the other (independent setIntervals).
+- **Address is optional indefinitely.** A loan can sit at REPAID with `collateral_released_at IS NULL` waiting for the customer to enter their address via `PATCH /v1/loans/:id/release-address`. The collateral-release cycle picks it up on the next tick after the address is set.
 - **Customer endpoint accepts changes, but step-up verified.** `PATCH /v1/loans/:id/release-address`:
   - First-set (NULL → value): authenticated session is sufficient.
   - Change (value → value): requires step-up — email OTP (always) PLUS one of {transaction PIN, TOTP code}. The user must have at least one factor configured; if neither is set, refuse with `TRANSACTION_FACTOR_NOT_SET`. When both are configured the customer picks per request.

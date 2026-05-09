@@ -1,15 +1,29 @@
 /**
  * Liquidation Monitor Worker — standalone Node.js process (NOT NestJS).
  *
- * Single sweep per tick over every ACTIVE loan, three responsibilities:
+ * Hosts two loan-monitoring cycles on independent intervals:
  *
- *   1. Liquidate at coverage ≤ 1.10 (LIQUIDATION_THRESHOLD).
- *   2. Customer-facing coverage nudges with recovery-aware Redis dedupe:
- *        coverage <  1.20 (COVERAGE_WARN_TIER)        → "your collateral is dropping"
- *        coverage <  1.15 (COVERAGE_MARGIN_CALL_TIER) → "MARGIN CALL — top up or repay now"
- *      Each tier's dedupe key is cleared the moment coverage rises back above
- *      that tier so a future re-deterioration re-fires once.
- *   3. Ops-internal alert at coverage ≤ 1.20 (ALERT_THRESHOLD), 24h dedupe.
+ *   A. Liquidation sweep — every WORKER_LIQUIDATION_INTERVAL_MS (default 30s).
+ *      Single sweep per tick over every ACTIVE loan, three responsibilities:
+ *
+ *        1. Liquidate at coverage ≤ 1.10 (LIQUIDATION_THRESHOLD).
+ *        2. Customer-facing coverage nudges with recovery-aware Redis dedupe:
+ *             coverage <  1.20 (COVERAGE_WARN_TIER)        → "your collateral is dropping"
+ *             coverage <  1.15 (COVERAGE_MARGIN_CALL_TIER) → "MARGIN CALL — top up or repay now"
+ *           Each tier's dedupe key is cleared the moment coverage rises back above
+ *           that tier so a future re-deterioration re-fires once.
+ *        3. Ops-internal alert at coverage ≤ 1.20 (ALERT_THRESHOLD), 24h dedupe.
+ *
+ *   B. Collateral-release cycle — every WORKER_COLLATERAL_RELEASE_INTERVAL_MS
+ *      (default 5m). Safety net for `LoansService.creditInflow`'s post-commit
+ *      release hand-off and for loans where the customer set their release
+ *      address only after REPAID. Implementation in
+ *      `workers/collateral-release.worker.ts`.
+ *
+ *      Folded in here (rather than as a fourth Railway service) because both
+ *      cycles operate on the `loans` table, share Blink + Redis + email
+ *      providers, and both touch money — so the same fault-isolation
+ *      reasoning applies to both. See `railway/README.md`.
  *
  * Run with: ts-node -r tsconfig-paths/register workers/liquidation-monitor.worker.ts
  */
@@ -34,20 +48,34 @@ import {
   REDIS_KEYS,
 } from '@/common/constants';
 import { displayNgn } from '@/common/formatting/ngn-display';
+import { ConfigService } from '@nestjs/config';
 import { AccrualService } from '@/modules/loans/accrual.service';
+import { CollateralReleaseService } from '@/modules/loans/collateral-release.service';
+import { LoanStatusService } from '@/modules/loans/loan-status.service';
+import { LoanNotificationsService } from '@/modules/loan-notifications/loan-notifications.service';
+import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
 import { BlinkProvider } from '@/providers/blink/blink.provider';
 import { MailgunProvider } from '@/providers/mailgun/mailgun.provider';
 import { ResendProvider } from '@/providers/resend/resend.provider';
 import { PostmarkProvider } from '@/providers/postmark/postmark.provider';
 import type { EmailProvider } from '@/modules/auth/email.provider.interface';
+import type { PrismaService } from '@/database/prisma.service';
 import { EMAIL_PROVIDER_CONFIG, EmailProviderName } from '@/config/email.config';
 import {
   buildCoverageWarnEmail,
   buildMarginCallEmail,
   type RepaymentAccountSummary,
 } from '@/modules/loan-notifications/loan-notification-templates';
+import {
+  runCollateralReleaseCycle,
+  type CollateralReleaseWorkerDeps,
+} from './collateral-release.worker';
 
 const WORKER_INTERVAL_MS = parseInt(process.env.WORKER_LIQUIDATION_INTERVAL_MS ?? '30000', 10);
+const COLLATERAL_RELEASE_INTERVAL_MS = parseInt(
+  process.env.WORKER_COLLATERAL_RELEASE_INTERVAL_MS ?? '300000',  // 5 min default
+  10,
+);
 const INTERNAL_ALERT_EMAIL = process.env.INTERNAL_ALERT_EMAIL ?? 'ops@bitmonie.com';
 
 export interface LiquidationDeps {
@@ -509,6 +537,54 @@ function buildEmailProvider(): EmailProvider {
   }
 }
 
+// Minimal stand-in for `ConfigService` used by `OpsAlertsService`. The worker
+// runs outside the Nest DI container, so we hand the service the one config
+// key it actually reads (`internal_alert_email`).
+class WorkerConfigService {
+  get<T>(): T {
+    return { internal_alert_email: process.env.INTERNAL_ALERT_EMAIL ?? null } as unknown as T;
+  }
+}
+
+function buildCollateralReleaseDeps(
+  prisma: PrismaClient,
+  redis: Redis,
+  blink: BlinkProvider,
+  email_provider: EmailProvider,
+): CollateralReleaseWorkerDeps {
+  // PrismaClient → PrismaService cast is safe (the service just extends the
+  // client). Same shape across all workers.
+  const prisma_as_service = prisma as unknown as PrismaService;
+  const ops_alerts = new OpsAlertsService(
+    email_provider,
+    new WorkerConfigService() as unknown as ConfigService,
+  );
+  const loan_status = new LoanStatusService();
+  const loan_notifications = new LoanNotificationsService(email_provider, prisma_as_service);
+  const collateral_release = new CollateralReleaseService(
+    prisma_as_service,
+    blink,
+    loan_status,
+    ops_alerts,
+    redis,
+    loan_notifications,
+  );
+
+  const log = (level: string, event: string, extra: Record<string, unknown> = {}): void => {
+    process.stdout.write(
+      JSON.stringify({
+        level,
+        worker: 'collateral_release',
+        event,
+        time: new Date().toISOString(),
+        ...extra,
+      }) + '\n',
+    );
+  };
+
+  return { prisma, redis, collateral_release, log };
+}
+
 async function main(): Promise<void> {
   const DATABASE_URL = process.env.DATABASE_URL;
   const REDIS_URL    = process.env.REDIS_URL;
@@ -533,17 +609,34 @@ async function main(): Promise<void> {
   const send_email: LiquidationDeps['send_email'] = (params) =>
     email_provider.sendTransactional(params);
 
-  const deps: LiquidationDeps = { prisma, redis, log: defaultLog, blink, accrual, send_email };
+  const liquidation_deps: LiquidationDeps = { prisma, redis, log: defaultLog, blink, accrual, send_email };
+  const release_deps = buildCollateralReleaseDeps(prisma, redis, blink, email_provider);
 
-  defaultLog('info', 'started', { interval_ms: WORKER_INTERVAL_MS, email_provider: EMAIL_PROVIDER_CONFIG });
+  defaultLog('info', 'started', {
+    liquidation_interval_ms:         WORKER_INTERVAL_MS,
+    collateral_release_interval_ms:  COLLATERAL_RELEASE_INTERVAL_MS,
+    email_provider:                  EMAIL_PROVIDER_CONFIG,
+  });
   await redis.ping();
-  await runLiquidationCycle(deps);
+
+  // Kick both cycles once at boot so we don't wait a full interval before the
+  // first sweep — same pattern as the price-feed worker.
+  await runLiquidationCycle(liquidation_deps);
+  await runCollateralReleaseCycle(release_deps).catch((err) =>
+    defaultLog('error', 'collateral_release_unhandled_error', { error: String(err) }),
+  );
 
   setInterval(() => {
-    runLiquidationCycle(deps).catch((err) =>
+    runLiquidationCycle(liquidation_deps).catch((err) =>
       defaultLog('error', 'unhandled_error', { error: String(err) }),
     );
   }, WORKER_INTERVAL_MS);
+
+  setInterval(() => {
+    runCollateralReleaseCycle(release_deps).catch((err) =>
+      defaultLog('error', 'collateral_release_unhandled_error', { error: String(err) }),
+    );
+  }, COLLATERAL_RELEASE_INTERVAL_MS);
 }
 
 if (require.main === module) {

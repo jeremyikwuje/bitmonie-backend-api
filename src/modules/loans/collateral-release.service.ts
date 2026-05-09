@@ -39,7 +39,8 @@ export type ReleaseResult =
 //
 //   1. LoansService.creditInflow (post-commit fire-and-forget on REPAID)
 //   2. OpsLoansController (manual ops trigger when the auto path is wedged)
-//   3. workers/collateral-release.worker.ts (safety net for retries)
+//   3. collateral-release cycle hosted by liquidation-monitor.worker.ts
+//      (safety net for retries; cycle fn lives in workers/collateral-release.worker.ts)
 //
 // The atomic "stamp the release" step lives inside a Prisma transaction
 // alongside a status_log row (REPAID → REPAID self-transition with
