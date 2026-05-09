@@ -9,9 +9,9 @@ each service overrides its config-as-code path to a toml in this folder.
 |-----------------------------|-------------------------------------------|--------------------------------------------|
 | `api`                       | `railway.toml` (root)                     | NestJS HTTP API                            |
 | `worker-price-feed`         | `railway/worker-price-feed.toml`          | SAT/NGN, BTC/NGN, USDT/NGN poller (30s)    |
-| `worker-liquidation`        | `railway/worker-liquidation.toml`         | Liquidation monitor (30s)                  |
+| `worker-liquidation`        | `railway/worker-liquidation.toml`         | Liquidation monitor + customer coverage-tier nudges (30s) |
 | `worker-outflow-reconciler` | `railway/worker-outflow-reconciler.toml`  | Stale-PROCESSING outflow reconciliation    |
-| `worker-scheduler`          | `railway/worker-scheduler.toml`           | loan-expiry + loan-reminder + disbursement-on-hold-digest + webhook-log-prune |
+| `worker-scheduler`          | `railway/worker-scheduler.toml`           | loan-expiry + disbursement-on-hold-digest + webhook-log-prune |
 
 The three financial-state workers (`price-feed`, `liquidation`, `outflow-reconciler`)
 stay isolated so a crash in one doesn't take the others down. The remaining three
