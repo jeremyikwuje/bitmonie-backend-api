@@ -58,7 +58,7 @@ export async function runCollateralReleaseCycle(deps: CollateralReleaseWorkerDep
   const eligible = await prisma.$queryRaw<EligibleRow[]>`
     SELECT id, user_id, collateral_amount_sat, collateral_release_address
       FROM loans
-     WHERE status = ${LoanStatus.REPAID}::"loan_status"
+     WHERE status = ${LoanStatus.REPAID}::"LoanStatus"
        AND collateral_released_at IS NULL
        AND collateral_release_address IS NOT NULL
      ORDER BY repaid_at ASC NULLS FIRST
