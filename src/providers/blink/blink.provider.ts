@@ -44,6 +44,22 @@ export class BlinkProvider implements CollateralProvider, PriceQuoteProvider {
     });
 
     const json: unknown = await response.json();
+
+    // GraphQL top-level error envelope: `{ data: null, errors: [{ message }] }`.
+    // The per-call schemas all model `data` as non-nullable, so without this
+    // pre-check Zod throws first and the actual server message gets buried in
+    // a parse error. Surface it cleanly so callers (and ops alerts) see the
+    // real reason — auth, walletId mismatch, insufficient balance, etc.
+    if (json !== null && typeof json === 'object') {
+      const envelope = json as { data?: unknown; errors?: Array<{ message?: unknown }> };
+      if (envelope.data == null && Array.isArray(envelope.errors) && envelope.errors.length > 0) {
+        const reason = envelope.errors
+          .map((e) => (typeof e?.message === 'string' ? e.message : 'unknown'))
+          .join(', ');
+        throw new Error(`Blink GraphQL error: ${reason}`);
+      }
+    }
+
     return schema.parse(json);
   }
 
