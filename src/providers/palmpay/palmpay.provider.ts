@@ -28,6 +28,17 @@ import {
 // schema-level column default — keeps the two in lockstep.
 const PALMPAY_VA_DEFAULT_BANK_NAME = 'Bloom Microfinance Bank';
 
+// PalmPay echoes the merchant's brand label appended in parentheses on the
+// returned virtualAccountName (e.g. "Jeremiah Ikwuje(PROCESSWITH SOFTWARE
+// LIMITED)"). Customers see this name on emails and account screens, so
+// strip everything from the first '(' onward and collapse whitespace before
+// persisting.
+function stripMerchantSuffix(name: string): string {
+  const open = name.indexOf('(');
+  const head = open >= 0 ? name.slice(0, open) : name;
+  return head.replace(/\s+/g, ' ').trim();
+}
+
 // Bank list rarely changes upstream (new PSPs/MFBs trickle in over weeks).
 // Cache the parsed list in-memory so the public /banks endpoint stays cheap
 // and survives short PalmPay blips. TTL is short enough that a newly-onboarded
@@ -528,8 +539,10 @@ export class PalmpayProvider implements DisbursementProvider {
     }
 
     return {
-      virtual_account_no:   data.data?.virtualAccountNo   ?? '',
-      virtual_account_name: data.data?.virtualAccountName ?? params.virtual_account_name,
+      virtual_account_no:   data.data?.virtualAccountNo ?? '',
+      virtual_account_name: stripMerchantSuffix(
+        data.data?.virtualAccountName ?? params.virtual_account_name,
+      ),
       bank_name:            PALMPAY_VA_DEFAULT_BANK_NAME,
     };
   }

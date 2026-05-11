@@ -314,6 +314,55 @@ describe('PalmpayProvider.getTransferStatus', () => {
   });
 });
 
+// ── createVirtualAccount ──────────────────────────────────────────────────────
+
+describe('PalmpayProvider.createVirtualAccount', () => {
+  const va_params = {
+    virtual_account_name: 'Jeremiah Ikwuje',
+    identity_type:        'BVN' as const,
+    license_number:       '12345678901',
+    customer_name:        'JEREMIAH SUCCEED IKWUJE',
+    account_reference:    'user_abc',
+  };
+
+  it('strips merchant suffix from PalmPay-returned virtualAccountName', async () => {
+    mock_ok({
+      respCode: '00000000',
+      respMsg: 'success',
+      data: {
+        virtualAccountNo:   '9931107760',
+        virtualAccountName: 'Jeremiah Ikwuje(PROCESSWITH SOFTWARE LIMITED)',
+      },
+    });
+
+    const result = await make_provider().createVirtualAccount(va_params);
+
+    expect(result.virtual_account_no).toBe('9931107760');
+    expect(result.virtual_account_name).toBe('Jeremiah Ikwuje');
+  });
+
+  it('passes a clean name through unchanged', async () => {
+    mock_ok({
+      respCode: '00000000',
+      respMsg: 'success',
+      data: { virtualAccountNo: '9931107760', virtualAccountName: 'Ada Obi' },
+    });
+
+    const result = await make_provider().createVirtualAccount(va_params);
+    expect(result.virtual_account_name).toBe('Ada Obi');
+  });
+
+  it('strips and trims when provider omits virtualAccountName (falls back to params)', async () => {
+    mock_ok({ respCode: '00000000', respMsg: 'success', data: { virtualAccountNo: '9931107760' } });
+
+    const result = await make_provider().createVirtualAccount({
+      ...va_params,
+      virtual_account_name: '  Jeremiah   Ikwuje  ',
+    });
+    expect(result.virtual_account_name).toBe('Jeremiah Ikwuje');
+  });
+});
+
 // ── verifyWebhookSignature ────────────────────────────────────────────────────
 
 describe('PalmpayProvider.verifyWebhookSignature', () => {
