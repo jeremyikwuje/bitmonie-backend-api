@@ -89,7 +89,7 @@ export interface NewLoanApplicationAlertParams {
   email:                    string;
   phone:                    string;
   collateral_type_display:  string;          // human-readable collateral string
-  collateral_description:   string;
+  collateral_description:   string | null;   // optional free-text from the form
   loan_amount_ngn:          string;          // pre-formatted with thousands separators
   created_at:               Date;
 }
@@ -255,7 +255,7 @@ export class OpsAlertsService {
   }
 
   private _buildNewLoanApplicationTextBody(p: NewLoanApplicationAlertParams): string {
-    return [
+    const lines = [
       'New loan application received.',
       '',
       `Name:        ${p.first_name} ${p.last_name}`,
@@ -264,18 +264,24 @@ export class OpsAlertsService {
       '',
       `Loan amount: N${p.loan_amount_ngn}`,
       `Collateral:  ${p.collateral_type_display}`,
-      '',
-      'Description:',
-      p.collateral_description,
+    ];
+    if (p.collateral_description) {
+      lines.push('', 'Description:', p.collateral_description);
+    }
+    lines.push(
       '',
       `Submitted:   ${p.created_at.toISOString()}`,
       `Application: ${p.application_id}`,
-    ].join('\n');
+    );
+    return lines.join('\n');
   }
 
   private _buildNewLoanApplicationHtmlBody(p: NewLoanApplicationAlertParams): string {
     const row = (label: string, value: string) =>
       `<tr><td style="padding:4px 12px 4px 0;color:#666"><b>${label}</b></td><td style="padding:4px 0">${escapeHtml(value)}</td></tr>`;
+    const description_block = p.collateral_description
+      ? `<p style="font-family:system-ui,sans-serif;font-size:14px"><b>Description</b><br>${escapeHtml(p.collateral_description).replace(/\n/g, '<br>')}</p>`
+      : '';
     return `
       <p>New loan application received.</p>
       <table style="font-family:system-ui,sans-serif;font-size:14px">
@@ -287,7 +293,7 @@ export class OpsAlertsService {
         ${row('Submitted',   p.created_at.toISOString())}
         ${row('Application', p.application_id)}
       </table>
-      <p style="font-family:system-ui,sans-serif;font-size:14px"><b>Description</b><br>${escapeHtml(p.collateral_description).replace(/\n/g, '<br>')}</p>
+      ${description_block}
     `.trim();
   }
 

@@ -119,7 +119,7 @@ describe('LoanApplicationsController (integration)', () => {
     const body = valid_body();
     body.email           = 'not-an-email';
     body.loan_amount_ngn = 0;
-    delete body.collateral_description;
+    body.phone           = '123';
 
     const res = await request(app.getHttpServer())
       .post('/loan-applications')
@@ -128,7 +128,25 @@ describe('LoanApplicationsController (integration)', () => {
 
     expect(res.body.error.code).toBe('VALIDATION_FAILED');
     const fields = res.body.error.details.map((d: { field: string }) => d.field);
-    expect(fields).toEqual(expect.arrayContaining(['email', 'loan_amount_ngn', 'collateral_description']));
+    expect(fields).toEqual(expect.arrayContaining(['email', 'loan_amount_ngn', 'phone']));
+  });
+
+  // ── 8.3b collateral_description is optional ────────────────────────────────
+
+  it('accepts a submission with collateral_description omitted', async () => {
+    service.create.mockResolvedValue(make_application_row({ collateral_description: null }));
+
+    const body = valid_body();
+    delete body.collateral_description;
+
+    await request(app.getHttpServer())
+      .post('/loan-applications')
+      .send(body)
+      .expect(201);
+
+    expect(service.create).toHaveBeenCalledWith(
+      expect.objectContaining({ collateral_description: null }),
+    );
   });
 
   // ── 8.4 validation — loan cap ───────────────────────────────────────────────

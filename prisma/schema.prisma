@@ -846,7 +846,7 @@ model LoanApplication {
   phone      String @db.VarChar(40)
 
   collateral_type        LoanApplicationCollateralType
-  collateral_description String  @db.VarChar(1000)
+  collateral_description String? @db.VarChar(1000)
   loan_amount_ngn        Decimal @db.Decimal(20, 2)
 
   status                  LoanApplicationStatus @default(NEW)

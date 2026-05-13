@@ -67,12 +67,12 @@ export class CreateLoanApplicationDto {
   })
   collateral_type!: LoanApplicationCollateralDisplay;
 
-  @ApiProperty({ example: '0.05 BTC', maxLength: 1000 })
+  @ApiProperty({ example: '0.05 BTC', maxLength: 1000, required: false })
   @Transform(trim)
-  @IsString({ message: 'Describe your collateral' })
-  @MinLength(1, { message: 'Describe your collateral' })
+  @IsOptional()
+  @IsString({ message: 'Description must be a string' })
   @MaxLength(1000, { message: 'Description is too long' })
-  collateral_description!: string;
+  collateral_description?: string;
 
   @ApiProperty({
     example: 5_000_000,

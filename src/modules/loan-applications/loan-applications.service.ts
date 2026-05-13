@@ -10,15 +10,15 @@ import {
 import { OpsAlertsService } from '@/modules/ops-alerts/ops-alerts.service';
 
 export interface CreateLoanApplicationParams {
-  first_name:             string;
-  last_name:              string;
-  email:                  string;
-  phone:                  string;
+  first_name:              string;
+  last_name:               string;
+  email:                   string;
+  phone:                   string;
   collateral_type_display: LoanApplicationCollateralDisplay;
-  collateral_description: string;
-  loan_amount_ngn:        number;
-  client_ip:              string | null;
-  user_agent:             string | null;
+  collateral_description:  string | null;
+  loan_amount_ngn:         number;
+  client_ip:               string | null;
+  user_agent:              string | null;
 }
 
 @Injectable()

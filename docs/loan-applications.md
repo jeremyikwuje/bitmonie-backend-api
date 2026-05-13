@@ -50,17 +50,17 @@ X-Forwarded-For: <visitor IP, forwarded by the landing-page proxy>
 User-Agent: <browser UA>
 ```
 
-**Body — applicant fields (all required):**
+**Body — applicant fields:**
 
-| Field                    | Type   | Constraint                                                                                       |
-| ------------------------ | ------ | ------------------------------------------------------------------------------------------------ |
-| `first_name`             | string | 1–80 chars, trimmed                                                                              |
-| `last_name`              | string | 1–80 chars, trimmed                                                                              |
-| `email`                  | string | Valid email per `@IsEmail()`, ≤160 chars, lowercased before storage                              |
-| `phone`                  | string | ≤40 chars; must contain ≥7 digits after stripping non-digits                                     |
-| `collateral_type`        | enum   | One of the values in §2.3                                                                        |
-| `collateral_description` | string | 1–1000 chars, trimmed                                                                            |
-| `loan_amount_ngn`        | number | Integer naira, `> 0` and `≤ 100_000_000`. Accepted as `number` in the DTO, stored as `Decimal`.  |
+| Field                    | Required | Type   | Constraint                                                                                       |
+| ------------------------ | -------- | ------ | ------------------------------------------------------------------------------------------------ |
+| `first_name`             | yes      | string | 1–80 chars, trimmed                                                                              |
+| `last_name`              | yes      | string | 1–80 chars, trimmed                                                                              |
+| `email`                  | yes      | string | Valid email per `@IsEmail()`, ≤160 chars, lowercased before storage                              |
+| `phone`                  | yes      | string | ≤40 chars; must contain ≥7 digits after stripping non-digits                                     |
+| `collateral_type`        | yes      | enum   | One of the values in §2.3                                                                        |
+| `loan_amount_ngn`        | yes      | number | Integer naira, `> 0` and `≤ 100_000_000`. Accepted as `number` in the DTO, stored as `Decimal`.  |
+| `collateral_description` | no       | string | If present: ≤1000 chars, trimmed. Empty or omitted is allowed — applicants don't always describe their asset upfront. Stored as `NULL` when absent. |
 
 **Body — bot-trap fields (optional; see §6):**
 
@@ -174,7 +174,7 @@ Implement these server-side. Each rule maps to one acceptance test in §8.
 | V05 | `email`                  | `@IsEmail()` (class-validator default), ≤160 chars                | `Valid email is required`                              |
 | V06 | `phone`                  | ≥7 digits after stripping non-digits, ≤40 chars raw               | `Valid phone is required`                              |
 | V07 | `collateral_type`        | One of the §2.3 display strings                                   | `Select a collateral type`                             |
-| V08 | `collateral_description` | Required, 1–1000 chars after trim                                 | `Describe your collateral`                             |
+| V08 | `collateral_description` | **Optional.** If present and non-empty after trim: ≤1000 chars.   | `Description is too long` (length only)                |
 | V09 | `loan_amount_ngn`        | Finite number, `> 0`                                              | `Enter a loan amount`                                  |
 | V10 | `loan_amount_ngn`        | `≤ 100_000_000`                                                   | `Loan amount cannot exceed ₦100,000,000`               |
 
@@ -404,11 +404,21 @@ AND   no email is sent
 ### 8.3 Validation — aggregate errors
 
 ```
-GIVEN a payload with invalid email AND loan_amount_ngn = 0 AND missing collateral_description
+GIVEN a payload with invalid email AND loan_amount_ngn = 0 AND phone = "123"
 WHEN  POST /v1/loan-applications
 THEN  status 400
-AND   response.error.details contains entries for email, loan_amount_ngn, and collateral_description
+AND   response.error.details contains entries for email, loan_amount_ngn, and phone
 AND   no row is created
+```
+
+### 8.3b Optional description
+
+```
+GIVEN a payload with collateral_description omitted entirely
+WHEN  POST /v1/loan-applications
+THEN  status 201
+AND   the stored row has collateral_description == NULL
+AND   the ops email omits the "Description:" block
 ```
 
 ### 8.4 Validation — loan cap

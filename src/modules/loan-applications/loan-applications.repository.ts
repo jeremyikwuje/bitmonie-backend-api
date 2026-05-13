@@ -10,7 +10,7 @@ export interface CreateLoanApplicationRow {
   email:                  string;
   phone:                  string;
   collateral_type:        LoanApplicationCollateralType;
-  collateral_description: string;
+  collateral_description: string | null;
   loan_amount_ngn:        Decimal;
   client_ip:              string | null;
   user_agent:             string | null;

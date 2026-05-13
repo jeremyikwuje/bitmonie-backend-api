@@ -98,7 +98,7 @@ export class LoanApplicationsController {
       email:                   dto.email,
       phone:                   dto.phone,
       collateral_type_display: dto.collateral_type,
-      collateral_description:  dto.collateral_description,
+      collateral_description:  dto.collateral_description ?? null,
       loan_amount_ngn:         dto.loan_amount_ngn,
       client_ip:               getApplicationClientIp(req),
       user_agent:              (req.headers['user-agent'] ?? null)?.toString().slice(0, 512) ?? null,

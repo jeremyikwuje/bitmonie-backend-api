@@ -36,7 +36,7 @@ CREATE TABLE "loan_applications" (
     "phone"                   VARCHAR(40)                     NOT NULL,
 
     "collateral_type"         "LoanApplicationCollateralType" NOT NULL,
-    "collateral_description"  VARCHAR(1000)                   NOT NULL,
+    "collateral_description"  VARCHAR(1000),
     "loan_amount_ngn"         DECIMAL(20, 2)                  NOT NULL,
 
     "status"                  "LoanApplicationStatus"         NOT NULL DEFAULT 'NEW',
