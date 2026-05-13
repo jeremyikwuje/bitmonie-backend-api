@@ -78,6 +78,22 @@ export interface CollateralReleaseFailedParams {
   alert_severity:      'standard' | 'critical';
 }
 
+// Fired by LoanApplicationsService after a new application is persisted.
+// Reply-To is the applicant's email so ops can respond by hitting reply.
+// Recipient resolves to AppConfig.loan_applications_email when set, else
+// AppConfig.internal_alert_email — keeps the loans address out of source.
+export interface NewLoanApplicationAlertParams {
+  application_id:           string;
+  first_name:               string;
+  last_name:                string;
+  email:                    string;
+  phone:                    string;
+  collateral_type_display:  string;          // human-readable collateral string
+  collateral_description:   string;
+  loan_amount_ngn:          string;          // pre-formatted with thousands separators
+  created_at:               Date;
+}
+
 @Injectable()
 export class OpsAlertsService {
   private readonly logger = new Logger(OpsAlertsService.name);
@@ -199,6 +215,80 @@ export class OpsAlertsService {
         'Failed to send collateral-release-failed ops alert email',
       );
     }
+  }
+
+  // New public-form loan application landed. Routed to loan_applications_email
+  // (falls back to internal_alert_email). Reply-To is the applicant email so
+  // ops can hit reply and respond directly without copy/paste.
+  async alertNewLoanApplication(params: NewLoanApplicationAlertParams): Promise<void> {
+    const app_cfg = this.config.get<AppConfig>('app');
+    const recipient = app_cfg?.loan_applications_email || app_cfg?.internal_alert_email;
+    if (!recipient) {
+      this.logger.warn(
+        { application_id: params.application_id },
+        'New loan application received but no recipient configured (LOAN_APPLICATIONS_EMAIL + INTERNAL_ALERT_EMAIL both unset) — alert skipped',
+      );
+      return;
+    }
+
+    const subject = `New loan application — ${params.first_name} ${params.last_name} (N${params.loan_amount_ngn})`;
+    const text_body = this._buildNewLoanApplicationTextBody(params);
+    const html_body = this._buildNewLoanApplicationHtmlBody(params);
+
+    try {
+      await this.email.sendTransactional({
+        to:       recipient,
+        subject,
+        text_body,
+        html_body,
+        reply_to: params.email,
+      });
+    } catch (err) {
+      this.logger.error(
+        {
+          application_id: params.application_id,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        'Failed to send new-loan-application ops alert email',
+      );
+    }
+  }
+
+  private _buildNewLoanApplicationTextBody(p: NewLoanApplicationAlertParams): string {
+    return [
+      'New loan application received.',
+      '',
+      `Name:        ${p.first_name} ${p.last_name}`,
+      `Email:       ${p.email}`,
+      `Phone:       ${p.phone}`,
+      '',
+      `Loan amount: N${p.loan_amount_ngn}`,
+      `Collateral:  ${p.collateral_type_display}`,
+      '',
+      'Description:',
+      p.collateral_description,
+      '',
+      `Submitted:   ${p.created_at.toISOString()}`,
+      `Application: ${p.application_id}`,
+    ].join('\n');
+  }
+
+  private _buildNewLoanApplicationHtmlBody(p: NewLoanApplicationAlertParams): string {
+    const row = (label: string, value: string) =>
+      `<tr><td style="padding:4px 12px 4px 0;color:#666"><b>${label}</b></td><td style="padding:4px 0">${escapeHtml(value)}</td></tr>`;
+    return `
+      <p>New loan application received.</p>
+      <table style="font-family:system-ui,sans-serif;font-size:14px">
+        ${row('Name',        `${p.first_name} ${p.last_name}`)}
+        ${row('Email',       p.email)}
+        ${row('Phone',       p.phone)}
+        ${row('Loan amount', `N${p.loan_amount_ngn}`)}
+        ${row('Collateral',  p.collateral_type_display)}
+        ${row('Submitted',   p.created_at.toISOString())}
+        ${row('Application', p.application_id)}
+      </table>
+      <p style="font-family:system-ui,sans-serif;font-size:14px"><b>Description</b><br>${escapeHtml(p.collateral_description).replace(/\n/g, '<br>')}</p>
+    `.trim();
   }
 
   private _buildCollateralReleaseFailedTextBody(p: CollateralReleaseFailedParams): string {

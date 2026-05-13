@@ -26,11 +26,16 @@ export interface OtpEmailParams {
 // failures, etc.) and customer notifications (loan reminders) — anywhere we
 // need an email path that isn't OTP. v1.2 will move template composition into
 // provider-native systems (Mailgun Templates, Postmark TemplateAlias, etc.).
+//
+// `reply_to` lets the new-loan-application alert route Reply directly to the
+// applicant so ops can respond without copy/pasting the address. Optional —
+// most ops alerts leave it unset.
 export interface TransactionalEmailParams {
   to:        string;
   subject:   string;
   text_body: string;
   html_body: string;
+  reply_to?: string;
 }
 
 export interface EmailProvider {

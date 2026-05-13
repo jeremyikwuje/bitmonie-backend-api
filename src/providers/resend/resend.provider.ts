@@ -18,14 +18,21 @@ export class ResendProvider implements EmailProvider {
 
   async sendTransactional(params: TransactionalEmailParams): Promise<void> {
     return this._send({
-      to:      params.to,
-      subject: params.subject,
-      text:    params.text_body,
-      html:    params.html_body,
+      to:       params.to,
+      subject:  params.subject,
+      text:     params.text_body,
+      html:     params.html_body,
+      reply_to: params.reply_to,
     });
   }
 
-  private async _send(params: { to: string; subject: string; text: string; html: string }): Promise<void> {
+  private async _send(params: {
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+    reply_to?: string;
+  }): Promise<void> {
     const response = await fetch(`${ResendProvider.BASE_URL}/emails`, {
       method: 'POST',
       headers: {
@@ -38,6 +45,7 @@ export class ResendProvider implements EmailProvider {
         subject: params.subject,
         text:    params.text,
         html:    params.html,
+        ...(params.reply_to ? { reply_to: params.reply_to } : {}),
       }),
     });
 

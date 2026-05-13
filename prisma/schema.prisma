@@ -731,9 +731,10 @@ model OpsUser {
   created_at    DateTime  @default(now()) @db.Timestamptz
   updated_at    DateTime  @updatedAt @db.Timestamptz
 
-  sessions               OpsSession[]
-  audit_logs             OpsAuditLog[]
+  sessions                OpsSession[]
+  audit_logs              OpsAuditLog[]
   cancelled_disbursements Disbursement[] @relation("DisbursementCancelledByOpsUser")
+  assigned_loan_applications LoanApplication[] @relation("LoanApplicationAssignedToOpsUser")
 
   @@map("ops_users")
 }
@@ -803,4 +804,61 @@ model OpsAuditLog {
   @@index([ops_user_id, created_at])
   @@index([target_type, target_id, created_at])
   @@map("ops_audit_logs")
+}
+
+// ─────────────────────────────────────────
+// LOAN APPLICATIONS
+// ─────────────────────────────────────────
+//
+// Public intake form for human-assisted loan onboarding (bitmonie.com/apply).
+// Serves two persona groups that bypass self-serve: non-BTC asset owners
+// (cars, MacBooks, iPhones) and BTC owners who want OTC handling. No
+// session — endpoint is public + rate-limited. Loans team triages by hand.
+//
+// `loan_amount_ngn` carries a CHECK constraint (0 < amount <= 100_000_000)
+// applied in the migration; Prisma can't express it inline.
+// See docs/loan-applications.md.
+
+enum LoanApplicationStatus {
+  NEW
+  CONTACTED
+  APPROVED
+  REJECTED
+  CLOSED
+}
+
+enum LoanApplicationCollateralType {
+  BITCOIN
+  USDT_USDC
+  MACBOOK_M1_OR_NEWER
+  IPHONE_13_OR_NEWER
+  CAR_2008_OR_NEWER
+}
+
+model LoanApplication {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @updatedAt @db.Timestamptz
+
+  first_name String @db.VarChar(80)
+  last_name  String @db.VarChar(80)
+  email      String @db.VarChar(160)
+  phone      String @db.VarChar(40)
+
+  collateral_type        LoanApplicationCollateralType
+  collateral_description String  @db.VarChar(1000)
+  loan_amount_ngn        Decimal @db.Decimal(20, 2)
+
+  status                  LoanApplicationStatus @default(NEW)
+  assigned_to_ops_user_id String?               @db.Uuid
+  assigned_to             OpsUser?              @relation("LoanApplicationAssignedToOpsUser", fields: [assigned_to_ops_user_id], references: [id], onDelete: SetNull)
+  notes                   String?               @db.Text
+
+  client_ip  String? @db.VarChar(45)
+  user_agent String? @db.VarChar(512)
+
+  @@index([email])
+  @@index([created_at(sort: Desc)])
+  @@index([status])
+  @@map("loan_applications")
 }

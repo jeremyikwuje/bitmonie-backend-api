@@ -35,6 +35,7 @@ export class PostmarkProvider implements EmailProvider {
         TextBody: params.text_body,
         HtmlBody: params.html_body,
         MessageStream: this.config.message_stream ?? 'outbound',
+        ...(params.reply_to ? { ReplyTo: params.reply_to } : {}),
       }),
     });
 

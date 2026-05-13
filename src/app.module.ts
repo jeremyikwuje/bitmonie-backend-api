@@ -24,6 +24,7 @@ import { OpsDisbursementsModule } from './modules/ops/disbursements/ops-disburse
 import { OpsLoansModule } from './modules/ops/loans/ops-loans.module';
 import { PlatformConfigModule } from './modules/platform-config/platform-config.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
+import { LoanApplicationsModule } from './modules/loan-applications/loan-applications.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     OpsLoansModule,
     PlatformConfigModule,
     WebhooksModule,
+    LoanApplicationsModule,
   ],
   providers: [
     {

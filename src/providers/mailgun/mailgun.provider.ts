@@ -21,14 +21,21 @@ export class MailgunProvider implements EmailProvider {
 
   async sendTransactional(params: TransactionalEmailParams): Promise<void> {
     return this._send({
-      to:      params.to,
-      subject: params.subject,
-      text:    params.text_body,
-      html:    params.html_body,
+      to:       params.to,
+      subject:  params.subject,
+      text:     params.text_body,
+      html:     params.html_body,
+      reply_to: params.reply_to,
     });
   }
 
-  private async _send(params: { to: string; subject: string; text: string; html: string }): Promise<void> {
+  private async _send(params: {
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+    reply_to?: string;
+  }): Promise<void> {
     const base = MailgunProvider.BASE_URLS[this.config.region];
     const url = `${base}/v3/${this.config.domain}/messages`;
     const auth = Buffer.from(`api:${this.config.api_key}`).toString('base64');
@@ -40,6 +47,7 @@ export class MailgunProvider implements EmailProvider {
       text: params.text,
       html: params.html,
     });
+    if (params.reply_to) body.append('h:Reply-To', params.reply_to);
 
     const response = await fetch(url, {
       method: 'POST',
