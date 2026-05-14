@@ -90,11 +90,10 @@ export class MeService {
 
       // bps → fraction. Same shape AccrualService uses internally; kept here
       // so we don't have to expose a new method on AccrualService just for
-      // this single per-day projection.
+      // this single per-day projection. Custody removed — interest only.
       const rate_factor = new Decimal(loan.daily_interest_rate_bps).div(BPS_DENOMINATOR);
       const daily_interest = result.principal_ngn.mul(rate_factor);
-      const daily_custody = new Decimal(loan.daily_custody_fee_ngn.toString());
-      daily_accrual_total = daily_accrual_total.plus(daily_interest).plus(daily_custody);
+      daily_accrual_total = daily_accrual_total.plus(daily_interest);
     }
 
     // ── attention cards ──────────────────────────────────────────────────────

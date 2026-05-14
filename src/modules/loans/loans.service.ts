@@ -74,7 +74,7 @@ export interface CheckoutLoanResult {
     daily_custody_fee_ngn:   string;
     daily_interest_rate_bps: number;
     daily_interest_ngn:      string;       // 0.3% × principal at day 0
-    daily_total_ngn:         string;       // daily_interest + daily_custody
+    daily_total_ngn:         string;       // daily_interest + daily_custody (custody removed → equals daily_interest)
     amount_to_receive_ngn:   string;       // principal − origination
   };
 }

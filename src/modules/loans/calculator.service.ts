@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import {
   ALERT_THRESHOLD,
-  CUSTODY_FEE_PER_100_USD_NGN,
   DAILY_INTEREST_RATE_BPS,
   LIQUIDATION_THRESHOLD,
   LOAN_LTV_PERCENT,
@@ -27,7 +26,7 @@ export interface CalculatorResult {
   // Known at origination — stored on Loan
   principal_ngn:             Decimal;
   origination_fee_ngn:       Decimal;      // ceil(principal / 100k) × 500
-  daily_custody_fee_ngn:     Decimal;      // ceil(initial_collateral_usd / 100) × 100; fixed for life of loan
+  daily_custody_fee_ngn:     Decimal;      // always 0 — custody fee removed (legacy field retained for schema/API stability)
   daily_interest_rate_bps:   number;       // 30 → 0.3%
   daily_interest_ngn:        Decimal;      // 0.3% × principal at day 0 (drops as customer repays principal)
 
@@ -47,7 +46,6 @@ export interface CalculatorResult {
 }
 
 const HUNDRED_K_NGN          = new Decimal('100000');
-const USD_FEE_UNIT           = new Decimal('100');
 const BPS_DENOMINATOR        = new Decimal('10000');
 
 @Injectable()
@@ -73,10 +71,10 @@ export class CalculatorService {
     const origination_units = principal_ngn.div(HUNDRED_K_NGN).ceil();
     const origination_fee_ngn = origination_units.mul(ORIGINATION_FEE_PER_100K_NGN);
 
-    // ── Daily custody fee (fixed at origination) ───────────────────────────
-    // ceil(initial_collateral_usd / 100) × 100
-    const custody_units = initial_collateral_usd.div(USD_FEE_UNIT).ceil();
-    const daily_custody_fee_ngn = custody_units.mul(CUSTODY_FEE_PER_100_USD_NGN);
+    // ── Daily custody fee ──────────────────────────────────────────────────
+    // Custody removed — always 0. Field retained for schema/API stability
+    // (legacy callers + Loan.daily_custody_fee_ngn column).
+    const daily_custody_fee_ngn = new Decimal(0);
 
     // ── Daily interest at day 0 ────────────────────────────────────────────
     // Drops piecewise as the customer repays principal — surfaced here as a

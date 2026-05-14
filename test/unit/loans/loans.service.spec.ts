@@ -495,12 +495,12 @@ describe('LoansService', () => {
         total_outstanding_ngn: expect.any(String),
         days_elapsed:          expect.any(Number),
       }));
-      // Day-1 of a N300k principal at 30 bps → N900 interest, plus N300/day custody.
+      // Day-1 of a N300k principal at 30 bps → N900 interest. Custody removed.
       // Customer-facing strings are whole-naira (kobo internally; ceil at display).
       expect(result.outstanding.principal_ngn).toBe('300000');
       expect(result.outstanding.accrued_interest_ngn).toBe('900');
-      expect(result.outstanding.accrued_custody_ngn).toBe('300');
-      expect(result.outstanding.total_outstanding_ngn).toBe('301200');
+      expect(result.outstanding.accrued_custody_ngn).toBe('0');
+      expect(result.outstanding.total_outstanding_ngn).toBe('300900');
       expect(result.outstanding.days_elapsed).toBe(1);
     });
   });
@@ -862,7 +862,8 @@ describe('LoansService', () => {
     });
 
     it('credits a partial repayment to an ACTIVE loan and stays ACTIVE', async () => {
-      // Loan: 500k principal, day 30, custody 700/day → outstanding ≈ 566k
+      // Loan: 500k principal, day 30, custody removed → outstanding ≈ 545k
+      // (custody column on the loan is non-zero but accrual ignores it).
       setupTx(makeActiveLoan());
 
       const result = await service.creditInflow({
@@ -873,11 +874,11 @@ describe('LoansService', () => {
       });
 
       expect(result.new_status).toBe(LoanStatus.ACTIVE);
-      // Waterfall on N100k against custody 21k + interest 45k + principal 500k:
-      // → custody 21,000 / interest 45,000 / principal 34,000 / overpay 0
-      expect(result.applied_to_custody).toBe('21000');
+      // Waterfall on N100k against custody 0 + interest 45k + principal 500k:
+      // → custody 0 / interest 45,000 / principal 55,000 / overpay 0
+      expect(result.applied_to_custody).toBe('0');
       expect(result.applied_to_interest).toBe('45000');
-      expect(result.applied_to_principal).toBe('34000');
+      expect(result.applied_to_principal).toBe('55000');
       expect(result.overpay_ngn).toBe('0');
 
       expect(loan_status.transition).toHaveBeenCalledWith(
@@ -892,10 +893,11 @@ describe('LoansService', () => {
     it('full repayment closes the loan to REPAID', async () => {
       setupTx(makeActiveLoan());
 
+      // Outstanding without custody: 500k principal + 45k interest = 545k.
       const result = await service.creditInflow({
         inflow_id:    INFLOW_ID,
         loan_id:      LOAN_ID,
-        amount_ngn:   new Decimal('566000'),
+        amount_ngn:   new Decimal('545000'),
         match_method: 'CUSTOMER_CLAIM',
       });
 
@@ -918,7 +920,7 @@ describe('LoansService', () => {
       await service.creditInflow({
         inflow_id:    INFLOW_ID,
         loan_id:      LOAN_ID,
-        amount_ngn:   new Decimal('566000'),
+        amount_ngn:   new Decimal('545000'),
         match_method: 'CUSTOMER_CLAIM',
       });
 
@@ -945,6 +947,8 @@ describe('LoansService', () => {
     it('overpayment closes the loan and records overpay_ngn', async () => {
       setupTx(makeActiveLoan());
 
+      // Outstanding = 500k principal + 45k interest = 545k (no custody).
+      // 600k − 545k = 55k overpay.
       const result = await service.creditInflow({
         inflow_id:    INFLOW_ID,
         loan_id:      LOAN_ID,
@@ -953,7 +957,7 @@ describe('LoansService', () => {
       });
 
       expect(result.new_status).toBe(LoanStatus.REPAID);
-      expect(result.overpay_ngn).toBe('34000');
+      expect(result.overpay_ngn).toBe('55000');
     });
 
     it('inserts a LoanRepayment row in the same transaction', async () => {

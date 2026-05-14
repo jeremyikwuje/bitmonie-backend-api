@@ -16,7 +16,7 @@ We considered three loan-protection models:
 
 Once (3) is the safety mechanism, **duration is decorative** — it served only as a forced-close alternative we no longer need. So duration goes away entirely. Single-cohort product: amount in, BTC in, NGN out, repay anytime, accrual + LTV-margin-call govern everything.
 
-The accrual itself self-terminates loans: at 0.3%/day interest + fixed daily custody, outstanding catches up to collateral around day 200 even at flat BTC, triggering LTV liquidation. So there's no infinite-open-position problem — the economics force resolution. This is surfaced in customer copy, not as a hidden surprise.
+The accrual itself self-terminates loans: at 0.3%/day interest (custody fee removed), outstanding catches up to collateral over time even at flat BTC, eventually triggering LTV liquidation. So there's no infinite-open-position problem — the economics force resolution. This is surfaced in customer copy, not as a hidden surprise.
 
 Explicitly **not** in this design: in-place loan modification, refinancing, term extensions, term-based pricing tiers, uncollateralized loans against wallet history (separate v1.3 conversation).
 
@@ -32,7 +32,7 @@ Explicitly **not** in this design: in-place loan modification, refinancing, term
 | 4 | **Three coverage tiers govern customer notifications:** WARN at `< 1.20` (informational), MARGIN_CALL at `< 1.15` (urgent top-up notice — act immediately), LIQUIDATE at `< 1.10` (auto-execute). |
 | 5 | **No time guarantee on margin call.** Customer copy is direct: "top up or repay immediately — we liquidate at 110% coverage." Bitmonie does not absorb fast-decline risk by holding liquidation. The notice is a courtesy heads-up, not a contractual window. |
 | 6 | **Recovery-aware dedupe.** Each tier's notification fires once per crossing. When coverage rises back above a tier (top-up or repayment), the dedupe clears so a future re-deterioration re-notifies. |
-| 7 | **Calculator returns daily rates only.** No term input, no projected total, no "if held 30 days" preview. Output: `origination_fee_ngn`, `daily_interest_ngn`, `daily_custody_fee_ngn`, plus collateral + liquidation-price math. |
+| 7 | **Calculator returns daily rates only.** No term input, no projected total, no "if held 30 days" preview. Output: `origination_fee_ngn` (currently 0), `daily_interest_ngn`, `daily_custody_fee_ngn` (always 0 — retained for API stability), plus collateral + liquidation-price math. |
 | 8 | **Self-termination via accrual is surfaced in checkout copy.** "Daily charges accrue. Even if BTC stays flat, your loan will eventually reach the liquidation line — at current rates, that's roughly day 200 from disbursement." |
 | 9 | Margin-call notification does **not** create a loan status row. Loan stays ACTIVE. Email-out + structured log is sufficient — no new self-transition reason code, no new status-log entry. |
 | 10 | All other loan rules unchanged: liquidation math (§5.4a), repayment waterfall, partial repayments, add-collateral, collateral release, partial unique index on `PENDING_COLLATERAL` per user, 30-min `INVOICE_EXPIRED` for collateral-payment window (separate concern from loan duration — kept). |
@@ -68,11 +68,9 @@ How much Naira do you want to borrow?
 
 Your collateral: 0.0667 BTC (~₦10,000,000)
 Daily interest:  ₦18,000
-Daily custody:   ₦6,700
-Origination fee: ₦30,000 (one-time)
 
-Repay anytime. Daily charges accrue until you repay.
-At current rates, your loan reaches the liquidation line around day 200 if BTC stays flat — sooner if BTC declines.
+Repay anytime. Daily interest accrues until you repay.
+Over time, your outstanding catches up to your collateral and the loan auto-liquidates at 110% coverage.
 ```
 
 The self-termination disclosure is non-negotiable. Customers should never be surprised that "no duration" doesn't mean "free to ignore."
@@ -96,21 +94,21 @@ There is no `EXPIRED` end state for the loan itself; `EXPIRED` only applies to P
 ```json
 {
   "principal_ngn": "6000000",
-  "origination_fee_ngn": "30000",
+  "origination_fee_ngn": "0",
   "daily_interest_ngn": "18000",
-  "daily_custody_fee_ngn": "6700",
+  "daily_custody_fee_ngn": "0",
   "collateral_amount_sat": "6666667",
   "collateral_amount_ngn": "10000000",
   "liquidation_btc_price_ngn": "..."
 }
 ```
 
-No `term_days` input. No `projected_*` output. The page renders the two daily lines clearly so the customer can do the multiplication themselves and form realistic expectations.
+No `term_days` input. No `projected_*` output. `daily_custody_fee_ngn` is retained for API stability but always `"0"`. The page renders the daily interest line clearly so the customer can do the multiplication themselves and form realistic expectations.
 
 ### 3.4 Loan detail (`GET /v1/loans/:id`)
 
 Removed: `due_at`, `term_days`, `days_remaining`.
-Added: `coverage_ratio` (Decimal string, e.g. `"1.2843"`), `days_active` (since `collateral_received_at`), `accrual_summary` (`{ accrued_interest_ngn, accrued_custody_ngn, principal_remaining_ngn, outstanding_total_ngn }`).
+Added: `coverage_ratio` (Decimal string, e.g. `"1.2843"`), `days_active` (since `collateral_received_at`), `accrual_summary` (`{ accrued_interest_ngn, accrued_custody_ngn, principal_remaining_ngn, outstanding_total_ngn }` — `accrued_custody_ngn` is always `"0"` since custody fee was removed).
 Margin-call state: `margin_call_active: boolean` (true iff Redis dedupe key for MARGIN_CALL tier is set).
 
 ### 3.5 Margin call UX flow

@@ -2,7 +2,6 @@ import Decimal from 'decimal.js';
 import { CalculatorService } from '@/modules/loans/calculator.service';
 import {
   ALERT_THRESHOLD,
-  CUSTODY_FEE_PER_100_USD_NGN,
   DAILY_INTEREST_RATE_BPS,
   LIQUIDATION_THRESHOLD,
   LOAN_LTV_PERCENT,
@@ -20,8 +19,7 @@ import {
 //   collateral_sat         = ceil(833_333.33 / 0.97) = 859_107
 //   initial_collateral_usd = (859_107 / 100_000_000) × 65_000 ≈ $558.4226
 //   origination            = waived (0)
-//   custody_units          = ceil(558.4226 / 100) = 6
-//   daily_custody_fee_ngn  = 6 × 100 = 600
+//   daily_custody_fee_ngn  = 0 (custody removed; field retained for stability)
 //   daily_interest_ngn     = 500_000 × 0.003 = 1,500
 
 const PRINCIPAL    = new Decimal('500000');
@@ -57,31 +55,17 @@ describe('CalculatorService — origination fee', () => {
   });
 });
 
-// ── Daily custody fee (fixed at origination, ceil per $100) ───────────────────
+// ── Daily custody fee (removed — always 0) ────────────────────────────────────
 
 describe('CalculatorService — daily custody fee', () => {
-  it('at $558.42 collateral → N600/day (6 × 100)', () => {
-    expect(calculate().daily_custody_fee_ngn).toEqual(new Decimal('600'));
-  });
-
-  it('sub-$100 collateral still pays N100/day (ceil rule, no floor needed)', () => {
-    // Tiny principal + high sat rate → tiny collateral in USD
-    const result = calculate({
-      principal_ngn: new Decimal('50000'),
-      sat_ngn_rate:  new Decimal('100'),       // N100/sat → massive BTC price → tiny sat count
-      btc_usd_rate:  new Decimal('1'),         // and tiny USD value
-    });
-    // collateral_ngn ≈ 83333.33, sat = ceil(833.33) = 834 sats, usd = (834 / 1e8) × 1 = 0.00000834
-    // ceil(0.00000834 / 100) = 1 → N100
-    expect(result.daily_custody_fee_ngn).toEqual(CUSTODY_FEE_PER_100_USD_NGN);
-  });
-
-  it('scales with initial_collateral_usd — double the USD rate → double the units (roughly)', () => {
-    const low  = calculate({ btc_usd_rate: new Decimal('32500') });  // halves USD → $279.2
-    const high = calculate({ btc_usd_rate: new Decimal('65000') });  // $558.4
-    // low: ceil(279.2/100) = 3 → N300;  high: ceil(558.4/100) = 6 → N600
-    expect(low.daily_custody_fee_ngn).toEqual(new Decimal('300'));
-    expect(high.daily_custody_fee_ngn).toEqual(new Decimal('600'));
+  it('is always 0 regardless of collateral USD value', () => {
+    expect(calculate().daily_custody_fee_ngn).toEqual(new Decimal(0));
+    expect(
+      calculate({ btc_usd_rate: new Decimal('32500') }).daily_custody_fee_ngn,
+    ).toEqual(new Decimal(0));
+    expect(
+      calculate({ principal_ngn: new Decimal('10000000') }).daily_custody_fee_ngn,
+    ).toEqual(new Decimal(0));
   });
 });
 

@@ -14,8 +14,9 @@
 //   9. Margin call             — urgent, collateral coverage < 1.15
 //
 // Loans are open-term (no due date, no maturity). Customers repay anytime;
-// daily interest + daily custody accrue until the loan closes. The only
-// forced-close trigger is coverage falling below 1.10 (auto-liquidation).
+// daily interest accrues on outstanding principal until the loan closes
+// (custody fee removed). The only forced-close trigger is coverage falling
+// below 1.10 (auto-liquidation).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { MIN_PARTIAL_REPAYMENT_NGN } from '@/common/constants';
@@ -180,7 +181,6 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
   const origination      = NGN(p.origination_fee_ngn);
   const amount_receive   = NGN(p.amount_to_receive_ngn);
   const daily_interest   = NGN(p.daily_interest_ngn);
-  const daily_custody    = NGN(p.daily_custody_fee_ngn);
   const sats             = formatSats(p.collateral_amount_sat);
   const has_origination  = parseFloat(p.origination_fee_ngn) > 0;
 
@@ -194,12 +194,11 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
         ? `  Origination fee:    −${origination}\n  You will receive:   ${amount_receive}\n`
         : '') +
       `  Daily interest:     ${daily_interest}\n` +
-      `  Daily custody:      ${daily_custody}\n` +
       `  Collateral needed:  ${sats}\n\n` +
       `Pay the Lightning invoice in your dashboard before ${p.expires_at.toUTCString()}, or copy the invoice below into any Lightning wallet:\n\n` +
       `${p.payment_request}\n\n` +
       `Once collateral is received, ${amount_receive} will be disbursed to your default account immediately. ` +
-      `Repay any time — interest (0.3%/day on outstanding principal) and custody accrue daily until the loan closes.${FOOTER_TEXT}`,
+      `Repay any time — interest (0.3%/day on outstanding principal) accrues daily until the loan closes.${FOOTER_TEXT}`,
     html_body:
       `<p>${greet(p.first_name)},</p>` +
       `<p>Your Bitmonie loan <code>${sid}</code> has been created. We're now waiting for your BTC collateral.</p>` +
@@ -209,13 +208,12 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
           ? row('Origination fee',  `−${origination}`) + row('You will receive', amount_receive)
           : '') +
         row('Daily interest',     daily_interest) +
-        row('Daily custody',      daily_custody) +
         row('Collateral needed',  sats) +
       `</table>` +
       `<p>Pay the Lightning invoice in your dashboard before <b>${escapeHtml(p.expires_at.toUTCString())}</b>, or copy the invoice below into any Lightning wallet:</p>` +
       `<p style="font-style:italic;font-family:Menlo,Consolas,monospace;font-size:12px;word-break:break-all;background:#f5f5f5;padding:10px;border-radius:4px;color:#333">${escapeHtml(p.payment_request)}</p>` +
       `<p>Once collateral is received, <b>${amount_receive}</b> will be disbursed to your default account immediately. ` +
-      `Repay any time — interest (0.3%/day on outstanding principal) and custody accrue daily until the loan closes.</p>` +
+      `Repay any time — interest (0.3%/day on outstanding principal) accrues daily until the loan closes.</p>` +
       FOOTER_HTML,
   };
 }
@@ -228,7 +226,6 @@ export function buildCollateralReceivedEmail(p: CollateralReceivedParams): Notif
   const origination     = NGN(p.origination_fee_ngn);
   const net_amount      = NGN(p.amount_to_receive_ngn);
   const daily_interest  = NGN(p.daily_interest_ngn);
-  const daily_custody   = NGN(p.daily_custody_fee_ngn);
   const has_origination = parseFloat(p.origination_fee_ngn) > 0;
 
   const lede_text = has_origination
@@ -247,9 +244,8 @@ export function buildCollateralReceivedEmail(p: CollateralReceivedParams): Notif
       (has_origination
         ? `  Origination fee: −${origination}\n  You'll receive:  ${net_amount}\n`
         : '') +
-      `  Daily interest:  ${daily_interest}\n` +
-      `  Daily custody:   ${daily_custody}\n\n` +
-      `Repay any time. Interest (0.3%/day on outstanding principal) and custody accrue daily until you repay.${FOOTER_TEXT}`,
+      `  Daily interest:  ${daily_interest}\n\n` +
+      `Repay any time. Interest (0.3%/day on outstanding principal) accrues daily until you repay.${FOOTER_TEXT}`,
     html_body:
       `<p>${greet(p.first_name)},</p>` +
       `<p>We've received your BTC collateral for loan <code>${sid}</code>. ${lede_html}</p>` +
@@ -259,9 +255,8 @@ export function buildCollateralReceivedEmail(p: CollateralReceivedParams): Notif
           ? row('Origination fee', `−${origination}`) + row("You'll receive", net_amount)
           : '') +
         row('Daily interest',  daily_interest) +
-        row('Daily custody',   daily_custody) +
       `</table>` +
-      `<p>Repay any time. Interest (0.3%/day on outstanding principal) and custody accrue daily until you repay.</p>` +
+      `<p>Repay any time. Interest (0.3%/day on outstanding principal) accrues daily until you repay.</p>` +
       FOOTER_HTML,
   };
 }
@@ -274,7 +269,6 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
   const principal      = NGN(p.principal_ngn);
   const origination    = NGN(p.origination_fee_ngn);
   const daily_interest = NGN(p.daily_interest_ngn);
-  const daily_custody  = NGN(p.daily_custody_fee_ngn);
   const account_line   = p.account_name ? `${p.account_unique} (${p.account_name})` : p.account_unique;
   const has_origination = parseFloat(p.origination_fee_ngn) > 0;
 
@@ -289,10 +283,9 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
         : '\n') +
       `  Bank:           ${p.bank_name}\n` +
       `  Account:        ${account_line}\n\n` +
-      `Daily charges accrue:\n` +
-      `  Interest:       ${daily_interest}\n` +
-      `  Custody:        ${daily_custody}\n\n` +
-      `Repay any time — the longer you hold, the more interest and custody accrue. ` +
+      `Daily interest accrues:\n` +
+      `  Interest:       ${daily_interest}\n\n` +
+      `Repay any time — the longer you hold, the more interest accrues. ` +
       `If your collateral coverage drops below 110%, the loan auto-liquidates.\n\n` +
       `When you're ready to repay (in part or in full):\n` +
       `${paymentBlock(p.repayment_account)}${FOOTER_TEXT}`,
@@ -307,9 +300,8 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
         row('Bank',            p.bank_name) +
         row('Account',         account_line) +
         row('Daily interest',  daily_interest) +
-        row('Daily custody',   daily_custody) +
       `</table>` +
-      `<p>Repay any time — the longer you hold, the more interest and custody accrue. ` +
+      `<p>Repay any time — the longer you hold, the more interest accrues. ` +
       `If your collateral coverage drops below 110%, the loan auto-liquidates.</p>` +
       `<p>When you're ready to repay (in part or in full):</p>` +
       paymentBlockHtml(p.repayment_account) +
@@ -416,14 +408,14 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
 
   const next_payment_text = outstanding_below_floor
     ? `Pay exactly ${NGN(p.outstanding_ngn)} to close this loan in full. ` +
-      `Interest and custody continue to accrue daily until the loan closes.`
-    : `Your loan is still ACTIVE. Interest and custody continue to accrue daily on the remaining principal — ` +
+      `Interest continues to accrue daily until the loan closes.`
+    : `Your loan is still ACTIVE. Interest continues to accrue daily on the remaining principal — ` +
       `repay any amount of at least ₦10,000 to bring the balance down further.`;
 
   const next_payment_html = outstanding_below_floor
     ? `<p>Pay exactly <b>${NGN(p.outstanding_ngn)}</b> to close this loan in full. ` +
-      `Interest and custody continue to accrue daily until the loan closes.</p>`
-    : `<p>Your loan is still <b>ACTIVE</b>. Interest and custody continue to accrue daily on the remaining principal — ` +
+      `Interest continues to accrue daily until the loan closes.</p>`
+    : `<p>Your loan is still <b>ACTIVE</b>. Interest continues to accrue daily on the remaining principal — ` +
       `repay any amount of at least ₦10,000 to bring the balance down further.</p>`;
 
   return {

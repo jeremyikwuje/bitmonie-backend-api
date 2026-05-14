@@ -85,12 +85,12 @@ describe('MeService', () => {
     expect(price_feed.getCurrentRate).not.toHaveBeenCalled();
   });
 
-  it('computes daily_accrual_ngn = (outstanding principal × bps/10000) + daily_custody, summed across ACTIVE loans', async () => {
+  it('computes daily_accrual_ngn = outstanding principal × bps/10000, summed across ACTIVE loans (custody removed)', async () => {
     // Two ACTIVE loans, no repayments → outstanding principal == initial principal.
-    // make_loan defaults daily_custody_fee_ngn=700, daily_interest_rate_bps=30.
-    //   loan A: ₦500,000 × 30bps = ₦1,500 interest + ₦700 custody = ₦2,200/day
-    //   loan B: ₦200,000 × 30bps = ₦600 interest   + ₦700 custody = ₦1,300/day
-    //   total                                                       = ₦3,500/day (ceil)
+    // Custody removed (fixture still stores 700/day but accrual ignores it).
+    //   loan A: ₦500,000 × 30bps = ₦1,500/day
+    //   loan B: ₦200,000 × 30bps = ₦600/day
+    //   total                    = ₦2,100/day
     prisma.loan.findMany.mockResolvedValue([
       make_loan({ id: 'loan-A', principal_ngn: '500000' }),
       make_loan({ id: 'loan-B', principal_ngn: '200000' }),
@@ -99,7 +99,7 @@ describe('MeService', () => {
     const result = await service.getSummary(USER_ID);
 
     expect(result.active_loan_count).toBe(2);
-    expect(result.daily_accrual_ngn).toBe('3500');
+    expect(result.daily_accrual_ngn).toBe('2100');
   });
 
   it('emits a PENDING_COLLATERAL card with the matched payment-request expiry', async () => {

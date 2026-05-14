@@ -138,10 +138,10 @@ Provider name lives in `processing_provider`, `triggered_by_id`, etc. — as dat
 ### 5.4a Outstanding & liquidation math (accrual-based)
 
 - Outstanding is **never stored** as a column. Always computed live by `AccrualService.compute({ loan, repayments, as_of })`. Source of truth.
-- `outstanding = principal_remaining + accrued_interest_unpaid + accrued_custody_unpaid`, where:
+- `outstanding = principal_remaining + accrued_interest_unpaid` (custody removed), where:
   - `principal_remaining = principal_ngn − sum(repayments.applied_to_principal)`
   - Interest is piecewise-linear in time: `0.3% × current_principal × days_in_segment` between repayments.
-  - Custody is flat: `daily_custody_fee_ngn × days_elapsed − sum(repayments.applied_to_custody)` (custody is fixed at origination).
+  - Custody fee is **removed** — `accrued_custody_ngn` is always 0 regardless of any non-zero `daily_custody_fee_ngn` stored on legacy loans. The schema columns (`loans.daily_custody_fee_ngn`, `loan_repayments.applied_to_custody`) are retained to preserve historical audit trail; already-paid custody on past repayments stays in those rows but does not affect new math.
   - Day boundary: `ceil((as_of − collateral_received_at) / 24h)` — partial days count as full.
 - Liquidation: `collateral_ngn < 1.10 × outstanding` (LIQUIDATION_THRESHOLD against TOTAL outstanding, not principal alone). Recomputed on every monitor tick.
 - Repayment waterfall: **custody → interest → principal → overpay**. Apply in this order so principal-based interest accrual the next day uses the correctly-reduced principal.
@@ -530,9 +530,9 @@ LIQUIDATION_THRESHOLD        = 1.10            // 110% of TOTAL outstanding (pri
 ALERT_THRESHOLD              = 1.20            // 120% of TOTAL outstanding
 
 // v1.1 accrual-based pricing
-ORIGINATION_FEE_PER_100K_NGN = 500             // ceil(principal / 100k) × 500 — one-time, upfront
+ORIGINATION_FEE_PER_100K_NGN = 0               // waived — customer receives full principal at disbursement
 DAILY_INTEREST_RATE_BPS      = 30              // 0.3% daily on outstanding principal (simple, non-compounding)
-CUSTODY_FEE_PER_100_USD_NGN  = 100             // ceil(initial_collateral_usd / 100) × 100 — fixed per day at origination
+CUSTODY_FEE_PER_100_USD_NGN  = 0               // removed — no custody charge. Schema columns retained for legacy audit only.
 
 MIN_LOAN_NGN                 = 10_000
 MAX_SELFSERVE_LOAN_NGN       = 10_000_000
@@ -556,42 +556,37 @@ SATS_PER_BTC                 = 100_000_000
 
 ## 10. FEE CALCULATION (v1.1 — accrual-based)
 
-Three components, all `Decimal`:
+Two components, all `Decimal`:
 
 | Fee | Rule | When |
 |---|---|---|
-| **Origination** | `ceil(principal_ngn / 100_000) × 500` | One-time, upfront at disbursement |
+| **Origination** | waived (constant currently 0) | One-time, upfront at disbursement |
 | **Interest** | `0.3% daily × current outstanding principal` (simple, non-compounding) | Accrues daily |
-| **Custody** | `ceil(initial_collateral_usd / 100) × 100` NGN per day | Fixed at origination (does not float with BTC) |
+| ~~**Custody**~~ | ~~removed~~ — `daily_custody_fee_ngn` is always 0; AccrualService floors `accrued_custody_ngn` at 0 regardless of any non-zero column value on legacy loan rows | — |
 
-`initial_collateral_usd` is sourced from **Blink** at origination via `PriceQuoteProvider.getBtcUsdRate()` (one-off direct quote, not the 30s SAT/NGN feed).
+Day boundary: `ceil((as_of − collateral_received_at) / 24h)`. Partial days count as full — a repayment 2 hours after origination still incurs 1 day of interest.
 
-Day boundary: `ceil((as_of − collateral_received_at) / 24h)`. Partial days count as full — a repayment 2 hours after origination still incurs 1 day of interest + custody.
+Loans are **open-term** — there is no chosen term to project against. The calculator returns daily rates only (`origination_fee_ngn`, `daily_interest_ngn`, `daily_custody_fee_ngn` — the latter pinned at 0 for API stability) plus collateral sizing + display thresholds; the customer multiplies interest by the days they intend to hold. Outstanding is always computed live by `AccrualService.compute(...)`.
 
-Loans are **open-term** — there is no chosen term to project against. The calculator returns daily rates only (`origination_fee_ngn`, `daily_interest_ngn`, `daily_custody_fee_ngn`) plus collateral sizing + display thresholds; the customer multiplies by the days they intend to hold. Outstanding is always computed live by `AccrualService.compute(...)`.
-
-**Worked example.** N500,000 principal, $625 USD-equivalent collateral at origination, 60-day term:
+**Worked example.** N500,000 principal:
 
 ```
-origination          = ceil(500_000 / 100_000) × 500     = N2,500
-daily_custody_fee    = ceil(625 / 100) × 100             = N700/day  (fixed for life of loan)
+origination          = 0 (waived)
 daily_interest (day 1) = 500_000 × 0.003                  = N1,500/day
 
 Day 30 (no repayments yet):
   accrued_interest   = 500_000 × 0.003 × 30              = N45,000
-  accrued_custody    = 700 × 30                          = N21,000
-  outstanding_total  = 500_000 + 45_000 + 21_000         = N566,000
+  outstanding_total  = 500_000 + 45_000                  = N545,000
 
-Day 30 customer pays N100,000 — waterfall: custody → interest → principal:
-  applied_to_custody    = 21,000
+Day 30 customer pays N100,000 — waterfall: custody (always 0) → interest → principal:
+  applied_to_custody    = 0
   applied_to_interest   = 45,000
-  applied_to_principal  = 34,000
-  → outstanding_principal becomes 466,000
+  applied_to_principal  = 55,000
+  → outstanding_principal becomes 445,000
 
 Day 31-60 interest at the new principal:
-  interest_segment    = 466_000 × 0.003 × 30             = N41,940
-  custody_segment     = 700 × 30                         = N21,000
-  outstanding_total at day 60 = 466_000 + 41,940 + 21,000 = N528,940
+  interest_segment    = 445_000 × 0.003 × 30             = N40,050
+  outstanding_total at day 60 = 445_000 + 40,050         = N485,050
 ```
 
 ---

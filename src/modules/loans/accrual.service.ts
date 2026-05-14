@@ -118,16 +118,15 @@ export class AccrualService {
       (sum, r) => sum.plus(r.applied_to_interest),
       new Decimal(0),
     );
-    const paid_custody = relevant.reduce(
-      (sum, r) => sum.plus(r.applied_to_custody),
-      new Decimal(0),
-    );
 
     // ── Outstanding = gross accrued minus what's been paid (floored at 0) ──
-    const gross_custody         = loan.daily_custody_fee_ngn.mul(final_day);
+    // Custody fee removed: gross accrual is 0 regardless of any non-zero
+    // `daily_custody_fee_ngn` stored on legacy loans. Already-paid custody on
+    // historical repayments stays in `applied_to_custody` rows (real money
+    // moved) but no new custody accrues, so `outstanding_custody` is always 0.
     const outstanding_principal = Decimal.max(loan.principal_ngn.minus(paid_principal), new Decimal(0));
     const outstanding_interest  = Decimal.max(gross_interest.minus(paid_interest), new Decimal(0));
-    const outstanding_custody   = Decimal.max(gross_custody.minus(paid_custody), new Decimal(0));
+    const outstanding_custody   = new Decimal(0);
 
     return {
       principal_ngn:         outstanding_principal,

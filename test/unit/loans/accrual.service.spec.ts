@@ -2,10 +2,13 @@ import Decimal from 'decimal.js';
 import { AccrualService, type AccrualLoanInput, type AccrualRepaymentInput } from '@/modules/loans/accrual.service';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
-// Worked example from docs/repayment-matching-redesign.md §3:
+// Custody fee has been removed — outstanding_custody is always 0 regardless
+// of the loan's stored `daily_custody_fee_ngn`. The fixture intentionally
+// keeps a non-zero stored value (N700/day) to prove AccrualService ignores
+// it (retroactive zero-out for legacy loans).
 //   principal              = N500,000
 //   daily_interest_rate    = 30 bps (0.3%)
-//   daily_custody_fee      = N700/day (fixed at origination)
+//   daily_custody_fee      = N700/day stored (ignored by accrual — should yield 0 outstanding)
 //   collateral_received_at = 2026-04-22T00:00:00Z
 
 const COLLATERAL_AT = new Date('2026-04-22T00:00:00Z');
@@ -66,7 +69,8 @@ describe('AccrualService — day-boundary rule', () => {
     expect(result.days_elapsed).toBe(1);
     // 500_000 × 0.003 × 1 = 1500
     expect(result.accrued_interest_ngn).toEqual(new Decimal('1500'));
-    expect(result.accrued_custody_ngn).toEqual(new Decimal('700'));
+    // Custody removed — always 0 even though loan stores N700/day
+    expect(result.accrued_custody_ngn).toEqual(new Decimal(0));
   });
 
   it('exactly 24h → 1 day', () => {
@@ -83,15 +87,15 @@ describe('AccrualService — day-boundary rule', () => {
 // ── Zero-repayment accrual (linear in days) ───────────────────────────────────
 
 describe('AccrualService — zero-repayment accrual', () => {
-  it('at day 30 with no repayments — matches worked example (N566,000)', () => {
+  it('at day 30 with no repayments — interest-only (custody removed)', () => {
     const result = svc().compute({ loan: LOAN, repayments: [], as_of: addMs(COLLATERAL_AT, DAYS(30)) });
     expect(result.days_elapsed).toBe(30);
     // interest = 500_000 × 0.003 × 30 = 45,000
     expect(result.accrued_interest_ngn).toEqual(new Decimal('45000'));
-    // custody  = 700 × 30 = 21,000
-    expect(result.accrued_custody_ngn).toEqual(new Decimal('21000'));
-    // total    = 500_000 + 45,000 + 21,000
-    expect(result.total_outstanding_ngn).toEqual(new Decimal('566000'));
+    // custody removed — always 0
+    expect(result.accrued_custody_ngn).toEqual(new Decimal(0));
+    // total    = 500_000 + 45,000
+    expect(result.total_outstanding_ngn).toEqual(new Decimal('545000'));
     expect(result.principal_ngn).toEqual(new Decimal('500000'));
   });
 
@@ -100,15 +104,18 @@ describe('AccrualService — zero-repayment accrual', () => {
     expect(result.days_elapsed).toBe(90);
     // interest = 500_000 × 0.003 × 90 = 135,000
     expect(result.accrued_interest_ngn).toEqual(new Decimal('135000'));
-    expect(result.accrued_custody_ngn).toEqual(new Decimal('63000'));
-    expect(result.total_outstanding_ngn).toEqual(new Decimal('698000'));
+    expect(result.accrued_custody_ngn).toEqual(new Decimal(0));
+    expect(result.total_outstanding_ngn).toEqual(new Decimal('635000'));
   });
 });
 
 // ── Single partial repayment — reducing-balance interest ──────────────────────
 
 describe('AccrualService — single partial repayment', () => {
-  // Day-30 repayment of N100,000 applied as 21k custody + 45k interest + 34k principal
+  // Day-30 repayment of N100,000 — historical fixture from when custody still
+  // applied. Even though `applied_to_custody` is non-zero on the repayment row
+  // (real money that was paid), accrual no longer surfaces an outstanding
+  // custody balance — the field is preserved on past rows for audit only.
   const REPAYMENT: AccrualRepaymentInput = {
     applied_to_custody:   new Decimal('21000'),
     applied_to_interest:  new Decimal('45000'),
@@ -116,7 +123,7 @@ describe('AccrualService — single partial repayment', () => {
     created_at:           addMs(COLLATERAL_AT, DAYS(30)),
   };
 
-  it('at day 60 matches worked example — outstanding N528,940', () => {
+  it('at day 60 — outstanding interest + principal (custody dropped)', () => {
     const result = svc().compute({
       loan: LOAN,
       repayments: [REPAYMENT],
@@ -128,11 +135,11 @@ describe('AccrualService — single partial repayment', () => {
     // Days 1-30 interest @ 500k = 45,000 (paid); days 31-60 @ 466k = 41,940 (unpaid)
     expect(result.accrued_interest_ngn).toEqual(new Decimal('41940'));
 
-    // Custody gross 700 × 60 = 42,000; paid 21,000 → 21,000 unpaid
-    expect(result.accrued_custody_ngn).toEqual(new Decimal('21000'));
+    // Custody removed — outstanding custody always 0 (no new accrual)
+    expect(result.accrued_custody_ngn).toEqual(new Decimal(0));
 
-    // Total: 466,000 + 41,940 + 21,000 = 528,940
-    expect(result.total_outstanding_ngn).toEqual(new Decimal('528940'));
+    // Total: 466,000 + 41,940
+    expect(result.total_outstanding_ngn).toEqual(new Decimal('507940'));
   });
 
   it('at the exact instant of the repayment, the new principal applies from that day forward', () => {
@@ -198,8 +205,8 @@ describe('AccrualService — multiple repayments', () => {
     // Principal: 500,000 − 28,000 − 28,840 = 443,160
     expect(result.principal_ngn).toEqual(new Decimal('443160'));
 
-    // Custody gross 21,000; paid 14,000 → unpaid 7,000
-    expect(result.accrued_custody_ngn).toEqual(new Decimal('7000'));
+    // Custody removed — outstanding always 0
+    expect(result.accrued_custody_ngn).toEqual(new Decimal(0));
   });
 
   it('repayments out of order in input are still processed chronologically', () => {
@@ -237,7 +244,7 @@ describe('AccrualService — multiple repayments', () => {
     // As if no repayment happened yet.
     expect(result.principal_ngn).toEqual(new Decimal('500000'));
     expect(result.accrued_interest_ngn).toEqual(new Decimal('45000'));
-    expect(result.accrued_custody_ngn).toEqual(new Decimal('21000'));
+    expect(result.accrued_custody_ngn).toEqual(new Decimal(0));
   });
 });
 
@@ -274,16 +281,16 @@ describe('AccrualService — flooring', () => {
     expect(result.accrued_interest_ngn).toEqual(new Decimal(0));
   });
 
-  it('over-paid custody → accrued_custody = 0 (not negative)', () => {
-    const over: AccrualRepaymentInput = {
+  it('custody is always 0 regardless of stored daily rate or past applied_to_custody', () => {
+    const past: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal('1000000'),
       applied_to_interest:  new Decimal(0),
       applied_to_principal: new Decimal(0),
       created_at:           COLLATERAL_AT,
     };
     const result = svc().compute({
-      loan: LOAN,
-      repayments: [over],
+      loan: LOAN,        // LOAN.daily_custody_fee_ngn = 700 — ignored
+      repayments: [past],
       as_of: addMs(COLLATERAL_AT, DAYS(30)),
     });
     expect(result.accrued_custody_ngn).toEqual(new Decimal(0));

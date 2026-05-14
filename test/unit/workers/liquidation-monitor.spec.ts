@@ -271,11 +271,11 @@ describe('runLiquidationCycle', () => {
   });
 
   it('liquidates when collateral covers principal but not outstanding (accrual-aware ratio)', async () => {
-    // 60-day-old loan at 0.3% daily + N100/day custody.
-    // outstanding = 80_000 + 80_000 × 0.003 × 60 + 100 × 60 = 100_400 NGN
+    // 60-day-old loan at 0.3% daily (custody removed).
+    // outstanding = 80_000 + 80_000 × 0.003 × 60 = 94_400 NGN
     // collateral  = 100_000 sat × 0.95 = 95_000 NGN
     // ratio_principal   = 95_000 / 80_000  = 1.1875  → old behaviour: only alerts
-    // ratio_outstanding = 95_000 / 100_400 = 0.9462  → new behaviour: liquidates
+    // ratio_outstanding = 95_000 / 94_400  ≈ 1.006 < 1.10 → liquidates
     const sixty_days_ago = new Date(Date.now() - 60 * 86_400_000);
     const loan = makeLoan({
       collateral_amount_sat:  BigInt(100_000),
@@ -297,9 +297,9 @@ describe('runLiquidationCycle', () => {
 
   it('reduces outstanding by repayments when computing ratio', async () => {
     // 60-day-old loan, customer paid back N50_000 30 days ago — waterfall took
-    // custody (3000) + interest (~7200) + ~39_800 of principal. From day 30 on,
-    // interest accrues at the lower principal. With repayment, outstanding ends
-    // up healthy enough that ratio > 1.10 (no liquidation).
+    // interest (~7200) + ~42_800 of principal (custody removed; the row still
+    // carries a historical applied_to_custody value but accrual ignores it).
+    // From day 30 on, interest accrues at the lower principal.
     const sixty_days_ago = new Date(Date.now() - 60 * 86_400_000);
     const thirty_days_ago = new Date(Date.now() - 30 * 86_400_000);
     const loan = makeLoan({
@@ -321,9 +321,9 @@ describe('runLiquidationCycle', () => {
 
     await runLiquidationCycle(deps);
 
-    // outstanding ≈ (80000 - 39800) + interest_after_repayment + (60×100 - 3000)
-    //             = 40_200 + ~3618 + 3000 ≈ 46_818
-    // collateral  = 95_000; ratio ≈ 2.029 → healthy, no action
+    // outstanding ≈ (80000 - 39800) + interest_after_repayment
+    //             = 40_200 + ~3618 ≈ 43_818
+    // collateral  = 95_000; ratio ≈ 2.17 → healthy, no action
     expect(deps.prisma.$transaction).not.toHaveBeenCalled();
     const alert_logs = (deps.log as jest.Mock).mock.calls.filter(
       (call: unknown[]) => call[1] === 'liquidation_alert',

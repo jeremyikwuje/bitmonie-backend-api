@@ -29,10 +29,13 @@ export const MIN_LIQUIDATION_RATE_FRACTION = new Decimal('0.5');
 //
 // Origination:  waived (0) — customer receives full principal at disbursement
 // Interest:     0.3% daily on outstanding principal           — simple, non-compounding
-// Custody:      ceil(initial_collateral_usd / 100) × 100      — fixed at origination, per day
+// Custody:      removed — no longer charged. Schema columns retained for
+//               history (already-paid custody on past repayments stays as-is);
+//               new accrual is 0 and AccrualService ignores any non-zero
+//               daily_custody_fee_ngn stored on legacy loans.
 export const ORIGINATION_FEE_PER_100K_NGN = new Decimal('0');
 export const DAILY_INTEREST_RATE_BPS      = 30;                    // 30 bps = 0.3%
-export const CUSTODY_FEE_PER_100_USD_NGN  = new Decimal('100');
+export const CUSTODY_FEE_PER_100_USD_NGN  = new Decimal('0');
 
 export const MIN_LOAN_NGN              = new Decimal('10000');
 export const MAX_SELFSERVE_LOAN_NGN    = new Decimal('10000000');
