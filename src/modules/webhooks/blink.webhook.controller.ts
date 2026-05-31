@@ -25,6 +25,8 @@ import {
   WebhookOutcome,
   type WebhookOutcomeValue,
 } from '@/modules/webhooks-log/webhooks-log.service';
+import { PrismaService } from '@/database/prisma.service';
+import { DisbursementAccountUnverifiedException } from '@/common/errors/bitmonie.errors';
 
 interface HandlerOutcome {
   outcome:             WebhookOutcomeValue;
@@ -51,6 +53,7 @@ export class BlinkWebhookController {
     private readonly disbursements: DisbursementsService,
     private readonly outflows:      OutflowsService,
     private readonly webhooks_log:  WebhooksLogService,
+    private readonly prisma:        PrismaService,
   ) {}
 
   @Post()
@@ -181,6 +184,21 @@ export class BlinkWebhookController {
 
     const loan = await this.loans.getLoan(payment_request.user_id, loan_id);
 
+    // Security: KYC tier-1 users cannot disburse to unverified accounts.
+    // Reason: Once a user has verified their identity, all disbursement accounts
+    // must be name-matched to prevent account hijacking. Unverified accounts
+    // (account_holder_name = null) were added before KYC and must be re-added
+    // to be verified against the user's registered identity.
+    //
+    // Email-only users (kyc_tier = 0): Can disburse to unverified accounts because
+    // the maximum borrow amount is < N500k, limiting attacker damage if account
+    // is compromised.
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: loan.user_id } });
+    const disbursement_account = loan.disbursement_account as never as { account_holder_name: string | null };
+    if (user.kyc_tier >= 1 && disbursement_account.account_holder_name === null) {
+      throw new DisbursementAccountUnverifiedException();
+    }
+
     // Net disbursement: customer receives principal − origination_fee. The
     // origination fee is collected as the spread between what we send out
     // and what they repay. Accrual + repayment waterfall stay on full
@@ -196,7 +214,7 @@ export class BlinkWebhookController {
       provider_name:     (loan.disbursement_account as never as { provider_name: string }).provider_name,
       provider_code:     (loan.disbursement_account as never as { provider_code: string }).provider_code,
       account_unique:    (loan.disbursement_account as never as { account_unique: string }).account_unique,
-      account_name:      (loan.disbursement_account as never as { account_holder_name: string | null }).account_holder_name,
+      account_name:      disbursement_account.account_holder_name,
     });
 
     await this.outflows.dispatch(disbursement.id);
