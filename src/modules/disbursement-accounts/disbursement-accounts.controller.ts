@@ -22,8 +22,6 @@ import {
 import type { Request } from 'express';
 import type { User, DisbursementAccountStatus } from '@prisma/client';
 import { SessionGuard } from '@/common/guards/session.guard';
-import { KycTierGuard } from '@/common/guards/kyc-tier.guard';
-import { RequiresKyc } from '@/common/decorators/requires-kyc.decorator';
 import { DisbursementAccountsService } from './disbursement-accounts.service';
 import { AddDisbursementAccountDto } from './dto/add-disbursement-account.dto';
 import { SetDefaultDisbursementAccountDto } from './dto/set-default-disbursement-account.dto';
@@ -32,26 +30,25 @@ type AuthRequest = Request & { user: User };
 
 @ApiTags('Disbursement Accounts')
 @ApiBearerAuth()
-@UseGuards(SessionGuard, KycTierGuard)
-@RequiresKyc(1)
+@UseGuards(SessionGuard)
 @Controller('disbursement-accounts')
 export class DisbursementAccountsController {
   constructor(private readonly service: DisbursementAccountsService) {}
 
   @Post()
   @ApiOperation({
-    summary: 'Add a disbursement account',
+    summary: 'Add a disbursement account (email-verified users welcome)',
     description:
-      'For BANK and MOBILE_MONEY kinds the response echoes the resolved ' +
-      'account_holder_name (fetched from the rail and matched against the ' +
-      'user\'s KYC name) plus the name_match_score, so the client can confirm ' +
-      'to the user what name was matched. CRYPTO_ADDRESS skips the name lookup ' +
-      'and returns null for both fields.',
+      'No KYC required. For BANK and MOBILE_MONEY kinds:\n' +
+      '- If user has KYC tier-1: account name is fetched from the rail and matched against KYC legal name (85%+ required). ' +
+      'Response includes account_holder_name and name_match_score.\n' +
+      '- If user has no KYC (kyc_tier=0): name verification is skipped. ' +
+      'account_holder_name and name_match_score will be null. Account is created without name validation.\n' +
+      'CRYPTO_ADDRESS always skips name lookup regardless of KYC status.',
   })
-  @ApiResponse({ status: 201, description: 'Account added — resolved name + match score returned' })
+  @ApiResponse({ status: 201, description: 'Account added (name verified if KYC present, unverified otherwise)' })
   @ApiResponse({ status: 400, description: 'Max accounts reached' })
-  @ApiResponse({ status: 403, description: 'KYC required' })
-  @ApiResponse({ status: 422, description: 'Name mismatch' })
+  @ApiResponse({ status: 422, description: 'Name mismatch (only if user has KYC)' })
   async addAccount(
     @Req() req: AuthRequest,
     @Body() dto: AddDisbursementAccountDto,
