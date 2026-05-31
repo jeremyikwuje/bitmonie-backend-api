@@ -358,6 +358,16 @@ export class DisbursementAccountDefaultDeleteException extends BitmonieException
   }
 }
 
+export class DisbursementAccountUnverifiedException extends BitmonieException {
+  constructor() {
+    super(
+      'DISBURSEMENT_ACCOUNT_UNVERIFIED',
+      'Your disbursement account was added before identity verification. For security, please re-add your account now that KYC is complete - we will verify it matches your registered identity.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
 // ── KYC ─────────────────────────────────────────────────────────
 
 export class KycAlreadyVerifiedException extends BitmonieException {
@@ -410,6 +420,16 @@ export class KycPendingException extends BitmonieException {
 export class KycNotFoundException extends BitmonieException {
   constructor() {
     super('KYC_NOT_FOUND', 'KYC record not found.', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class KycIdNumberTakenException extends BitmonieException {
+  constructor() {
+    super(
+      'KYC_ID_NUMBER_TAKEN',
+      'This identity number is already linked to another account.',
+      HttpStatus.CONFLICT,
+    );
   }
 }
 
