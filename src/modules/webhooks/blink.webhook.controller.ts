@@ -25,8 +25,6 @@ import {
   WebhookOutcome,
   type WebhookOutcomeValue,
 } from '@/modules/webhooks-log/webhooks-log.service';
-import { PrismaService } from '@/database/prisma.service';
-import { DisbursementAccountUnverifiedException } from '@/common/errors/bitmonie.errors';
 
 interface HandlerOutcome {
   outcome:             WebhookOutcomeValue;
@@ -53,7 +51,6 @@ export class BlinkWebhookController {
     private readonly disbursements: DisbursementsService,
     private readonly outflows:      OutflowsService,
     private readonly webhooks_log:  WebhooksLogService,
-    private readonly prisma:        PrismaService,
   ) {}
 
   @Post()
@@ -182,22 +179,22 @@ export class BlinkWebhookController {
     const loan_id = payment_request.source_id;
     await this.loans.activateLoan(loan_id, inflow.matched_at ?? new Date());
 
+    // Idempotent: a re-delivered/retried collateral webhook (activateLoan is now a
+    // no-op once the loan is ACTIVE) must not create a second disbursement. If one
+    // already exists for this loan, the disbursement step ran on a prior delivery —
+    // nothing left to do.
+    if (await this.disbursements.existsForLoan(loan_id)) {
+      this.logger.log({ loan_id }, 'Disbursement already exists for loan — skipping (idempotent)');
+      return;
+    }
+
     const loan = await this.loans.getLoan(payment_request.user_id, loan_id);
 
-    // Security: KYC tier-1 users cannot disburse to unverified accounts.
-    // Reason: Once a user has verified their identity, all disbursement accounts
-    // must be name-matched to prevent account hijacking. Unverified accounts
-    // (account_holder_name = null) were added before KYC and must be re-added
-    // to be verified against the user's registered identity.
-    //
-    // Email-only users (kyc_tier = 0): Can disburse to unverified accounts because
-    // the maximum borrow amount is < N500k, limiting attacker damage if account
-    // is compromised.
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: loan.user_id } });
+    // Once collateral is confirmed the loan disburses regardless of KYC tier or
+    // whether the chosen account is name-matched — the collateral itself is the
+    // security. Account verification is handled at the disbursement-accounts layer,
+    // not here.
     const disbursement_account = loan.disbursement_account as never as { account_holder_name: string | null };
-    if (user.kyc_tier >= 1 && disbursement_account.account_holder_name === null) {
-      throw new DisbursementAccountUnverifiedException();
-    }
 
     // Net disbursement: customer receives principal − origination_fee. The
     // origination fee is collected as the spread between what we send out

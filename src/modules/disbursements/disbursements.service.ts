@@ -56,6 +56,16 @@ export class DisbursementsService {
     });
   }
 
+  // Whether a LOAN disbursement already exists for this loan. Used by the
+  // collateral webhook to make disbursement creation idempotent — a re-delivered
+  // or retried webhook must not create a second disbursement for the same loan.
+  async existsForLoan(loan_id: string): Promise<boolean> {
+    const count = await this.prisma.disbursement.count({
+      where: { source_type: DisbursementType.LOAN, source_id: loan_id },
+    });
+    return count > 0;
+  }
+
   async markProcessing(id: string) {
     return this.prisma.disbursement.update({
       where: { id },

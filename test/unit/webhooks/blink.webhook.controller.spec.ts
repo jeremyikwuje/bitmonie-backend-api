@@ -182,6 +182,20 @@ describe('BlinkWebhookController', () => {
     expect(outflows.dispatch).toHaveBeenCalledWith(DISB_ID);
   });
 
+  it('is idempotent: skips disbursement creation when one already exists for the loan', async () => {
+    disbursements.existsForLoan.mockResolvedValue(true);
+
+    await request(app.getHttpServer())
+      .post('/webhooks/blink')
+      .set(SVIX_HEADERS)
+      .send(VALID_RAW_BODY)
+      .expect(200);
+
+    expect(loans.activateLoan).toHaveBeenCalledWith(LOAN_ID, expect.any(Date));
+    expect(disbursements.createForLoan).not.toHaveBeenCalled();
+    expect(outflows.dispatch).not.toHaveBeenCalled();
+  });
+
   it('nets origination fee from the disbursement amount (principal − origination)', async () => {
     await request(app.getHttpServer())
       .post('/webhooks/blink')

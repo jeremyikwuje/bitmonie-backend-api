@@ -800,6 +800,15 @@ describe('LoansService', () => {
         expect.objectContaining({ data: expect.objectContaining({ collateral_received_at: now }) }),
       );
     });
+
+    it('is idempotent: a re-delivered webhook on an already-ACTIVE loan does not transition', async () => {
+      prisma.loan.findUniqueOrThrow.mockResolvedValueOnce({ ...(DB_LOAN as object), status: LoanStatus.ACTIVE } as never);
+
+      await service.activateLoan(LOAN_ID, new Date());
+
+      expect(loan_status.transition).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
   });
 
   // ── creditInflow ──────────────────────────────────────────────────────────────

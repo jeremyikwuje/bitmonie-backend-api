@@ -28,6 +28,7 @@ import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from './price-quote.pro
 import {
   COLLATERAL_TOPUP_EXPIRY_SEC,
   INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN,
+  KYC_EXEMPTION_THRESHOLD_NGN,
   LoanReasonCodes,
   MIN_PARTIAL_REPAYMENT_NGN,
   REDIS_KEYS,
@@ -40,6 +41,7 @@ import {
   InflowAlreadyMatchedException,
   InflowBelowFloorException,
   InflowNotFoundException,
+  KycUpgradeRequiredException,
   LoanDisabledException,
   LoanDisbursementAccountRequiredException,
   LoanNotActiveException,
@@ -143,6 +145,12 @@ export class LoansService {
   async checkoutLoan(user: User, dto: CheckoutLoanDto): Promise<CheckoutLoanResult> {
     if (!user.loan_enabled) throw new LoanDisabledException();
     if (!user.disbursement_enabled) throw new DisbursementDisabledException();
+
+    // KYC tier-1 required only for loans > KYC_EXEMPTION_THRESHOLD_NGN.
+    // Smaller loans allow email-only verification.
+    if (dto.principal_decimal.greaterThan(KYC_EXEMPTION_THRESHOLD_NGN) && user.kyc_tier < 1) {
+      throw new KycUpgradeRequiredException(1);
+    }
 
     // At most ONE PENDING_COLLATERAL loan per user. Race-proofed at the DB layer
     // by the partial unique index `loans_user_id_pending_unique`; pre-check gives
@@ -533,6 +541,21 @@ export class LoansService {
 
   async activateLoan(loan_id: string, collateral_received_at: Date): Promise<void> {
     const loan = await this.prisma.loan.findUniqueOrThrow({ where: { id: loan_id } });
+
+    // Idempotent: only PENDING_COLLATERAL → ACTIVE is a real activation. A
+    // re-delivered collateral webhook (or a retry after a downstream step threw,
+    // e.g. disbursement creation) finds the loan already past PENDING_COLLATERAL.
+    // Returning early — instead of letting transition() throw on the illegal
+    // ACTIVE → ACTIVE/COLLATERAL_CONFIRMED self-transition — lets the webhook
+    // handler re-run its disbursement step and self-heal, rather than being
+    // permanently blocked at this line.
+    if (loan.status !== LoanStatus.PENDING_COLLATERAL) {
+      this.logger.log(
+        { loan_id, status: loan.status },
+        'activateLoan: loan already past PENDING_COLLATERAL — skipping (idempotent)',
+      );
+      return;
+    }
 
     await this.prisma.$transaction(async (tx) => {
       await tx.loan.update({
