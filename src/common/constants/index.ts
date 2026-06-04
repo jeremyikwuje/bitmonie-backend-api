@@ -40,6 +40,11 @@ export const CUSTODY_FEE_PER_100_USD_NGN  = new Decimal('0');
 export const MIN_LOAN_NGN              = new Decimal('10000');
 export const MAX_SELFSERVE_LOAN_NGN    = new Decimal('10000000');
 export const MIN_PARTIAL_REPAYMENT_NGN = new Decimal('10000');
+// Low-KYC threshold: loans ≤ this amount do NOT require tier-1 KYC (BVN/NIN).
+// Email-verified users can borrow up to this amount without identity verification.
+// Loans above this amount require tier-1 KYC at checkout. Used in both backend
+// (loans.service.ts checkoutLoan) and frontend (checkout validation).
+export const KYC_EXEMPTION_THRESHOLD_NGN = new Decimal('500000');
 
 // Tolerance applied when auto-matching a multi-loan inflow against current
 // outstanding (see CLAUDE.md §5.7a smart-match step). Outstanding accrues
