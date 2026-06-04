@@ -37,6 +37,7 @@ import {
   AddCollateralAlreadyPendingException,
   CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
+  DisbursementAccountUnverifiedException,
   DisbursementDisabledException,
   InflowAlreadyMatchedException,
   InflowBelowFloorException,
@@ -161,6 +162,27 @@ export class LoansService {
     if (existing_pending > 0) throw new PendingLoanAlreadyExistsException();
 
     const disburse_account = await this._resolveDefaultAccount(user.id, dto.disbursement_account_id);
+
+    // Disbursement-destination security (CLAUDE.md §5.8). A verified-identity
+    // (tier-1) user must only ever disburse to a NAME-MATCHED account, closing
+    // the hijacking vector where a compromised tier-1 account points a loan at a
+    // destination never matched to the user's legal identity. An account added
+    // before KYC carries status=VERIFIED but account_holder_name=null (there was
+    // no legal_name to match against then) — so VERIFIED status alone is not
+    // sufficient proof. Such a user must re-add the account to have it matched.
+    //
+    // Tier-0 (email-only) users are exempt from the name-match requirement: their
+    // borrow is capped at KYC_EXEMPTION_THRESHOLD_NGN (enforced above via
+    // KycUpgradeRequiredException), which bounds the damage if their account is
+    // compromised — the rationale the low-KYC tier was designed around.
+    //
+    // Enforced HERE, at checkout — before any collateral invoice is issued and
+    // before the destination is locked onto the loan — so a rejected account can
+    // never strand a loan ACTIVE-with-no-disbursement after the customer has
+    // already sent collateral SAT (the failure mode that wedged loan 07ba9d0b).
+    if (user.kyc_tier >= 1 && disburse_account.account_holder_name === null) {
+      throw new DisbursementAccountUnverifiedException();
+    }
 
     const [sat_rates, btc_usd_rate] = await Promise.all([
       this.price_feed.getCurrentRate(AssetPair.SAT_NGN),

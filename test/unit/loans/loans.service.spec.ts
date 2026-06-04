@@ -30,6 +30,7 @@ import {
   AddCollateralAlreadyPendingException,
   CollateralAlreadyReleasedException,
   CollateralInvoiceFailedException,
+  DisbursementAccountUnverifiedException,
   DisbursementDisabledException,
   InflowAlreadyMatchedException,
   InflowBelowFloorException,
@@ -282,6 +283,20 @@ describe('LoansService', () => {
       await expect(service.checkoutLoan(ACTIVE_USER, CHECKOUT_DTO)).rejects.toThrow(
         LoanDisbursementAccountRequiredException,
       );
+    });
+
+    it('throws DisbursementAccountUnverifiedException for a tier-1 user with a non name-matched account', async () => {
+      prisma.disbursementAccount.findFirst.mockResolvedValue({ ...DEFAULT_ACCOUNT, account_holder_name: null });
+      await expect(service.checkoutLoan(ACTIVE_USER, CHECKOUT_DTO)).rejects.toThrow(
+        DisbursementAccountUnverifiedException,
+      );
+    });
+
+    it('allows a tier-0 user to disburse to a non name-matched account (low-KYC exemption)', async () => {
+      prisma.disbursementAccount.findFirst.mockResolvedValue({ ...DEFAULT_ACCOUNT, account_holder_name: null });
+      await expect(
+        service.checkoutLoan({ ...ACTIVE_USER, kyc_tier: 0 }, CHECKOUT_DTO),
+      ).resolves.toBeDefined();
     });
 
     it('throws PriceFeedStaleException when price feed is stale', async () => {
