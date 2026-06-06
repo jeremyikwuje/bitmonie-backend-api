@@ -68,6 +68,12 @@ export const PRICE_FEED_STALE_MS       = 600_000;
 export const PRICE_CACHE_TTL_SEC       = 600;
 export const SATS_PER_BTC              = new Decimal('100000000');
 export const ALERT_COOLDOWN_SEC        = 86_400;
+// Customer-facing coverage-nudge throttle. Each tier (WARN / MARGIN_CALL) may
+// email a given loan at most once per this window — an 8h cooldown caps each
+// tier at 3 emails/day, even in a volatile market where coverage oscillates
+// across the tier boundary. Replaces the old recovery-aware dedupe that
+// re-fired on every downward crossing and spammed customers.
+export const COVERAGE_NOTIFY_COOLDOWN_SEC = 28_800;    // 8h → max 3 emails/day per tier
 export const IDEMPOTENCY_TTL_SEC       = 86_400;
 export const SESSION_TTL_SEC           = 86_400;
 
@@ -92,9 +98,11 @@ export const REDIS_KEYS = {
   COLLATERAL_TOPUP_PENDING: (receiving_address: string) =>
     `collateral_topup:pending:${receiving_address}`,
   ALERT_SENT: (loan_id: string) => `liquidation:alert_sent:${loan_id}`,
-  // Coverage-tier customer nudge dedupe (v1.2). State, not cache — no TTL.
-  // Set when coverage crosses below the tier; cleared on recovery (above tier)
-  // by the liquidation-monitor worker. A future re-deterioration re-fires once.
+  // Coverage-tier customer nudge throttle. A time-based cooldown, NOT
+  // recovery-aware: set with COVERAGE_NOTIFY_COOLDOWN_SEC TTL when an email is
+  // sent, and never cleared on recovery. While the key lives, that tier stays
+  // silent — so each tier emails a loan at most 3×/day regardless of how often
+  // coverage crosses the boundary. Prevents oscillation spam.
   COVERAGE_WARN_NOTIFIED:        (loan_id: string) => `coverage:warn_notified:${loan_id}`,
   COVERAGE_MARGIN_CALL_NOTIFIED: (loan_id: string) => `coverage:margin_call_notified:${loan_id}`,
   // Held while a collateral-release attempt is in-flight (post-commit
