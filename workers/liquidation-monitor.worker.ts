@@ -7,11 +7,12 @@
  *      Single sweep per tick over every ACTIVE loan, three responsibilities:
  *
  *        1. Liquidate at coverage ≤ 1.10 (LIQUIDATION_THRESHOLD).
- *        2. Customer-facing coverage nudges with recovery-aware Redis dedupe:
+ *        2. Customer-facing coverage nudges, throttled per tier by a Redis time
+ *           cooldown (COVERAGE_NOTIFY_COOLDOWN_SEC — 8h → max 3 emails/day/tier):
  *             coverage <  1.20 (COVERAGE_WARN_TIER)        → "your collateral is dropping"
  *             coverage <  1.15 (COVERAGE_MARGIN_CALL_TIER) → "MARGIN CALL — top up or repay now"
- *           Each tier's dedupe key is cleared the moment coverage rises back above
- *           that tier so a future re-deterioration re-fires once.
+ *           The cooldown is NOT recovery-aware: a sent email silences that tier
+ *           until the TTL expires, so oscillating coverage can't spam customers.
  *        3. Ops-internal alert at coverage ≤ 1.20 (ALERT_THRESHOLD), 24h dedupe.
  *
  *   B. Collateral-release cycle — every WORKER_COLLATERAL_RELEASE_INTERVAL_MS
@@ -41,6 +42,7 @@ import {
   ALERT_COOLDOWN_SEC,
   ALERT_THRESHOLD,
   COVERAGE_MARGIN_CALL_TIER,
+  COVERAGE_NOTIFY_COOLDOWN_SEC,
   COVERAGE_WARN_TIER,
   LIQUIDATION_THRESHOLD,
   LoanReasonCodes,
@@ -329,11 +331,18 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Coverage-tier evaluation (recovery-aware dedupe)
+// Coverage-tier evaluation (time-cooldown throttle)
 //
 // `ratio` is collateral_ngn / total_outstanding_ngn. Higher = healthier.
 // Caller has already established `ratio > LIQUIDATION_THRESHOLD` — this
-// function only handles the WARN and MARGIN_CALL tiers + recovery clears.
+// function only handles the WARN and MARGIN_CALL customer nudges.
+//
+// Throttling is a pure per-tier time cooldown (NOT recovery-aware): each tier
+// emails a loan at most once per COVERAGE_NOTIFY_COOLDOWN_SEC, so a customer
+// gets at most 3 emails/day/tier even when coverage oscillates across the tier
+// boundary in a volatile market. The dedupe key carries a TTL and is never
+// cleared on recovery — recovery simply means we don't try to send, and the
+// key expires on its own to permit a future nudge if coverage drops again.
 // ─────────────────────────────────────────────────────────────────────────────
 async function evaluateCoverageTiers(params: {
   prisma: PrismaClient;
@@ -348,16 +357,16 @@ async function evaluateCoverageTiers(params: {
   const warn_key = REDIS_KEYS.COVERAGE_WARN_NOTIFIED(loan.id);
   const mc_key   = REDIS_KEYS.COVERAGE_MARGIN_CALL_NOTIFIED(loan.id);
 
-  // Healthy: clear both keys (recovery from any prior tier).
+  // Healthy: nothing to send. Cooldown keys expire on their own TTL.
   if (ratio.gte(COVERAGE_WARN_TIER)) {
-    await redis.del(warn_key, mc_key);
     return { warn_sent: false, margin_call_sent: false };
   }
 
-  // Below WARN tier — fire WARN once across BTC drawdowns and recoveries.
-  // SETNX returns 'OK' on first set, null when key already exists.
+  // Below WARN tier — fire WARN at most once per cooldown window.
+  // `SET key 1 NX EX <ttl>` returns 'OK' on first set, null while the key
+  // (and its cooldown) still lives.
   let warn_sent = false;
-  const warn_first = await redis.set(warn_key, '1', 'NX');
+  const warn_first = await redis.set(warn_key, '1', 'EX', COVERAGE_NOTIFY_COOLDOWN_SEC, 'NX');
   if (warn_first === 'OK') {
     await sendCoverageNotice({
       prisma, log, send_email,
@@ -366,15 +375,14 @@ async function evaluateCoverageTiers(params: {
     warn_sent = true;
   }
 
-  // Above MARGIN_CALL tier (between 1.15 and 1.20): clear MARGIN_CALL recovery.
+  // Between MARGIN_CALL and WARN tiers (1.15 ≤ ratio < 1.20): warn only.
   if (ratio.gte(COVERAGE_MARGIN_CALL_TIER)) {
-    await redis.del(mc_key);
     return { warn_sent, margin_call_sent: false };
   }
 
-  // Below MARGIN_CALL tier — fire MARGIN_CALL once.
+  // Below MARGIN_CALL tier — fire MARGIN_CALL at most once per cooldown window.
   let margin_call_sent = false;
-  const mc_first = await redis.set(mc_key, '1', 'NX');
+  const mc_first = await redis.set(mc_key, '1', 'EX', COVERAGE_NOTIFY_COOLDOWN_SEC, 'NX');
   if (mc_first === 'OK') {
     await sendCoverageNotice({
       prisma, log, send_email,

@@ -1,6 +1,6 @@
 import { runLiquidationCycle, type LiquidationDeps } from '../../../workers/liquidation-monitor.worker';
 import { LoanStatus, StatusTrigger } from '@prisma/client';
-import { REDIS_KEYS, LoanReasonCodes } from '@/common/constants';
+import { REDIS_KEYS, LoanReasonCodes, COVERAGE_NOTIFY_COOLDOWN_SEC } from '@/common/constants';
 import { AccrualService } from '@/modules/loans/accrual.service';
 
 const LOAN_ID   = 'loan-uuid-001';
@@ -46,7 +46,7 @@ function makeDeps(
     applied_to_custody:   string;
     created_at:           Date;
   }> = [],
-): LiquidationDeps & { prisma: jest.Mocked<LiquidationDeps['prisma']>; redis: jest.Mocked<LiquidationDeps['redis']>; log: jest.Mock; blink: { swapBtcToUsd: jest.Mock } } {
+): LiquidationDeps & { prisma: jest.Mocked<LiquidationDeps['prisma']>; redis: jest.Mocked<LiquidationDeps['redis']>; log: jest.Mock; blink: { swapBtcToUsd: jest.Mock }; send_email: jest.Mock } {
   const redis_store: Record<string, string | null> = {
     [REDIS_KEYS.PRICE_STALE]:        null,
     [REDIS_KEYS.PRICE('SAT_NGN')]:   JSON.stringify({ buy: '100.000000', sell: '100.000000' }),
@@ -62,25 +62,44 @@ function makeDeps(
     $queryRaw:    jest.fn().mockResolvedValue(loans),
     $transaction: jest.fn().mockImplementation((fn: (tx: typeof mock_tx) => Promise<unknown>) => fn(mock_tx)),
     loanRepayment: { findMany: jest.fn().mockResolvedValue(repayments) },
+    user: { findUnique: jest.fn().mockResolvedValue({ email: 'borrower@example.com', first_name: 'Ada' }) },
+    userRepaymentAccount: {
+      findUnique: jest.fn().mockResolvedValue({
+        virtual_account_no:   '1234567890',
+        virtual_account_name: 'Ada Borrower',
+        bank_name:            'PalmPay',
+      }),
+    },
     _mock_tx:     mock_tx,
   } as unknown as jest.Mocked<LiquidationDeps['prisma']>;
 
+  // NX-aware set: a `NX` set fails (returns null) when the key already holds a
+  // non-null value — mirrors the cooldown semantics the worker relies on.
+  // Non-NX sets always succeed and update the store.
   const redis = {
     get: jest.fn().mockImplementation((key: string) =>
       Promise.resolve(redis_store[key] ?? null),
     ),
-    set: jest.fn().mockResolvedValue('OK'),
+    set: jest.fn().mockImplementation((key: string, value: string, ...rest: string[]) => {
+      if (rest.includes('NX') && redis_store[key] != null) {
+        return Promise.resolve(null);
+      }
+      redis_store[key] = value;
+      return Promise.resolve('OK');
+    }),
   } as unknown as jest.Mocked<LiquidationDeps['redis']>;
 
-  const log     = jest.fn();
-  const blink   = { swapBtcToUsd: jest.fn().mockResolvedValue(undefined) };
-  const accrual = new AccrualService();
+  const log        = jest.fn();
+  const blink      = { swapBtcToUsd: jest.fn().mockResolvedValue(undefined) };
+  const send_email = jest.fn().mockResolvedValue(undefined);
+  const accrual    = new AccrualService();
 
-  return { prisma, redis, log, blink, accrual } as unknown as LiquidationDeps & {
+  return { prisma, redis, log, blink, accrual, send_email } as unknown as LiquidationDeps & {
     prisma: jest.Mocked<LiquidationDeps['prisma']>;
     redis: jest.Mocked<LiquidationDeps['redis']>;
     log: jest.Mock;
     blink: { swapBtcToUsd: jest.Mock };
+    send_email: jest.Mock;
   };
 }
 
@@ -350,6 +369,77 @@ describe('runLiquidationCycle', () => {
     expect(mock_tx.loan.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: LoanStatus.LIQUIDATED }) }),
     );
+  });
+
+  // ── Customer coverage-nudge throttle (time cooldown, 3/day per tier) ──────
+  describe('coverage-tier customer nudges', () => {
+    it('sends a WARN email and sets the tier cooldown when 1.15 ≤ ratio < 1.20', async () => {
+      // collateral 100_000 sat × 0.95 = 95_000; outstanding ≈ 80_240 (day-1 accrual)
+      // ratio ≈ 1.18 → WARN tier, above MARGIN_CALL
+      const loan = makeLoan({ collateral_amount_sat: BigInt(100_000), principal_ngn: '80000' });
+      const deps = makeDeps([loan], {
+        [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '1.000000', sell: '0.950000' }),
+      });
+
+      await runLiquidationCycle(deps);
+
+      expect(deps.redis.set).toHaveBeenCalledWith(
+        REDIS_KEYS.COVERAGE_WARN_NOTIFIED(LOAN_ID),
+        '1',
+        'EX',
+        COVERAGE_NOTIFY_COOLDOWN_SEC,
+        'NX',
+      );
+      expect(deps.send_email).toHaveBeenCalledTimes(1);
+      // Margin-call tier untouched while above 1.15.
+      const mc_sets = (deps.redis.set as jest.Mock).mock.calls.filter(
+        (c: unknown[]) => c[0] === REDIS_KEYS.COVERAGE_MARGIN_CALL_NOTIFIED(LOAN_ID),
+      );
+      expect(mc_sets).toHaveLength(0);
+    });
+
+    it('does NOT re-send a WARN email while the tier cooldown is live', async () => {
+      const loan = makeLoan({ collateral_amount_sat: BigInt(100_000), principal_ngn: '80000' });
+      const deps = makeDeps([loan], {
+        [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '1.000000', sell: '0.950000' }),
+        [REDIS_KEYS.COVERAGE_WARN_NOTIFIED(LOAN_ID)]: '1',   // cooldown already active
+      });
+
+      await runLiquidationCycle(deps);
+
+      expect(deps.send_email).not.toHaveBeenCalled();
+    });
+
+    it('fires both WARN and MARGIN_CALL when ratio drops below 1.15', async () => {
+      // collateral 100_000 sat × 0.91 = 91_000; outstanding ≈ 80_240
+      // ratio ≈ 1.134 → below both WARN and MARGIN_CALL tiers
+      const loan = makeLoan({ collateral_amount_sat: BigInt(100_000), principal_ngn: '80000' });
+      const deps = makeDeps([loan], {
+        [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '1.000000', sell: '0.910000' }),
+      });
+
+      await runLiquidationCycle(deps);
+
+      expect(deps.redis.set).toHaveBeenCalledWith(
+        REDIS_KEYS.COVERAGE_MARGIN_CALL_NOTIFIED(LOAN_ID),
+        '1',
+        'EX',
+        COVERAGE_NOTIFY_COOLDOWN_SEC,
+        'NX',
+      );
+      expect(deps.send_email).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends no customer email for a healthy loan (ratio ≥ 1.20)', async () => {
+      const loan = makeLoan({ collateral_amount_sat: BigInt(100_000), principal_ngn: '80000' });
+      const deps = makeDeps([loan], {
+        [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '1.600000', sell: '1.500000' }),
+      });
+
+      await runLiquidationCycle(deps);
+
+      expect(deps.send_email).not.toHaveBeenCalled();
+    });
   });
 
   it('continues processing remaining loans if one liquidation fails', async () => {

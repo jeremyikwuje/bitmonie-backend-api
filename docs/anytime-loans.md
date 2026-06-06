@@ -159,7 +159,7 @@ Margin-call notifications are **not** state changes. Loan stays ACTIVE. No log r
 | `disbursement-on-hold-digest` | Unchanged. |
 | `price-feed` | Unchanged. |
 
-Coverage-tier evaluation lives inside `liquidation-monitor` because it already computes the exact ratio per loan, and recovery-aware dedupe is a single consistent view of (outstanding, collateral_ngn) across all three thresholds.
+Coverage-tier evaluation lives inside `liquidation-monitor` because it already computes the exact ratio per loan, giving a single consistent view of (outstanding, collateral_ngn) across all three thresholds. Customer nudges are throttled per tier by an 8h Redis time cooldown (`COVERAGE_NOTIFY_COOLDOWN_SEC`) — at most 3 emails/day/tier, NOT recovery-aware, so a volatile market that oscillates across a boundary can't spam customers.
 
 ### 4.4 Service changes
 
@@ -245,12 +245,11 @@ Unit:
 - `CalculatorService.computeQuote` — single output shape, no `term_days`.
 - `LoansService.checkout` — DTO without `term_days` succeeds; disbursement persists with no due_at column.
 - `LiquidationMonitorService.evaluateLoan`:
-  - Coverage 1.30 → no notice, all keys cleared.
-  - Coverage 1.18 → WARN fires once; second tick at 1.18 sets nothing new.
-  - Coverage 1.13 → MARGIN_CALL fires (and WARN already set). Second tick at 1.13 sets nothing.
+  - Coverage 1.30 → no notice sent.
+  - Coverage 1.18 → WARN fires once and sets the tier cooldown; second tick at 1.18 within the window sets nothing new.
+  - Coverage 1.13 → MARGIN_CALL fires (and WARN too, since below both tiers). Second tick at 1.13 within the window sets nothing.
   - Coverage 1.05 → liquidation triggered, no MARGIN_CALL/WARN re-fire.
-  - Recovery: 1.13 → 1.18 → MARGIN_CALL key cleared; WARN remains. 1.18 → 1.25 → both cleared.
-  - Re-firing after recovery: 1.25 → 1.13 → MARGIN_CALL fires again (recovery-aware).
+  - Cooldown: a tier stays silent for `COVERAGE_NOTIFY_COOLDOWN_SEC` (8h) after it fires — at most 3 emails/day/tier — and is NOT cleared on recovery, so oscillating coverage (e.g. 1.18 → 1.25 → 1.18) does not re-spam within the window. The key expires on its own TTL to permit a future nudge.
 
 Integration:
 - Loan with no `term_days` checkouts cleanly, disburses, accrues, repays.
