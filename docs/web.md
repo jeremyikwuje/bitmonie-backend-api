@@ -47,7 +47,7 @@ Once all four pass, the web client mounts `/`, `/loans`, etc. The `KycTierGuard`
 
 | Screen | Endpoints |
 |---|---|
-| `/signup` | `POST /v1/auth/signup` (email-only — passwordless) |
+| `/signup` | `POST /v1/auth/signup` (email-only — passwordless). 409 `AUTH_EMAIL_ALREADY_REGISTERED` if a verified account already exists — show "this email is already registered, log in instead" and link to `/login`. (An unverified email returns 201 and silently resends the verification OTP.) |
 | `/verify-email` | `POST /v1/auth/verify-email`, `POST /v1/auth/resend-verification` |
 | `/login` | `POST /v1/auth/login/request-otp` then `POST /v1/auth/login/verify-otp` (passwordless — see §4.1). TOTP is NOT consulted at login. |
 | `/kyc` | `POST /v1/kyc/tier-1`, `GET /v1/kyc/status` |

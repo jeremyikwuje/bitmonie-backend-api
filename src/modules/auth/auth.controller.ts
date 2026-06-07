@@ -45,8 +45,9 @@ export class AuthController {
   @Post('signup')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a new account (passwordless)' })
-  @ApiResponse({ status: 201, description: 'If the email is new, an account is created. A verification OTP is sent either way (200-on-no-leak).' })
+  @ApiResponse({ status: 201, description: 'Account created (new email) or verification OTP resent (existing unverified email).' })
   @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 409, description: 'AUTH_EMAIL_ALREADY_REGISTERED — a verified account already exists for this email; log in instead.' })
   async signup(
     @Body() dto: SignupDto,
     @Req() req: Request,
