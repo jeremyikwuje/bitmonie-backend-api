@@ -125,6 +125,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 | `AUTH_2FA_REQUIRED` | 401 | An action requires a TOTP code (e.g. disabling 2FA, TOTP-path step-up). NOT raised at login — login is single-factor email-OTP by design |
 | `AUTH_EMAIL_NOT_VERIFIED` | 422 | Login attempted before email verification |
 | `AUTH_EMAIL_ALREADY_VERIFIED` | 409 | verify-email called for an already-verified account |
+| `AUTH_EMAIL_ALREADY_REGISTERED` | 409 | signup called for an email that already has a verified account — log in instead (unverified accounts get the verification OTP resent, no error) |
 | `AUTH_2FA_ALREADY_ENABLED` / `AUTH_2FA_NOT_ENABLED` / `AUTH_2FA_SETUP_REQUIRED` | 409 / 400 / 400 | 2FA setup state machine |
 | `TRANSACTION_PIN_NOT_SET` | 409 | PIN endpoint called when no PIN is set — point to `/transaction-pin/set` |
 | `TRANSACTION_PIN_ALREADY_SET` | 409 | set called when a PIN already exists — use `/transaction-pin/change` |

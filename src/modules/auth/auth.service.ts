@@ -72,11 +72,22 @@ export class AuthService {
     const email = dto.email.toLowerCase();
     const existing = await this.prisma.user.findUnique({ where: { email } });
 
-    // Always send the OTP (or pretend to) so signup never leaks whether an
-    // email is registered. If it exists and is verified, we silently no-op
-    // — the normal path for that user is /login, not /signup.
+    // A verified account that re-runs signup is told plainly that it already
+    // exists. Silently no-oping here (the old anti-enumeration behaviour) left
+    // returning customers waiting for a verification email that never comes —
+    // they'd already signed up. We accept the signup-time enumeration trade-off
+    // for the concrete UX win; login (requestLoginOtp) stays leak-free.
     if (existing) {
-      if (!existing.email_verified) await this.sendEmailOtp('verify', email);
+      if (existing.email_verified) {
+        throw new BitmonieException(
+          'AUTH_EMAIL_ALREADY_REGISTERED',
+          'An account with this email already exists. Please log in instead.',
+          HttpStatus.CONFLICT,
+        );
+      }
+      // Mid-signup user who never verified: resend the verification OTP so they
+      // can finish — this is also the "I never got the email" recovery path.
+      await this.sendEmailOtp('verify', email);
       return;
     }
 

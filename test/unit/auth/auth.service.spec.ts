@@ -123,10 +123,11 @@ describe('AuthService', () => {
       expect(redis.set).toHaveBeenCalled();
     });
 
-    it('silently no-ops when email is already registered AND verified', async () => {
+    it('throws AUTH_EMAIL_ALREADY_REGISTERED when email is already registered AND verified', async () => {
       prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: true }));
 
-      await service.signup({ email: 'test@example.com' });
+      await expect(service.signup({ email: 'test@example.com' }))
+        .rejects.toMatchObject({ code: 'AUTH_EMAIL_ALREADY_REGISTERED' });
 
       expect(prisma.user.create).not.toHaveBeenCalled();
       expect(redis.set).not.toHaveBeenCalled();
