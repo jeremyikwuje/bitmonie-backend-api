@@ -89,10 +89,12 @@ export class AuthController {
   @Post('login/request-otp')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Request a login OTP for an email address' })
-  @ApiResponse({ status: 200, description: 'OTP sent if account exists and is verified (always 200 to avoid leaking account existence)' })
+  @ApiResponse({ status: 200, description: 'Login code sent to the email.' })
+  @ApiResponse({ status: 404, description: 'AUTH_ACCOUNT_NOT_FOUND — no account exists for this email; sign up first.' })
+  @ApiResponse({ status: 422, description: 'AUTH_EMAIL_NOT_VERIFIED — account exists but email is unverified; verify first.' })
   async requestLoginOtp(@Body() dto: EmailOnlyDto): Promise<{ message: string }> {
     await this.auth_service.requestLoginOtp(dto.email);
-    return { message: 'If that email is registered and verified, a login code has been sent.' };
+    return { message: 'A login code has been sent to your email.' };
   }
 
   @Post('login/verify-otp')

@@ -131,9 +131,30 @@ export class AuthService {
   async requestLoginOtp(email: string): Promise<void> {
     const normalised = email.toLowerCase();
     const user = await this.prisma.user.findUnique({ where: { email: normalised } });
-    // Never leak whether the email exists. We also skip unverified users so
-    // signup-then-immediately-login forces them through verify-email first.
-    if (!user || !user.email_verified) return;
+
+    // Tell the user plainly when no account exists, rather than silently
+    // no-oping (the old anti-enumeration behaviour) and leaving them waiting
+    // for a login code that never comes. Same signup-time trade-off accepted
+    // in signup() — we surface account existence for the concrete UX win.
+    if (!user) {
+      throw new BitmonieException(
+        'AUTH_ACCOUNT_NOT_FOUND',
+        'No account found with this email. Please sign up first.',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    // Account exists but never finished verification — guide them to
+    // verify-email instead of minting a login code they can't use anyway
+    // (verifyLoginOtp hard-gates on email_verified).
+    if (!user.email_verified) {
+      throw new BitmonieException(
+        'AUTH_EMAIL_NOT_VERIFIED',
+        'Please verify your email address before logging in.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+
     await this.sendEmailOtp('login', normalised);
   }
 

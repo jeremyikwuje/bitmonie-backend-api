@@ -279,9 +279,9 @@ Cursor-based only. No offset pagination.
 
 **Login is single-factor email OTP.** Customer `User` has no `password_hash` column. The flow:
 
-1. `POST /v1/auth/signup`            → email-only payload; OTP delivered to inbox.
+1. `POST /v1/auth/signup`            → email-only payload; OTP delivered to inbox. A verified email already registered → 409 `AUTH_EMAIL_ALREADY_REGISTERED` (log in instead); an unverified one re-sends the verify OTP.
 2. `POST /v1/auth/verify-email`      → consumes the verify OTP, marks `email_verified`.
-3. `POST /v1/auth/login/request-otp` → emails a `login`-purpose OTP (always 200, never leaks account existence).
+3. `POST /v1/auth/login/request-otp` → emails a `login`-purpose OTP. Surfaces account state by design (UX > enumeration-hardening, a deliberate product call): no account → 404 `AUTH_ACCOUNT_NOT_FOUND`; account exists but unverified → 422 `AUTH_EMAIL_NOT_VERIFIED`; otherwise 200.
 4. `POST /v1/auth/login/verify-otp`  → consumes it, mints a session.
 
 TOTP is **never** consulted at login — it would re-introduce the cognitive load passwordless was meant to remove. TOTP is repositioned as a transaction step-up factor only.
