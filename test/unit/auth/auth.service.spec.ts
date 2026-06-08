@@ -183,15 +183,17 @@ describe('AuthService', () => {
   // ── Passwordless login ──────────────────────────────────────────────────────
 
   describe('requestLoginOtp', () => {
-    it('silently no-ops for unknown email (no leak)', async () => {
+    it('throws AUTH_ACCOUNT_NOT_FOUND for unknown email', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
-      await service.requestLoginOtp('unknown@example.com');
+      await expect(service.requestLoginOtp('unknown@example.com'))
+        .rejects.toMatchObject({ code: 'AUTH_ACCOUNT_NOT_FOUND' });
       expect(redis.set).not.toHaveBeenCalled();
     });
 
-    it('silently no-ops for unverified accounts', async () => {
+    it('throws AUTH_EMAIL_NOT_VERIFIED for unverified accounts', async () => {
       prisma.user.findUnique.mockResolvedValue(make_user({ email_verified: false }));
-      await service.requestLoginOtp('test@example.com');
+      await expect(service.requestLoginOtp('test@example.com'))
+        .rejects.toMatchObject({ code: 'AUTH_EMAIL_NOT_VERIFIED' });
       expect(redis.set).not.toHaveBeenCalled();
     });
 

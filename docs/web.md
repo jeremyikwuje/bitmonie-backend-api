@@ -49,7 +49,7 @@ Once all four pass, the web client mounts `/`, `/loans`, etc. The `KycTierGuard`
 |---|---|
 | `/signup` | `POST /v1/auth/signup` (email-only — passwordless). 409 `AUTH_EMAIL_ALREADY_REGISTERED` if a verified account already exists — show "this email is already registered, log in instead" and link to `/login`. (An unverified email returns 201 and silently resends the verification OTP.) |
 | `/verify-email` | `POST /v1/auth/verify-email`, `POST /v1/auth/resend-verification` |
-| `/login` | `POST /v1/auth/login/request-otp` then `POST /v1/auth/login/verify-otp` (passwordless — see §4.1). TOTP is NOT consulted at login. |
+| `/login` | `POST /v1/auth/login/request-otp` then `POST /v1/auth/login/verify-otp` (passwordless — see §4.1). TOTP is NOT consulted at login. `request-otp` now surfaces account state: 404 `AUTH_ACCOUNT_NOT_FOUND` (no account — show "no account found, sign up" + link `/signup`) and 422 `AUTH_EMAIL_NOT_VERIFIED` (account exists, unverified — route to `/verify-email`); 200 = code sent. |
 | `/kyc` | `POST /v1/kyc/tier-1`, `GET /v1/kyc/status` |
 | `/add-bank` + avatar-sheet bank management | `GET /v1/banks`, `POST /v1/disbursement-accounts`, `GET /v1/disbursement-accounts`, `PATCH /v1/disbursement-accounts/:id/default`, `DELETE /v1/disbursement-accounts/:id` |
 | **Top bar "You Owe" + Home attention banners** | **NEW** `GET /v1/me/summary` (§5.1) |
