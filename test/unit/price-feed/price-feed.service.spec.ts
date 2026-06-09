@@ -68,18 +68,44 @@ describe('PriceFeedService', () => {
       expect(repository.getLatestRate).toHaveBeenCalledWith(AssetPair.SAT_NGN);
     });
 
-    it('throws PriceFeedStaleException when price:stale flag is set in Redis', async () => {
+    it('throws PriceFeedStaleException when price:stale flag is older than the window', async () => {
       redis.get.mockImplementation((key: string) => {
-        if (key === 'price:stale') return Promise.resolve(String(Date.now() - 60_000));
+        if (key === 'price:stale') return Promise.resolve(String(Date.now() - PRICE_FEED_STALE_MS - 5_000));
         return Promise.resolve(null);
       });
 
       await expect(service.getCurrentRate(AssetPair.SAT_NGN)).rejects.toThrow(PriceFeedStaleException);
     });
 
-    it('skips DB lookup entirely when price:stale flag is set (fast-path)', async () => {
+    it('serves the last good cached rate while the stale flag is within the window', async () => {
       redis.get.mockImplementation((key: string) => {
         if (key === 'price:stale') return Promise.resolve(String(Date.now() - 60_000));
+        if (key === 'price:SAT_NGN') return Promise.resolve(cached_rate_json);
+        return Promise.resolve(null);
+      });
+
+      const result = await service.getCurrentRate(AssetPair.SAT_NGN);
+
+      expect(result.rate_buy).toEqual(new Decimal('1600.000000'));
+      expect(result.rate_sell).toEqual(new Decimal('1580.000000'));
+    });
+
+    it('falls back to the DB rate while the stale flag is within the window', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'price:stale') return Promise.resolve(String(Date.now() - 60_000));
+        return Promise.resolve(null);
+      });
+      repository.getLatestRate.mockResolvedValue(fresh_rate);
+
+      const result = await service.getCurrentRate(AssetPair.SAT_NGN);
+
+      expect(result.rate_buy).toEqual(fresh_rate.rate_buy);
+      expect(repository.getLatestRate).toHaveBeenCalledWith(AssetPair.SAT_NGN);
+    });
+
+    it('skips DB lookup entirely when the stale flag is older than the window (fast-path)', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'price:stale') return Promise.resolve(String(Date.now() - PRICE_FEED_STALE_MS - 5_000));
         return Promise.resolve(null);
       });
 
@@ -144,7 +170,7 @@ describe('PriceFeedService', () => {
 
     it('propagates PriceFeedStaleException from getCurrentRate', async () => {
       redis.get.mockImplementation((key: string) => {
-        if (key === 'price:stale') return Promise.resolve(String(Date.now() - 60_000));
+        if (key === 'price:stale') return Promise.resolve(String(Date.now() - PRICE_FEED_STALE_MS - 5_000));
         return Promise.resolve(null);
       });
 
@@ -153,13 +179,23 @@ describe('PriceFeedService', () => {
   });
 
   describe('isStale', () => {
-    it('returns true when price:stale flag is present in Redis', async () => {
+    it('returns true when price:stale flag is older than the window', async () => {
       redis.get.mockImplementation((key: string) => {
-        if (key === 'price:stale') return Promise.resolve(String(Date.now() - 90_000));
+        if (key === 'price:stale') return Promise.resolve(String(Date.now() - PRICE_FEED_STALE_MS - 5_000));
         return Promise.resolve(null);
       });
 
       expect(await service.isStale()).toBe(true);
+    });
+
+    it('returns false when the stale flag is within the window and DB rate is fresh', async () => {
+      redis.get.mockImplementation((key: string) => {
+        if (key === 'price:stale') return Promise.resolve(String(Date.now() - 90_000));
+        return Promise.resolve(null);
+      });
+      repository.getLatestRate.mockResolvedValue(fresh_rate);
+
+      expect(await service.isStale()).toBe(false);
     });
 
     it('returns false when stale flag absent and DB rate is fresh', async () => {
