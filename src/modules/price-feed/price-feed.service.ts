@@ -25,12 +25,16 @@ export class PriceFeedService {
   ) {}
 
   async getCurrentRate(pair: AssetPair): Promise<{ rate_buy: Decimal; rate_sell: Decimal }> {
+    // The worker sets price:stale to the epoch-ms of the FIRST failed poll. A
+    // brief provider outage shouldn't block loans — only reject once the feed
+    // has been down past PRICE_FEED_STALE_MS. Within the window we fall through
+    // and serve the last good cached / DB rate.
     const stale_flag = await this.redis.get(REDIS_KEYS.PRICE_STALE);
     if (stale_flag) {
-      throw new PriceFeedStaleException({
-        last_updated_ms: Date.now() - parseInt(stale_flag, 10),
-        pair,
-      });
+      const stale_for_ms = Date.now() - parseInt(stale_flag, 10);
+      if (stale_for_ms > PRICE_FEED_STALE_MS) {
+        throw new PriceFeedStaleException({ last_updated_ms: stale_for_ms, pair });
+      }
     }
 
     const cached = await this.redis.get(REDIS_KEYS.PRICE(pair));
@@ -74,7 +78,9 @@ export class PriceFeedService {
 
   async isStale(): Promise<boolean> {
     const stale_flag = await this.redis.get(REDIS_KEYS.PRICE_STALE);
-    if (stale_flag) return true;
+    if (stale_flag && Date.now() - parseInt(stale_flag, 10) > PRICE_FEED_STALE_MS) {
+      return true;
+    }
 
     const latest = await this.price_feed_repository.getLatestRate(AssetPair.SAT_NGN);
     if (!latest) return true;

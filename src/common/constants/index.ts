@@ -64,7 +64,14 @@ export const COLLATERAL_TOPUP_EXPIRY_SEC   = 1800;
 // path while still bounding customer-visible delay.
 export const OUTFLOW_PROCESSING_STALE_SEC  = 300;
 export const DISBURSEMENT_NAME_MATCH_THRESHOLD = 0.85;
-export const PRICE_FEED_STALE_MS       = 600_000;
+// How long the price feed may go without a successful update before rates are
+// treated as stale and dependent flows (loan checkout, liquidation-risk reads)
+// are blocked. The provider can have a transient outage — a single failed poll
+// (5-min cadence) should NOT pause loans. Only a sustained outage past this
+// window is a serious issue worth blocking on; until then we serve the last
+// good rate. Applies to both the worker's stale flag (age since first failure)
+// and the DB rate's age.
+export const PRICE_FEED_STALE_MS       = 1_200_000; // 20 minutes
 export const PRICE_CACHE_TTL_SEC       = 600;
 export const SATS_PER_BTC              = new Decimal('100000000');
 export const ALERT_COOLDOWN_SEC        = 86_400;

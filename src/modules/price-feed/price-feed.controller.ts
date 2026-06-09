@@ -11,7 +11,7 @@ export class PriceFeedController {
   @Get()
   @ApiOperation({ summary: 'Get current exchange rates — public, no auth required' })
   @ApiResponse({ status: 200, description: 'Current rates for SAT/NGN, BTC/NGN, USDT/NGN', type: RatesResponseDto })
-  @ApiResponse({ status: 422, description: 'Price feed is stale (last update > 2 minutes ago)' })
+  @ApiResponse({ status: 422, description: 'Price feed is stale (no successful update for > 20 minutes)' })
   async getRates(): Promise<RatesResponseDto> {
     return this.price_feed_service.getRates();
   }
