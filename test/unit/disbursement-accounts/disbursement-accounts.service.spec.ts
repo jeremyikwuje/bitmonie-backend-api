@@ -136,6 +136,16 @@ describe('DisbursementAccountsService', () => {
         .rejects.toMatchObject({ code: 'DISBURSEMENT_ACCOUNT_NAME_MISMATCH' });
     });
 
+    it('rejects a BANK account for a user without tier-1 KYC (KYC_UPGRADE_REQUIRED)', async () => {
+      prisma.user.findUniqueOrThrow.mockResolvedValue(UNVERIFIED_USER);
+      prisma.disbursementAccount.count.mockResolvedValue(0);
+
+      await expect(service.addAccount('user-uuid', BANK_DTO))
+        .rejects.toMatchObject({ code: 'KYC_UPGRADE_REQUIRED' });
+      expect(disbursement_provider.lookupAccountName).not.toHaveBeenCalled();
+      expect(prisma.disbursementAccount.create).not.toHaveBeenCalled();
+    });
+
     it('throws DISBURSEMENT_ACCOUNT_MAX_PER_KIND when limit reached', async () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(KYC_USER);
       prisma.disbursementAccount.count.mockResolvedValue(5);
@@ -200,9 +210,11 @@ describe('DisbursementAccountsService', () => {
 
   describe('setDefault', () => {
     it('sets the target account as default', async () => {
+      prisma.user.findUniqueOrThrow.mockResolvedValue(KYC_USER);
       prisma.disbursementAccount.findFirst.mockResolvedValue({
         id: 'acct-uuid',
         kind: DisbursementAccountKind.BANK,
+        account_holder_name: 'Ada Obi',
       });
 
       const result = await service.setDefault('user-uuid', 'acct-uuid');

@@ -9,6 +9,7 @@ import {
   DisbursementAccountDuplicateException,
   DisbursementAccountMaxPerKindException,
   DisbursementAccountUnverifiedException,
+  KycUpgradeRequiredException,
 } from '@/common/errors/bitmonie.errors';
 import { DISBURSEMENT_NAME_MATCH_THRESHOLD, MAX_DISBURSEMENT_ACCOUNTS_PER_KIND } from '@/common/constants';
 import type { AddDisbursementAccountDto } from './dto/add-disbursement-account.dto';
@@ -73,50 +74,50 @@ export class DisbursementAccountsService {
     if (NAME_MATCHED_KINDS.includes(dto.kind)) {
       const user = await this.prisma.user.findUniqueOrThrow({ where: { id: user_id } });
 
-      // Low-KYC flow: skip name verification for users without tier-1 KYC (kyc_tier = 0).
-      // Users with KYC still get name matching for compliance.
+      // BANK and MOBILE_MONEY destinations require verified identity (tier-1 KYC).
+      // Gating the add here — instead of letting tier-0 users add unmatched accounts
+      // and discovering the block later — closes the UX trap where an account added
+      // before verification can never be name-matched or used. With KYC enforced up
+      // front, the name match below always runs. CRYPTO_ADDRESS stays KYC-free.
       if (user.kyc_tier < 1) {
-        // No KYC: allow account without name verification.
-        // account_holder_name and name_match_score remain null.
-        // This enables email-only borrowers (≤ N500k) to add accounts instantly.
-      } else {
-        // Has KYC: enforce name matching as before.
-        // Canonical name preference:
-        //   1. User row (first_name + middle_name + last_name) — set during tier-1 KYC.
-        //   2. kyc_verifications.legal_name — fallback.
-        const user_name = [user.first_name, user.middle_name, user.last_name]
-          .filter((p): p is string => Boolean(p && p.trim()))
-          .join(' ')
-          .trim();
-
-        let canonical_name = user_name;
-        if (!canonical_name) {
-          const verification = await this.prisma.kycVerification.findUnique({
-            where: { user_id_tier: { user_id, tier: 1 } },
-          });
-          canonical_name = verification?.legal_name ?? '';
-        }
-
-        const rail = KIND_TO_RAIL[dto.kind]!;
-        const provider = this.disbursement_router.forRoute('NGN', rail);
-        const fetched_name = await provider.lookupAccountName({
-          bank_code: dto.provider_code,
-          account_number: dto.account_unique,
-        });
-
-        if (!fetched_name) {
-          throw new DisbursementAccountLookupFailedException();
-        }
-
-        const score = this.name_match.compare(canonical_name, fetched_name);
-
-        if (score < DISBURSEMENT_NAME_MATCH_THRESHOLD) {
-          throw new DisbursementAccountNameMismatchException({ score });
-        }
-
-        account_holder_name = fetched_name;
-        name_match_score = score;
+        throw new KycUpgradeRequiredException(1);
       }
+
+      // Canonical name preference:
+      //   1. User row (first_name + middle_name + last_name) — set during tier-1 KYC.
+      //   2. kyc_verifications.legal_name — fallback.
+      const user_name = [user.first_name, user.middle_name, user.last_name]
+        .filter((p): p is string => Boolean(p && p.trim()))
+        .join(' ')
+        .trim();
+
+      let canonical_name = user_name;
+      if (!canonical_name) {
+        const verification = await this.prisma.kycVerification.findUnique({
+          where: { user_id_tier: { user_id, tier: 1 } },
+        });
+        canonical_name = verification?.legal_name ?? '';
+      }
+
+      const rail = KIND_TO_RAIL[dto.kind]!;
+      const provider = this.disbursement_router.forRoute('NGN', rail);
+      const fetched_name = await provider.lookupAccountName({
+        bank_code: dto.provider_code,
+        account_number: dto.account_unique,
+      });
+
+      if (!fetched_name) {
+        throw new DisbursementAccountLookupFailedException();
+      }
+
+      const score = this.name_match.compare(canonical_name, fetched_name);
+
+      if (score < DISBURSEMENT_NAME_MATCH_THRESHOLD) {
+        throw new DisbursementAccountNameMismatchException({ score });
+      }
+
+      account_holder_name = fetched_name;
+      name_match_score = score;
     }
 
     const is_first = existing_count === 0;

@@ -23,7 +23,11 @@ function make_prisma() {
     user: { update: jest.fn().mockResolvedValue({}) },
   };
   return {
-    kycVerification: { findUnique: jest.fn(), findMany: jest.fn() },
+    kycVerification: {
+      findUnique: jest.fn(),
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn(),
+    },
     user: { findUniqueOrThrow: jest.fn() },
     $transaction: jest.fn().mockImplementation((fn: (tx: FakeTx) => Promise<unknown>) => fn(tx)),
   };
@@ -57,6 +61,7 @@ describe('KycService', () => {
     crypto_service = mock<CryptoService>();
     user_repayment_accounts = mock<UserRepaymentAccountsService>();
     crypto_service.encrypt.mockReturnValue('encrypted-id');
+    crypto_service.hashKycIdNumber.mockImplementation((id: string) => `hash:${id}`);
     user_repayment_accounts.ensureForUser.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
@@ -170,6 +175,44 @@ describe('KycService', () => {
       const result = await service.submitTier1('user-uuid', VALID_DTO);
 
       expect(result.message).toContain('verified');
+    });
+
+    it('throws KYC_ID_NUMBER_TAKEN when another user already claimed this BVN', async () => {
+      prisma.kycVerification.findUnique.mockResolvedValue(null);
+      prisma.kycVerification.findFirst.mockResolvedValue({ id: 'other-row' });
+
+      await expect(service.submitTier1('user-uuid', VALID_DTO))
+        .rejects.toMatchObject({ code: 'KYC_ID_NUMBER_TAKEN' });
+
+      expect(prisma.kycVerification.findFirst).toHaveBeenCalledWith({
+        where: {
+          id_type: KycIdType.BVN,
+          id_number_hash: 'hash:12345678901',
+          user_id: { not: 'user-uuid' },
+        },
+        select: { id: true },
+      });
+      expect(kyc_provider.verifyBvn).not.toHaveBeenCalled();
+    });
+
+    it('allows the same user to re-submit their own ID (pre-check excludes self)', async () => {
+      prisma.kycVerification.findUnique.mockResolvedValue(null);
+      prisma.kycVerification.findFirst.mockResolvedValue(null);
+      kyc_provider.verifyBvn.mockResolvedValue(MATCH_RESULT);
+
+      const result = await service.submitTier1('user-uuid', VALID_DTO);
+
+      expect(result.message).toContain('verified');
+    });
+
+    it('translates Prisma P2002 race to KYC_ID_NUMBER_TAKEN', async () => {
+      prisma.kycVerification.findUnique.mockResolvedValue(null);
+      prisma.kycVerification.findFirst.mockResolvedValue(null);
+      kyc_provider.verifyBvn.mockResolvedValue(MATCH_RESULT);
+      prisma.$transaction.mockRejectedValueOnce(Object.assign(new Error('unique'), { code: 'P2002' }));
+
+      await expect(service.submitTier1('user-uuid', VALID_DTO))
+        .rejects.toMatchObject({ code: 'KYC_ID_NUMBER_TAKEN' });
     });
 
     it('throws KYC_ALREADY_VERIFIED when tier-1 already verified', async () => {

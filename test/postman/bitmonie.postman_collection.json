@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "a7f2c5e0-1b4d-4e9c-9a2f-bitmonie000001",
-    "name": "Bitmonie API — v1.1",
-    "description": "All endpoints grouped by module, plus simulated provider webhooks. v1.1 adds accrual-based pricing, partial repayments, add-collateral, and a permanent per-user PalmPay VA.\n\n**End-to-end happy-path flow:**\n1. Open → Variables tab → set `blink_webhook_secret`, `blink_account_id`, `blink_wallet_btc_id` to match `.env`. Defaults wired to the local `.env`.\n2. `Auth → Signup` (defaults to `bitmonie-smoke@example.com` / `TestPass123!` — change to your own).\n3. Grab OTP from Mailgun inbox for `user_email`, paste into `Auth → Verify Email` and run.\n4. `Auth → Login` — session token auto-populates `session_token` and rides as a cookie on subsequent requests.\n5. `KYC → tier-1` — on success, the user's permanent NGN repayment VA is provisioned (read it out of the DB into `virtual_account_no` for the PalmPay webhook later).\n6. `Disbursement Accounts → add BANK` — name-matched against your User row first (KYC fallback).\n7. `Loans → calculate` — see projections (origination + projected interest + projected custody for chosen term).\n8. `Loans → checkout` — creates loan, returns Blink invoice; capture `loan_id` + `payment_hash`.\n9. `Webhooks → blink (collateral confirmed)` — flips loan PENDING_COLLATERAL → ACTIVE, dispatches NGN disbursement.\n10. (After some days) `Webhooks → palmpay (collection — repayment received)` — auto-credits via the waterfall. Use the same VA number from step 5.\n\n**v1.1 add-on flows:**\n- `Loans → add-collateral` — fresh variable-amount Lightning invoice; mirror with the Blink webhook (use the new `topup_payment_hash`) to bump `collateral_amount_sat` while staying ACTIVE.\n- `Loans → claim-inflow` — when a customer has 2+ ACTIVE loans (auto-match impossible) or after an unmatched-inflow ops alert.\n\n**Collection pre-request hook** auto-injects `Idempotency-Key: <uuid>` on every POST/PUT/PATCH/DELETE (skipped on webhook routes).\n\n**Webhook folder** pre-request scripts compute valid Svix (Blink) signatures from `blink_webhook_secret` before sending.",
+    "name": "Bitmonie API — v1.2",
+    "description": "All endpoints grouped by module, plus simulated provider webhooks.\n\nv1.2 makes loans **open-term**: no duration, no due date. Daily interest (0.3% on outstanding principal) accrues until repayment; the only forced-close path is an LTV breach (collateral coverage `< 1.10`). Customer-facing coverage nudges fire at `< 1.20` (WARN) and `< 1.15` (MARGIN_CALL). Custody fee is removed (pinned at 0). Auth is **passwordless** — email OTP only at login; TOTP + transaction-PIN are step-up factors, never login factors.\n\n**End-to-end happy-path flow:**\n1. Open → Variables tab → set `blink_webhook_secret`, `blink_account_id`, `blink_wallet_btc_id` to match `.env`. Defaults wired to the local `.env`.\n2. `Auth → Signup` (email only — defaults to `bitmonie-smoke@example.com`).\n3. Grab the OTP from the Mailgun inbox for `user_email`, paste it into `Auth → Verify Email` and run.\n4. `Auth → Login (request OTP)` then `Auth → Login (verify OTP)` — the verify step captures the session token into `session_token` and rides as a cookie on subsequent requests.\n5. `KYC → tier-1` — on success, the user's permanent NGN repayment VA is provisioned (read it out of the DB into `virtual_account_no` for the PalmPay webhook later). Loans ≤ ₦500,000 are KYC-exempt.\n6. `Disbursement Accounts → add BANK` — name-matched against your User row first (KYC legal-name fallback).\n7. `Loans → calculate` — daily rates only (open-term; no projections). Multiply daily interest by the days you intend to hold.\n8. `Loans → checkout` — creates the loan + Lightning invoice; capture `loan_id` + `payment_hash`.\n9. `Webhooks → blink (collateral confirmed)` — flips loan PENDING_COLLATERAL → ACTIVE, dispatches the NGN disbursement.\n10. (After some days) `Webhooks → palmpay (collection — repayment received)` — auto-credits via the waterfall. Use the same VA number from step 5.\n\n**Add-on flows:**\n- `Loans → add-collateral` — fresh variable-amount Lightning invoice; mirror with the Blink webhook (use the new `topup_payment_hash`) to bump `collateral_amount_sat` while staying ACTIVE.\n- `Inflows → unmatched` + `apply` — the \"stack of cash rolls\" self-serve surface when a customer has 2+ ACTIVE loans (auto-match impossible) or after an unmatched-inflow ops alert. `claim-inflow` on the loan is the deprecated predecessor.\n\n**Collection pre-request hook** auto-injects `Idempotency-Key: <uuid>` on every POST/PUT/PATCH/DELETE (skipped on webhook routes).\n\n**Webhook folder** pre-request scripts compute valid Svix (Blink) signatures from `blink_webhook_secret` before sending.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -22,16 +22,18 @@
   "variable": [
     { "key": "base_url", "value": "http://localhost:3000", "type": "string" },
     { "key": "user_email", "value": "bitmonie-smoke@example.com", "type": "string" },
-    { "key": "user_password", "value": "TestPass123!", "type": "string" },
     { "key": "session_token", "value": "", "type": "string" },
     { "key": "loan_id", "value": "", "type": "string" },
     { "key": "disbursement_account_id", "value": "", "type": "string" },
     { "key": "disbursement_id", "value": "", "type": "string" },
+    { "key": "inflow_id", "value": "", "type": "string" },
+    { "key": "ops_user_id", "value": "", "type": "string" },
     { "key": "payment_hash", "value": "", "type": "string" },
     { "key": "virtual_account_no", "value": "", "type": "string" },
     { "key": "topup_id", "value": "", "type": "string" },
     { "key": "topup_payment_request", "value": "", "type": "string" },
     { "key": "topup_payment_hash", "value": "", "type": "string" },
+    { "key": "blink_settlement_amount", "value": "21000", "type": "string" },
     { "key": "blink_webhook_secret", "value": "whsec_dGVzdF9ibGlua193ZWJob29rX3NlY3JldF9mb3JfbG9jYWxfdGVzdGluZw==", "type": "string" },
     { "key": "blink_account_id", "value": "50e1e8e7-aa40-4daa-9183-d8abd0e51eeb", "type": "string" },
     { "key": "blink_wallet_btc_id", "value": "6afbe713-5d84-4735-a0f4-11f86201c4e0", "type": "string" }
@@ -56,7 +58,7 @@
             "method": "GET",
             "header": [],
             "url": { "raw": "{{base_url}}/v1/rates", "host": ["{{base_url}}"], "path": ["v1", "rates"] },
-            "description": "Current buy/sell rates for SAT_NGN, BTC_NGN, USDT_NGN. Cached 90s in Redis. Returns 422 if stale >2 minutes."
+            "description": "Current buy/sell rates for SAT_NGN, BTC_NGN, USDT_NGN. Cached 10 min in Redis. Returns 422 PRICE_FEED_STALE if older than 10 minutes."
           }
         },
         {
@@ -66,21 +68,55 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/v1/loans/calculate?principal_ngn=300000&duration_days=7",
+              "raw": "{{base_url}}/v1/loans/calculate?principal_ngn=300000",
               "host": ["{{base_url}}"],
               "path": ["v1", "loans", "calculate"],
               "query": [
-                { "key": "principal_ngn", "value": "300000" },
-                { "key": "duration_days", "value": "7" }
+                { "key": "principal_ngn", "value": "300000" }
               ]
             },
-            "description": "Public loan quote calculator (v1.1 — accrual-based pricing).\n\nReturns:\n- **Locked at origination:** `origination_fee_ngn` (`ceil(principal/100k) × 500`), `daily_custody_fee_ngn` (`ceil(initial_collateral_usd/100) × 100`), `daily_interest_rate_bps = 30` (0.3%).\n- **Projections** (estimates for the chosen duration — actual fees accrue daily): `projected_interest_ngn`, `projected_custody_ngn`, `projected_total_ngn`.\n- **Collateral sizing:** `collateral_amount_sat`, `initial_collateral_usd` (sourced from Blink BTC/USD), `sat_ngn_rate_at_creation`.\n- **UI thresholds** (these move daily once accrual starts): `initial_liquidation_rate_ngn`, `initial_alert_rate_ngn`.\n\nMin loan ₦50,000 / max ₦10,000,000 self-serve. Min 1 day / max 90 days."
+            "description": "Public loan quote calculator (v1.2 — open-term, daily rates only, no projections).\n\nReturns:\n- **Daily rates:** `origination_fee_ngn` (waived = 0), `daily_interest_ngn` (`0.3% × principal`), `daily_custody_fee_ngn` (pinned at 0 for API stability), `daily_interest_rate_bps = 30`.\n- **Collateral sizing:** `collateral_amount_sat`, `initial_collateral_usd` (sourced from Blink BTC/USD), `sat_ngn_rate_at_creation`.\n- **UI thresholds** (move daily once accrual starts): `initial_liquidation_rate_ngn` (coverage 1.10), `initial_alert_rate_ngn` (coverage 1.20).\n\nLoans are open-term — there is no duration to project against; the customer multiplies `daily_interest_ngn` by the days they intend to hold. Min loan ₦10,000 / max ₦10,000,000 self-serve."
+          }
+        },
+        {
+          "name": "GET /v1/banks",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/v1/banks", "host": ["{{base_url}}"], "path": ["v1", "banks"] },
+            "description": "Catalogue of NGN bank-transfer destinations the active disbursement provider can route to. Use the returned `code` as `provider_code` when adding a BANK disbursement account. Public (throttled 60/min/IP)."
+          }
+        },
+        {
+          "name": "GET /v1/config",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/v1/config", "host": ["{{base_url}}"], "path": ["v1", "config"] },
+            "description": "Public platform configuration the web client hydrates from: loan limits, LTV / coverage thresholds, daily interest rate, KYC-exemption threshold, supported currencies, etc."
+          }
+        },
+        {
+          "name": "POST /v1/loan-applications",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Ada\",\n  \"last_name\": \"Lovelace\",\n  \"email\": \"ada@example.com\",\n  \"phone\": \"+234 803 555 1234\",\n  \"collateral_type\": \"Bitcoin (BTC)\",\n  \"collateral_description\": \"0.05 BTC\",\n  \"loan_amount_ngn\": 25000000,\n  \"website\": \"\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/v1/loan-applications", "host": ["{{base_url}}"], "path": ["v1", "loan-applications"] },
+            "description": "Large-loan enquiry form (> ₦10M self-serve cap) for human white-glove follow-up.\n\n- `collateral_type`: one of the display values (`Bitcoin (BTC)`, `USDT / USDC`, `MacBook (M1 or newer)`, …).\n- `website`: honeypot — must be empty.\n- `rendered_at` (optional): timestamp the form was rendered, for spam timing checks."
           }
         }
       ]
     },
     {
       "name": "1. Auth",
+      "description": "Passwordless customer auth. Login = email OTP only (request-otp → verify-otp). TOTP is never consulted at login — it is a step-up factor only, alongside the transaction PIN.",
       "item": [
         {
           "name": "POST /v1/auth/signup",
@@ -101,10 +137,10 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"{{user_email}}\",\n  \"password\": \"{{user_password}}\"\n}"
+              "raw": "{\n  \"email\": \"{{user_email}}\"\n}"
             },
             "url": { "raw": "{{base_url}}/v1/auth/signup", "host": ["{{base_url}}"], "path": ["v1", "auth", "signup"] },
-            "description": "Create account. OTP sent by email (Mailgun). Body: { email, password } — password min 8, max 128 chars."
+            "description": "Passwordless signup — the only field is `email`. A 6-digit verify OTP is sent by email (Mailgun). Names + KYC are collected later. There is no password column on the customer User."
           }
         },
         {
@@ -118,7 +154,7 @@
               "raw": "{\n  \"email\": \"{{user_email}}\",\n  \"otp\": \"000000\"\n}"
             },
             "url": { "raw": "{{base_url}}/v1/auth/verify-email", "host": ["{{base_url}}"], "path": ["v1", "auth", "verify-email"] },
-            "description": "Paste the 6-digit OTP from the email into `otp` before sending."
+            "description": "Paste the 6-digit OTP from the signup email into `otp` before sending. Marks `email_verified`."
           }
         },
         {
@@ -128,11 +164,23 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{user_email}}\"\n}" },
-            "url": { "raw": "{{base_url}}/v1/auth/resend-verification", "host": ["{{base_url}}"], "path": ["v1", "auth", "resend-verification"] }
+            "url": { "raw": "{{base_url}}/v1/auth/resend-verification", "host": ["{{base_url}}"], "path": ["v1", "auth", "resend-verification"] },
+            "description": "Re-sends the email-verification OTP."
           }
         },
         {
-          "name": "POST /v1/auth/login",
+          "name": "POST /v1/auth/login/request-otp",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{user_email}}\"\n}" },
+            "url": { "raw": "{{base_url}}/v1/auth/login/request-otp", "host": ["{{base_url}}"], "path": ["v1", "auth", "login", "request-otp"] },
+            "description": "Step 1 of passwordless login. Emails a `login`-purpose OTP. Always returns 200 — never leaks whether the account exists. Rate-limited."
+          }
+        },
+        {
+          "name": "POST /v1/auth/login/verify-otp",
           "event": [
             {
               "listen": "test",
@@ -155,10 +203,10 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"{{user_email}}\",\n  \"password\": \"{{user_password}}\",\n  \"totp_code\": null\n}"
+              "raw": "{\n  \"email\": \"{{user_email}}\",\n  \"otp\": \"000000\"\n}"
             },
-            "url": { "raw": "{{base_url}}/v1/auth/login", "host": ["{{base_url}}"], "path": ["v1", "auth", "login"] },
-            "description": "Sets `session` cookie + returns `{ token, expires_in }`. Test script captures token into `session_token` collection variable. Omit `totp_code` or set null if 2FA not enabled."
+            "url": { "raw": "{{base_url}}/v1/auth/login/verify-otp", "host": ["{{base_url}}"], "path": ["v1", "auth", "login", "verify-otp"] },
+            "description": "Step 2 of passwordless login. Paste the `login` OTP from the email. Sets the `session` cookie + returns `{ message, token, expires_in }`. The test script captures `token` into the `session_token` collection variable (used as `Authorization: Bearer` for mobile clients)."
           }
         },
         {
@@ -166,7 +214,8 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": { "raw": "{{base_url}}/v1/auth/logout", "host": ["{{base_url}}"], "path": ["v1", "auth", "logout"] }
+            "url": { "raw": "{{base_url}}/v1/auth/logout", "host": ["{{base_url}}"], "path": ["v1", "auth", "logout"] },
+            "description": "Revokes the current session and clears the cookie."
           }
         },
         {
@@ -179,36 +228,12 @@
           }
         },
         {
-          "name": "POST /v1/auth/forgot-password",
-          "request": {
-            "auth": { "type": "noauth" },
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{user_email}}\"\n}" },
-            "url": { "raw": "{{base_url}}/v1/auth/forgot-password", "host": ["{{base_url}}"], "path": ["v1", "auth", "forgot-password"] }
-          }
-        },
-        {
-          "name": "POST /v1/auth/reset-password",
-          "request": {
-            "auth": { "type": "noauth" },
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"{{user_email}}\",\n  \"otp\": \"000000\",\n  \"new_password\": \"NewTestPass456!\"\n}"
-            },
-            "url": { "raw": "{{base_url}}/v1/auth/reset-password", "host": ["{{base_url}}"], "path": ["v1", "auth", "reset-password"] },
-            "description": "Paste the OTP from the reset email. Invalidates all existing sessions."
-          }
-        },
-        {
           "name": "GET /v1/auth/2fa/setup",
           "request": {
             "method": "GET",
             "header": [],
             "url": { "raw": "{{base_url}}/v1/auth/2fa/setup", "host": ["{{base_url}}"], "path": ["v1", "auth", "2fa", "setup"] },
-            "description": "Returns { otpauth_url, qr_code_uri }. Scan the QR with Google Authenticator / 1Password."
+            "description": "Returns { otpauth_url, qr_code_uri }. Scan the QR with Google Authenticator / 1Password. TOTP is a step-up factor, not a login factor."
           }
         },
         {
@@ -217,7 +242,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"totp_code\": \"123456\"\n}" },
-            "url": { "raw": "{{base_url}}/v1/auth/2fa/confirm", "host": ["{{base_url}}"], "path": ["v1", "auth", "2fa", "confirm"] }
+            "url": { "raw": "{{base_url}}/v1/auth/2fa/confirm", "host": ["{{base_url}}"], "path": ["v1", "auth", "2fa", "confirm"] },
+            "description": "Confirms TOTP enrolment with a current 6-digit code."
           }
         },
         {
@@ -226,22 +252,87 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"totp_code\": \"123456\"\n}" },
-            "url": { "raw": "{{base_url}}/v1/auth/2fa/disable", "host": ["{{base_url}}"], "path": ["v1", "auth", "2fa", "disable"] }
+            "url": { "raw": "{{base_url}}/v1/auth/2fa/disable", "host": ["{{base_url}}"], "path": ["v1", "auth", "2fa", "disable"] },
+            "description": "Disables TOTP, verified with a current code."
           }
+        },
+        {
+          "name": "Transaction PIN",
+          "description": "Opt-in 6-digit numeric step-up factor (Argon2id). Every mutation requires an email OTP delivered to the user's inbox. Lockout after repeated wrong tries.",
+          "item": [
+            {
+              "name": "POST /v1/auth/transaction-pin/request-set-otp",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": { "raw": "{{base_url}}/v1/auth/transaction-pin/request-set-otp", "host": ["{{base_url}}"], "path": ["v1", "auth", "transaction-pin", "request-set-otp"] },
+                "description": "Emails the OTP needed to set a transaction PIN."
+              }
+            },
+            {
+              "name": "POST /v1/auth/transaction-pin/set",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"email_otp\": \"123456\",\n  \"transaction_pin\": \"246810\"\n}" },
+                "url": { "raw": "{{base_url}}/v1/auth/transaction-pin/set", "host": ["{{base_url}}"], "path": ["v1", "auth", "transaction-pin", "set"] },
+                "description": "Sets the PIN. `transaction_pin` must be exactly 6 digits. `email_otp` from request-set-otp."
+              }
+            },
+            {
+              "name": "POST /v1/auth/transaction-pin/request-change-otp",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": { "raw": "{{base_url}}/v1/auth/transaction-pin/request-change-otp", "host": ["{{base_url}}"], "path": ["v1", "auth", "transaction-pin", "request-change-otp"] },
+                "description": "Emails the OTP needed to change the transaction PIN."
+              }
+            },
+            {
+              "name": "POST /v1/auth/transaction-pin/change",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"email_otp\": \"123456\",\n  \"current_transaction_pin\": \"246810\",\n  \"new_transaction_pin\": \"135790\"\n}" },
+                "url": { "raw": "{{base_url}}/v1/auth/transaction-pin/change", "host": ["{{base_url}}"], "path": ["v1", "auth", "transaction-pin", "change"] },
+                "description": "Changes the PIN. Requires email OTP plus the current PIN."
+              }
+            },
+            {
+              "name": "POST /v1/auth/transaction-pin/request-disable-otp",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": { "raw": "{{base_url}}/v1/auth/transaction-pin/request-disable-otp", "host": ["{{base_url}}"], "path": ["v1", "auth", "transaction-pin", "request-disable-otp"] },
+                "description": "Emails the OTP needed to disable the transaction PIN."
+              }
+            },
+            {
+              "name": "POST /v1/auth/transaction-pin/disable",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"email_otp\": \"123456\",\n  \"current_transaction_pin\": \"135790\"\n}" },
+                "url": { "raw": "{{base_url}}/v1/auth/transaction-pin/disable", "host": ["{{base_url}}"], "path": ["v1", "auth", "transaction-pin", "disable"] },
+                "description": "Disables the PIN. Email OTP always required, PLUS proof: send EITHER `current_transaction_pin` OR `totp_code` (recovery path when the user forgot the PIN but has their authenticator)."
+              }
+            }
+          ]
         },
         {
           "name": "GET /v1/auth/me",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{base_url}}/v1/auth/me", "host": ["{{base_url}}"], "path": ["v1", "auth", "me"] }
+            "url": { "raw": "{{base_url}}/v1/auth/me", "host": ["{{base_url}}"], "path": ["v1", "auth", "me"] },
+            "description": "Session-identity probe. Returns `transaction_pin_set: boolean` so the web client can nudge the user to configure a step-up factor."
           }
         }
       ]
     },
     {
-      "name": "2. Users",
-      "description": "Authenticated user profile. `/v1/users/me` returns the full profile (incl. KYC tier, repayment VA, account flags). The thinner `/v1/auth/me` above is a session-identity probe.",
+      "name": "2. Users & Profile",
+      "description": "Authenticated profile + home-screen aggregates. `/v1/users/me` is the full profile; `/v1/auth/me` is a thin session probe.",
       "item": [
         {
           "name": "GET /v1/users/me",
@@ -250,6 +341,32 @@
             "header": [],
             "url": { "raw": "{{base_url}}/v1/users/me", "host": ["{{base_url}}"], "path": ["v1", "users", "me"] },
             "description": "Returns the authenticated user's full profile: identity fields, country, KYC tier, TOTP state, account flags (is_active, disbursement_enabled, loan_enabled), and the permanent NGN repayment VA (null until tier-1 KYC provisions one)."
+          }
+        },
+        {
+          "name": "GET /v1/me/summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/v1/me/summary", "host": ["{{base_url}}"], "path": ["v1", "me", "summary"] },
+            "description": "Home-screen aggregate: `outstanding_ngn`, `daily_accrual_ngn`, `active_loan_count`, `attention[]` (coverage/action cards with urgency), and unmatched-inflow rollups (`unmatched_inflow_count`, `unmatched_inflow_total_ngn`)."
+          }
+        },
+        {
+          "name": "GET /v1/activity",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/activity?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "activity"],
+              "query": [
+                { "key": "cursor", "value": "", "description": "Opaque cursor from the previous page's `next_cursor`. Omit on first page.", "disabled": true },
+                { "key": "limit", "value": "20", "description": "Page size. Defaults to 20." }
+              ]
+            },
+            "description": "Cursor-paginated unified activity feed (loan events, repayments, collateral movements). Returns `{ items[], next_cursor }`."
           }
         }
       ]
@@ -267,7 +384,7 @@
               "raw": "{\n  \"id_type\": \"BVN\",\n  \"id_number\": \"12345678901\",\n  \"first_name\": \"Jeremy\",\n  \"middle_name\": null,\n  \"last_name\": \"Ikwuje\",\n  \"date_of_birth\": \"1990-01-01\"\n}"
             },
             "url": { "raw": "{{base_url}}/v1/kyc/tier-1", "host": ["{{base_url}}"], "path": ["v1", "kyc", "tier-1"] },
-            "description": "Tier-1 identity verification. Rate-limited 5/60s per user. Hits Dojah — a real BVN lookup costs money.\n\n- `id_type`: BVN | NIN | PASSPORT | DRIVERS_LICENSE\n- `id_number`: 6-20 chars (BVN = 11 digits, NIN = 11 digits)\n- `date_of_birth`: YYYY-MM-DD"
+            "description": "Tier-1 identity verification. Rate-limited per user. Hits the KYC provider — a real BVN lookup costs money. On success the user's permanent NGN repayment VA is provisioned.\n\nLoans ≤ ₦500,000 (KYC_EXEMPTION_THRESHOLD_NGN) are exempt and can be taken without tier-1.\n\n- `id_type`: BVN | NIN | PASSPORT | DRIVERS_LICENSE\n- `id_number`: BVN = 11 digits, NIN = 11 digits\n- `date_of_birth`: YYYY-MM-DD"
           }
         },
         {
@@ -276,7 +393,7 @@
             "method": "POST",
             "header": [],
             "url": { "raw": "{{base_url}}/v1/kyc/tier-2", "host": ["{{base_url}}"], "path": ["v1", "kyc", "tier-2"] },
-            "description": "Returns 501 in v1.0 — liveness check deferred."
+            "description": "Returns 501 — liveness check deferred."
           }
         },
         {
@@ -284,7 +401,8 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": { "raw": "{{base_url}}/v1/kyc/tier-3", "host": ["{{base_url}}"], "path": ["v1", "kyc", "tier-3"] }
+            "url": { "raw": "{{base_url}}/v1/kyc/tier-3", "host": ["{{base_url}}"], "path": ["v1", "kyc", "tier-3"] },
+            "description": "Returns 501 — deferred."
           }
         },
         {
@@ -292,7 +410,17 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{base_url}}/v1/kyc/status", "host": ["{{base_url}}"], "path": ["v1", "kyc", "status"] }
+            "url": { "raw": "{{base_url}}/v1/kyc/status", "host": ["{{base_url}}"], "path": ["v1", "kyc", "status"] },
+            "description": "Current KYC tier + verification state for the authenticated user."
+          }
+        },
+        {
+          "name": "GET /v1/kyc/verifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/v1/kyc/verifications", "host": ["{{base_url}}"], "path": ["v1", "kyc", "verifications"] },
+            "description": "Lists the authenticated user's KYC verification attempts per tier. Encrypted/hashed columns (BVN/NIN) are never exposed."
           }
         }
       ]
@@ -305,7 +433,8 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{base_url}}/v1/disbursement-accounts", "host": ["{{base_url}}"], "path": ["v1", "disbursement-accounts"] }
+            "url": { "raw": "{{base_url}}/v1/disbursement-accounts", "host": ["{{base_url}}"], "path": ["v1", "disbursement-accounts"] },
+            "description": "Lists the user's payout destinations."
           }
         },
         {
@@ -333,7 +462,7 @@
               "raw": "{\n  \"kind\": \"BANK\",\n  \"provider_name\": \"GTBank\",\n  \"provider_code\": \"058\",\n  \"account_unique\": \"0123456789\",\n  \"label\": \"GTB Main\"\n}"
             },
             "url": { "raw": "{{base_url}}/v1/disbursement-accounts", "host": ["{{base_url}}"], "path": ["v1", "disbursement-accounts"] },
-            "description": "Max 5 per kind. For BANK and MOBILE_MONEY, the account-holder name is looked up via PalmPay and matched to the BVN-verified name (threshold 0.85). Mismatch → 422.\n\n`kind`: BANK | MOBILE_MONEY | CRYPTO_ADDRESS\n`provider_name`: human name (e.g. \"GTBank\")\n`provider_code`: NIBSS/bank code (\"058\" = GTB)\n`account_unique`: account number | phone | crypto address\n`account_unique_tag`: optional — memo/destination tag for crypto\n`label`: optional friendly name"
+            "description": "Max 5 per kind. For BANK and MOBILE_MONEY, the account-holder name is looked up via the provider and matched against the User row first, KYC legal-name fallback (threshold 0.85). Mismatch → 422.\n\n`kind`: BANK | MOBILE_MONEY | CRYPTO_ADDRESS\n`provider_name`: human name (e.g. \"GTBank\")\n`provider_code`: NIBSS/bank code (\"058\" = GTB) — use `GET /v1/banks`\n`account_unique`: account number | phone | crypto address\n`account_unique_tag`: optional — memo/destination tag for crypto\n`label`: optional friendly name"
           }
         },
         {
@@ -345,7 +474,8 @@
               "mode": "raw",
               "raw": "{\n  \"kind\": \"MOBILE_MONEY\",\n  \"provider_name\": \"MTN\",\n  \"provider_code\": \"MTN\",\n  \"account_unique\": \"08012345678\",\n  \"label\": \"MTN line\"\n}"
             },
-            "url": { "raw": "{{base_url}}/v1/disbursement-accounts", "host": ["{{base_url}}"], "path": ["v1", "disbursement-accounts"] }
+            "url": { "raw": "{{base_url}}/v1/disbursement-accounts", "host": ["{{base_url}}"], "path": ["v1", "disbursement-accounts"] },
+            "description": "Name-matched like BANK."
           }
         },
         {
@@ -371,7 +501,8 @@
               "raw": "{{base_url}}/v1/disbursement-accounts/{{disbursement_account_id}}/default",
               "host": ["{{base_url}}"],
               "path": ["v1", "disbursement-accounts", "{{disbursement_account_id}}", "default"]
-            }
+            },
+            "description": "Marks the account as the default for its kind."
           }
         },
         {
@@ -420,10 +551,10 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"principal_ngn\": 300000,\n  \"duration_days\": 7,\n  \"disbursement_account_id\": \"{{disbursement_account_id}}\",\n  \"collateral_release_address\": \"jeremy@blink.sv\"\n}"
+              "raw": "{\n  \"principal_ngn\": 300000,\n  \"terms_accepted\": true,\n  \"disbursement_account_id\": \"{{disbursement_account_id}}\",\n  \"collateral_release_address\": \"jeremy@blink.sv\"\n}"
             },
             "url": { "raw": "{{base_url}}/v1/loans/checkout", "host": ["{{base_url}}"], "path": ["v1", "loans", "checkout"] },
-            "description": "Creates loan + Lightning invoice via Blink. Status begins PENDING_COLLATERAL. Test script captures `loan_id` and `payment_hash` (Lightning payment hash = Blink webhook matching key).\n\n- `principal_ngn`: 50,000 – 10,000,000 (self-serve cap)\n- `duration_days`: 1 – 30\n- `disbursement_account_id`: optional, falls back to default\n- `collateral_release_address`: optional Lightning address for refund if loan expires"
+            "description": "Creates an open-term loan + Lightning invoice via Blink. Status begins PENDING_COLLATERAL. Test script captures `loan_id` and `payment_hash` (Lightning payment hash = Blink webhook matching key).\n\n- `principal_ngn`: 10,000 – 10,000,000 (self-serve cap)\n- `terms_accepted`: required boolean — must be true\n- `disbursement_account_id`: optional, falls back to default\n- `collateral_release_address`: optional Lightning address for collateral refund\n\nNo `duration_days` — loans are open-term (v1.2). Only one PENDING_COLLATERAL loan per user at a time (409 LOAN_PENDING_ALREADY_EXISTS otherwise)."
           }
         },
         {
@@ -431,7 +562,8 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{base_url}}/v1/loans", "host": ["{{base_url}}"], "path": ["v1", "loans"] }
+            "url": { "raw": "{{base_url}}/v1/loans", "host": ["{{base_url}}"], "path": ["v1", "loans"] },
+            "description": "Lists the authenticated user's loans."
           }
         },
         {
@@ -444,7 +576,7 @@
               "host": ["{{base_url}}"],
               "path": ["v1", "loans", "{{loan_id}}"]
             },
-            "description": "Loan detail + status timeline."
+            "description": "Loan detail + status timeline + live outstanding (computed by AccrualService)."
           }
         },
         {
@@ -457,7 +589,20 @@
               "host": ["{{base_url}}"],
               "path": ["v1", "loans", "{{loan_id}}", "cancel"]
             },
-            "description": "Cancels a PENDING_COLLATERAL loan. 204 on success. Fails if loan already ACTIVE or terminal."
+            "description": "Cancels a PENDING_COLLATERAL loan. Fails if loan already ACTIVE or terminal."
+          }
+        },
+        {
+          "name": "GET /v1/loans/:id/repayment-instructions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/loans/{{loan_id}}/repayment-instructions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "loans", "{{loan_id}}", "repayment-instructions"]
+            },
+            "description": "Returns the permanent NGN VA + current outstanding the customer should transfer to repay this loan. Repayments are matched by amount-against-outstanding (no narration)."
           }
         },
         {
@@ -470,7 +615,21 @@
               "raw": "{{base_url}}/v1/loans/{{loan_id}}/release-address",
               "host": ["{{base_url}}"],
               "path": ["v1", "loans", "{{loan_id}}", "release-address"]
-            }
+            },
+            "description": "Sets/changes the Lightning address collateral is released to once the loan is REPAID.\n\n- **First-set** (NULL → value): authenticated session is sufficient — send `collateral_release_address` only.\n- **Change** (value → value): step-up required. First call request-change-otp, then submit `collateral_release_address` + `email_otp` PLUS exactly one of `transaction_pin` / `totp_code`. Example change body:\n```\n{\n  \"collateral_release_address\": \"new@blink.sv\",\n  \"email_otp\": \"123456\",\n  \"transaction_pin\": \"246810\"\n}\n```\n- After release: 409 CollateralAlreadyReleased."
+          }
+        },
+        {
+          "name": "POST /v1/loans/:id/release-address/request-change-otp",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/loans/{{loan_id}}/release-address/request-change-otp",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "loans", "{{loan_id}}", "release-address", "request-change-otp"]
+            },
+            "description": "Emails a 6-digit OTP scoped to (user, loan) for changing an already-set collateral release address. Single-use, 15-min expiry. Submit it as `email_otp` on the PATCH above (alongside a transaction PIN or TOTP code)."
           }
         },
         {
@@ -504,7 +663,7 @@
           }
         },
         {
-          "name": "POST /v1/loans/:id/claim-inflow",
+          "name": "POST /v1/loans/:id/claim-inflow  (deprecated)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
@@ -514,13 +673,58 @@
               "host": ["{{base_url}}"],
               "path": ["v1", "loans", "{{loan_id}}", "claim-inflow"]
             },
-            "description": "**Customer claims an unmatched repayment inflow against this loan.**\n\nUse this when a customer has 2+ ACTIVE loans (PalmPay webhook can't auto-disambiguate) or when the auto-match path stored an unmatched Inflow for any reason.\n\nLooks up the most recent unmatched NGN Inflow for the authenticated user where:\n- `amount ≥ N10,000` (MIN_PARTIAL_REPAYMENT_NGN)\n- `created_at ≥ now − 24h`\n- `is_matched = false`, `source_type IS NULL`\n\nThen credits it via the same waterfall as auto-match (`match_method='CUSTOMER_CLAIM'`).\n\nResponse 200: same shape as `creditInflow` — `{ loan_id, new_status, applied_to_*, overpay_ngn, outstanding_ngn }`.\n\n**Errors:**\n- 404 Loan not found / not yours\n- 404 NO_UNMATCHED_INFLOW — nothing in the 24h window above floor\n- 409 Loan not ACTIVE"
+            "description": "**DEPRECATED** — prefer `Inflows → apply` (`POST /v1/inflows/:inflow_id/apply`), which lets the customer pick the exact inflow.\n\nStill works: delegates to `applyInflowToLoan` using the most-recent qualifying unmatched NGN Inflow for the user (≥ ₦10,000, within 24h, unmatched), credited via the standard waterfall (`match_method='CUSTOMER_CLAIM'`).\n\n**Errors:**\n- 404 Loan not found / not yours\n- 404 NO_UNMATCHED_INFLOW\n- 409 Loan not ACTIVE"
           }
         }
       ]
     },
     {
-      "name": "6. Webhooks (simulated)",
+      "name": "6. Inflows",
+      "description": "The \"stack of cash rolls\" self-serve surface. Customers list their unmatched NGN inflows (pending IOUs) and apply each to a chosen ACTIVE loan — no ops involvement.",
+      "item": [
+        {
+          "name": "GET /v1/inflows/unmatched",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const first = Array.isArray(body) ? body[0] : (body.items && body.items[0]);",
+                  "if (first && first.id) {",
+                  "  pm.collectionVariables.set('inflow_id', first.id);",
+                  "  console.log('inflow_id captured:', first.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/v1/inflows/unmatched", "host": ["{{base_url}}"], "path": ["v1", "inflows", "unmatched"] },
+            "description": "Lists the customer's unmatched NGN inflows. Each row carries `status: 'CLAIMABLE' | 'BELOW_MINIMUM'`. Untrusted inflows (re-query disagreement, credit_failed, requery_unconfirmed) are gated out — those stay ops-only. The test script captures the first inflow's id into `inflow_id`."
+          }
+        },
+        {
+          "name": "POST /v1/inflows/:inflow_id/apply",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"loan_id\": \"{{loan_id}}\"\n}" },
+            "url": {
+              "raw": "{{base_url}}/v1/inflows/{{inflow_id}}/apply",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "inflows", "{{inflow_id}}", "apply"]
+            },
+            "description": "Credits the chosen inflow against the chosen ACTIVE loan via the standard waterfall (`match_method='CUSTOMER_CLAIM'`). **Bypasses the ₦10,000 floor** — the customer is directing the apply themselves. Idempotency-Key required (auto-injected)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Webhooks (simulated)",
       "description": "Forge inbound provider webhooks with valid signatures for local testing.\n\n- Blink: Svix-signed HMAC-SHA256; pre-request script computes the signature from `blink_webhook_secret`.\n- PalmPay collection: omits the `sign` field — the provider's verifier returns true when absent. Same path is used by real PalmPay virtual account payments.\n- PalmPay payout: must include a valid `sign` (RSA-SHA1 with merchant private key). Forging is non-trivial; in production the real provider sends these.",
       "item": [
         {
@@ -580,7 +784,7 @@
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{base_url}}/v1/webhooks/blink", "host": ["{{base_url}}"], "path": ["v1", "webhooks", "blink"] },
-            "description": "**Simulates a Blink lightning receive.**\n\nPre-request script builds the body from collection variables (`blink_account_id`, `blink_wallet_btc_id`, `payment_hash`), computes a valid Svix HMAC-SHA256 signature, and sets the `svix-id` / `svix-timestamp` / `svix-signature` headers.\n\nSet `blink_settlement_amount` to override the default 21,000 sats.\n\nOn success: loan transitions PENDING_COLLATERAL → ACTIVE, a Disbursement is created, and an Outflow is dispatched via the active disbursement provider (PalmPay)."
+            "description": "**Simulates a Blink lightning receive.**\n\nPre-request script builds the body from collection variables (`blink_account_id`, `blink_wallet_btc_id`, `payment_hash`), computes a valid Svix HMAC-SHA256 signature, and sets the `svix-id` / `svix-timestamp` / `svix-signature` headers.\n\nSet `blink_settlement_amount` to override the default 21,000 sats. To confirm a top-up instead of the initial collateral, set `payment_hash` to the captured `topup_payment_hash` first.\n\nOn success (initial collateral): loan transitions PENDING_COLLATERAL → ACTIVE, a Disbursement is created, and an Outflow is dispatched via the active disbursement provider."
           }
         },
         {
@@ -605,7 +809,7 @@
               "raw": "{\n  \"orderNo\": \"pp_collection_test_0001\",\n  \"orderStatus\": 1,\n  \"createdTime\": 1713700000000,\n  \"updateTime\": 1713700000000,\n  \"currency\": \"NGN\",\n  \"orderAmount\": 5000000,\n  \"payerAccountNo\": \"0123456789\",\n  \"payerAccountName\": \"Jeremy Ikwuje\",\n  \"payerBankName\": \"GTBank\",\n  \"virtualAccountNo\": \"{{virtual_account_no}}\"\n}"
             },
             "url": { "raw": "{{base_url}}/v1/webhooks/palmpay/collection/va", "host": ["{{base_url}}"], "path": ["v1", "webhooks", "palmpay", "collection", "va"] },
-            "description": "**Simulates a PalmPay virtual-account inbound transfer (repayment).**\n\n- `orderAmount` is in **cents** — 5000000 = ₦50,000.00 (a partial repayment, well above the ₦10,000 floor).\n- `orderStatus`: **1 = SUCCESS** on the collection scheme (PALMPAY_COLLECTION_STATUS_SUCCESS). This DIVERGES from the payout scheme (where 2 = success) — the handler now uses the correct collection mapping.\n- `virtualAccountNo` must match a `user_repayment_accounts.virtual_account_no` row. Set the `virtual_account_no` collection var first (auto-populated when KYC tier-1 succeeds in your local env, or set it manually from the DB).\n\n**v1.1 matching flow** (no `accountReference`, no narration):\n1. Resolve user from `virtualAccountNo` → no match → unmatched (`no_user_for_va`), ops paged.\n2. Floor check: amount < ₦10,000 → unmatched (`below_floor`), ops paged.\n3. Find user's ACTIVE loans. Zero → unmatched. Multiple → unmatched (use claim-inflow endpoint).\n4. Exactly one → **independently re-query PalmPay's order-query API**. Only credits if PalmPay confirms status=success AND the queried amount + VA match the webhook payload. Otherwise: defer (transient) or page ops with `requery_mismatch` (definitive disagreement).\n5. Re-query passes → auto-credit via the waterfall (custody → interest → principal → overpay).\n\n`sign` is deliberately omitted — the verifier returns true when absent (collection path only).\n\nResponse: plain-text `\"success\"` (PalmPay's required ack format)."
+            "description": "**Simulates a PalmPay virtual-account inbound transfer (repayment).**\n\n- `orderAmount` is in **cents** — 5000000 = ₦50,000.00 (a partial repayment, above the ₦10,000 floor).\n- `orderStatus`: **1 = SUCCESS** on the collection scheme (PALMPAY_COLLECTION_STATUS_SUCCESS). This DIVERGES from the payout scheme (where 2 = success).\n- `virtualAccountNo` must match a `user_repayment_accounts.virtual_account_no` row. Set the `virtual_account_no` collection var first (auto-populated when KYC tier-1 succeeds in your local env, or set it manually from the DB).\n\n**Matching flow** (no narration):\n1. Reject if `orderStatus != 1`.\n2. Resolve user from `virtualAccountNo` → no match → unmatched (`no_user_for_va`), ops paged.\n3. Floor check: amount < ₦10,000 → unmatched (`below_floor`).\n4. Find user's ACTIVE loans. Zero → unmatched. Exactly one → that loan. Multiple → smart-match by amount-equals-outstanding (±₦0.50; oldest wins ties); no match → unmatched (`multiple_active_loans`).\n5. Independently re-query PalmPay's order-query API. Only credits if it confirms status=success AND amount + VA match. Otherwise: defer (transient) or page ops (`requery_mismatch`).\n6. Re-query passes → auto-credit via the waterfall (custody=0 → interest → principal → overpay).\n\n`sign` is deliberately omitted — the verifier returns true when absent (collection path only).\n\nResponse: plain-text `\"success\"` (PalmPay's required ack format)."
           }
         },
         {
@@ -636,7 +840,7 @@
       ]
     },
     {
-      "name": "7. Ops",
+      "name": "8. Ops",
       "description": "Internal ops API. All routes require an `ops_session` cookie issued via `POST /v1/ops/auth/verify-2fa` (or `enrol-2fa` on first login). Customer `session` cookies are NOT accepted — OpsGuard reads `ops_session` exclusively.",
       "item": [
         {
@@ -653,7 +857,7 @@
                   "raw": "{\n  \"email\": \"ops@bitmonie.com\",\n  \"password\": \"OpsPass123!\"\n}"
                 },
                 "url": { "raw": "{{base_url}}/v1/ops/auth/login", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "login"] },
-                "description": "Step 1 of ops login. Provision the user first via `pnpm ops:create-user --email=... --full-name=...`.\n\nResponses:\n- `202 { challenge_id }` — credentials valid, 2FA enrolled. Pass `challenge_id` to `verify-2fa`.\n- `403 OPS_2FA_ENROLMENT_REQUIRED { enrolment_token }` — first ever login. Use `enrolment_token` against `enrol-2fa` (not yet in this collection).\n- `401 OPS_INVALID_CREDENTIALS` — wrong email or password (deliberately ambiguous).\n- `403 OPS_USER_DISABLED` — `is_active=false`.\n\nThrottled 5/min per IP."
+                "description": "Step 1 of ops login. Provision the user first via `pnpm ops:create-user --email=... --full-name=...`.\n\nResponses:\n- `202 { challenge_id }` — credentials valid, 2FA enrolled. Pass `challenge_id` to `verify-2fa`.\n- `403 OPS_2FA_ENROLMENT_REQUIRED { enrolment_token }` — first ever login. Use `enrolment_token` against `start-enrolment` then `enrol-2fa`.\n- `401 OPS_INVALID_CREDENTIALS` — wrong email or password (deliberately ambiguous).\n- `403 OPS_USER_DISABLED` — `is_active=false`.\n\nThrottled 5/min per IP."
               }
             },
             {
@@ -667,7 +871,38 @@
                   "raw": "{\n  \"challenge_id\": \"\",\n  \"totp_code\": \"123456\"\n}"
                 },
                 "url": { "raw": "{{base_url}}/v1/ops/auth/verify-2fa", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "verify-2fa"] },
-                "description": "Step 2 of ops login. Redeem the `challenge_id` from `login` plus the current 6-digit TOTP from your authenticator. On success: sets `ops_session` cookie (HttpOnly, Secure, 8h fixed TTL) and returns `{ token, expires_in }`. Throttled 5/min per IP."
+                "description": "Step 2 of ops login. Redeem the `challenge_id` from `login` plus the current 6-digit TOTP. On success: sets `ops_session` cookie (HttpOnly, Secure, 8h fixed TTL) and returns `{ token, expires_in }`. Throttled 5/min per IP."
+              }
+            },
+            {
+              "name": "POST /v1/ops/auth/start-enrolment",
+              "request": {
+                "auth": { "type": "noauth" },
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"enrolment_token\": \"\"\n}" },
+                "url": { "raw": "{{base_url}}/v1/ops/auth/start-enrolment", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "start-enrolment"] },
+                "description": "First-login 2FA enrolment, step 1. Exchange the `enrolment_token` from `login`'s 403 for a TOTP secret + QR. Scan it, then confirm with `enrol-2fa`."
+              }
+            },
+            {
+              "name": "POST /v1/ops/auth/enrol-2fa",
+              "request": {
+                "auth": { "type": "noauth" },
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"enrolment_token\": \"\",\n  \"totp_code\": \"123456\"\n}" },
+                "url": { "raw": "{{base_url}}/v1/ops/auth/enrol-2fa", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "enrol-2fa"] },
+                "description": "First-login 2FA enrolment, step 2. Confirms the TOTP secret with a current code and mints the `ops_session`."
+              }
+            },
+            {
+              "name": "GET /v1/ops/auth/me",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": { "raw": "{{base_url}}/v1/ops/auth/me", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "me"] },
+                "description": "Returns the authenticated ops user's identity. Requires an `ops_session`."
               }
             },
             {
@@ -676,7 +911,7 @@
                 "method": "POST",
                 "header": [],
                 "url": { "raw": "{{base_url}}/v1/ops/auth/logout", "host": ["{{base_url}}"], "path": ["v1", "ops", "auth", "logout"] },
-                "description": "Revokes the current `OpsSession` and clears the `ops_session` cookie. Requires an authenticated ops session."
+                "description": "Revokes the current `OpsSession` and clears the `ops_session` cookie."
               }
             }
           ]
@@ -690,10 +925,9 @@
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/verifications",
+                  "raw": "{{base_url}}/v1/ops/kyc/{{ops_user_id}}/verifications",
                   "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "kyc", ":user_id", "verifications"],
-                  "variable": [{ "key": "user_id", "value": "" }]
+                  "path": ["v1", "ops", "kyc", "{{ops_user_id}}", "verifications"]
                 },
                 "description": "Read-only — no audit row written. Returns each tier verification including the raw provider response. Encrypted/hashed columns are never exposed."
               }
@@ -704,10 +938,9 @@
                 "method": "POST",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/provision-va",
+                  "raw": "{{base_url}}/v1/ops/kyc/{{ops_user_id}}/provision-va",
                   "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "kyc", ":user_id", "provision-va"],
-                  "variable": [{ "key": "user_id", "value": "" }]
+                  "path": ["v1", "ops", "kyc", "{{ops_user_id}}", "provision-va"]
                 },
                 "description": "Idempotent retry of the post-KYC repayment-VA provisioner. Existing VA → returns the existing summary, no provider call, no audit row. New VA → creates the row and writes one `ops_audit_logs` (action: `kyc.provision_va`) entry in a single Prisma transaction. 404 if the target user has no tier-1 KYC."
               }
@@ -718,10 +951,9 @@
                 "method": "POST",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/reset",
+                  "raw": "{{base_url}}/v1/ops/kyc/{{ops_user_id}}/reset",
                   "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "kyc", ":user_id", "reset"],
-                  "variable": [{ "key": "user_id", "value": "" }]
+                  "path": ["v1", "ops", "kyc", "{{ops_user_id}}", "reset"]
                 },
                 "description": "Reset a user's KYC to tier 0. Atomic: deletes verifications, flips `user.kyc_tier`, and writes one `ops_audit_logs` (action: `kyc.reset`) row — all in a single Prisma transaction."
               }
@@ -733,10 +965,9 @@
                 "header": [{ "key": "Content-Type", "value": "application/json" }],
                 "body": { "mode": "raw", "raw": "{\n  \"target_tier\": 0\n}" },
                 "url": {
-                  "raw": "{{base_url}}/v1/ops/kyc/:user_id/revoke",
+                  "raw": "{{base_url}}/v1/ops/kyc/{{ops_user_id}}/revoke",
                   "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "kyc", ":user_id", "revoke"],
-                  "variable": [{ "key": "user_id", "value": "" }]
+                  "path": ["v1", "ops", "kyc", "{{ops_user_id}}", "revoke"]
                 },
                 "description": "Revoke a user's KYC to a specific tier (0–3). Same atomicity guarantees as `reset` — writes one `ops_audit_logs` (action: `kyc.revoke`) row in the same transaction."
               }
@@ -744,8 +975,41 @@
           ]
         },
         {
+          "name": "Ops Loans",
+          "description": "Manual loan-lifecycle interventions for ops. Every action writes an `ops_audit_logs` row.",
+          "item": [
+            {
+              "name": "POST /v1/ops/loans/:loan_id/restore-from-bad-liquidation",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Price feed reported a bad SAT/NGN rate; liquidation reversed after review\"\n}" },
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/loans/{{loan_id}}/restore-from-bad-liquidation",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "loans", "{{loan_id}}", "restore-from-bad-liquidation"]
+                },
+                "description": "Reverses a LIQUIDATED loan back to ACTIVE when the liquidation was triggered by a bad rate (reason_code LIQUIDATION_REVERSED_BAD_RATE). Requires a `reason`. Writes the status-log + ops-audit rows."
+              }
+            },
+            {
+              "name": "POST /v1/ops/loans/:loan_id/release-collateral",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/loans/{{loan_id}}/release-collateral",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "loans", "{{loan_id}}", "release-collateral"]
+                },
+                "description": "Manually release collateral SAT for a REPAID loan when the auto path is wedged. Drives the same CollateralReleaseService as the post-commit hand-off and the safety-net worker; coordinated by a per-loan Redis SETNX lock. The `ops_audit_logs` row is written FIRST in its own transaction; the release attempt runs after. Refused unless the loan is REPAID, has a `collateral_release_address`, and is not already released (409). 502 if the provider rejects the send."
+              }
+            }
+          ]
+        },
+        {
           "name": "Ops Disbursements",
-          "description": "Triage queue for disbursements. The default GET filter is `ON_HOLD` — disbursements whose latest outflow attempt failed and are waiting for an ops decision. `retry` dispatches a fresh Outflow attempt against whichever provider the router currently resolves. `cancel` is terminal. `abandon-attempt` is the escape hatch for outflows stuck in PROCESSING (stub provider in dev, or a real provider gone silent past the reconciler window).",
+          "description": "Triage queue for disbursements. The default GET filter is `ON_HOLD` — disbursements whose latest outflow attempt failed and are waiting for an ops decision. `retry` dispatches a fresh Outflow attempt. `cancel` is terminal. `abandon-attempt` is the escape hatch for outflows stuck in PROCESSING. `recreate-for-loan` re-funds an ACTIVE loan whose disbursement was cancelled.",
           "item": [
             {
               "name": "GET /v1/ops/disbursements  (list — defaults to ON_HOLD)",
@@ -766,15 +1030,27 @@
               }
             },
             {
+              "name": "POST /v1/ops/disbursements/recreate-for-loan/:loan_id",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/disbursements/recreate-for-loan/{{loan_id}}",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "disbursements", "recreate-for-loan", "{{loan_id}}"]
+                },
+                "description": "Recreate a disbursement for an ACTIVE loan whose previous disbursement was terminally cancelled (or never funded the customer). Re-snapshots the loan's CURRENT default disbursement account and dispatches a fresh Disbursement + Outflow (202). Rejects when the loan isn't ACTIVE, a non-terminal disbursement already exists (409), or no default account / provider_code is set (422). Writes one `ops_audit_logs` (action: `disbursement.recreate`) row."
+              }
+            },
+            {
               "name": "GET /v1/ops/disbursements/:disbursement_id",
               "request": {
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id",
+                  "raw": "{{base_url}}/v1/ops/disbursements/{{disbursement_id}}",
                   "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "disbursements", ":disbursement_id"],
-                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
+                  "path": ["v1", "ops", "disbursements", "{{disbursement_id}}"]
                 },
                 "description": "Disbursement detail with every Outflow attempt — per-attempt `provider`, `provider_reference`, `failure_reason`, `failure_code`, `initiated_at`, `confirmed_at`. Read-only — no audit row. Use this to confirm the latest attempt's status before retrying or cancelling."
               }
@@ -785,27 +1061,11 @@
                 "method": "POST",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id/retry",
+                  "raw": "{{base_url}}/v1/ops/disbursements/{{disbursement_id}}/retry",
                   "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "disbursements", ":disbursement_id", "retry"],
-                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
+                  "path": ["v1", "ops", "disbursements", "{{disbursement_id}}", "retry"]
                 },
                 "description": "Retry an ON_HOLD disbursement. Creates a new Outflow with `attempt_number + 1`, dispatches against whichever provider the router currently resolves, and writes one `ops_audit_logs` (action: `disbursement.retry`) row. Returns `202` — the new outflow runs asynchronously and resolves via webhook (or via the reconciler worker if the webhook is lost). 409 if the disbursement is not ON_HOLD."
-              }
-            },
-            {
-              "name": "POST /v1/ops/disbursements/:disbursement_id/cancel",
-              "request": {
-                "method": "POST",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Wrong account number — customer confirmed via support\"\n}" },
-                "url": {
-                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id/cancel",
-                  "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "disbursements", ":disbursement_id", "cancel"],
-                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
-                },
-                "description": "Terminally cancel a disbursement. Captures `reason` + `cancelled_by_ops_user_id` on the row and writes one `ops_audit_logs` (action: `disbursement.cancel`) entry in the SAME Prisma transaction. After this, no further attempts. 409 if the disbursement is already SUCCESSFUL or CANCELLED."
               }
             },
             {
@@ -815,12 +1075,25 @@
                 "header": [{ "key": "Content-Type", "value": "application/json" }],
                 "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Stub provider stuck — switching to PalmPay\"\n}" },
                 "url": {
-                  "raw": "{{base_url}}/v1/ops/disbursements/:disbursement_id/abandon-attempt",
+                  "raw": "{{base_url}}/v1/ops/disbursements/{{disbursement_id}}/abandon-attempt",
                   "host": ["{{base_url}}"],
-                  "path": ["v1", "ops", "disbursements", ":disbursement_id", "abandon-attempt"],
-                  "variable": [{ "key": "disbursement_id", "value": "{{disbursement_id}}" }]
+                  "path": ["v1", "ops", "disbursements", "{{disbursement_id}}", "abandon-attempt"]
                 },
-                "description": "Treat the in-flight outflow attempt (PENDING or PROCESSING) as failed and move the disbursement to ON_HOLD. Use when an attempt is genuinely stuck — stub provider in dev, or a real provider gone silent past the reconciler window. State transition reuses `OutflowsService.handleFailure`, so the resulting disbursement/alert state is identical to a webhook-reported failure (with `failure_code=OPS_ABANDONED`). Writes one `ops_audit_logs` (action: `disbursement.abandon_attempt`) row. 409 if the disbursement is terminal or has no active outflow. Follow with `retry` or `cancel`."
+                "description": "Treat the in-flight outflow attempt (PENDING or PROCESSING) as failed and move the disbursement to ON_HOLD. Use when an attempt is genuinely stuck — stub provider in dev, or a real provider gone silent past the reconciler window. State transition reuses `OutflowsService.handleFailure` (with `failure_code=OPS_ABANDONED`). Writes one `ops_audit_logs` (action: `disbursement.abandon_attempt`) row. 409 if the disbursement is terminal or has no active outflow. Follow with `retry` or `cancel`."
+              }
+            },
+            {
+              "name": "POST /v1/ops/disbursements/:disbursement_id/cancel",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Wrong account number — customer confirmed via support\"\n}" },
+                "url": {
+                  "raw": "{{base_url}}/v1/ops/disbursements/{{disbursement_id}}/cancel",
+                  "host": ["{{base_url}}"],
+                  "path": ["v1", "ops", "disbursements", "{{disbursement_id}}", "cancel"]
+                },
+                "description": "Terminally cancel a disbursement. Captures `reason` + `cancelled_by_ops_user_id` on the row and writes one `ops_audit_logs` (action: `disbursement.cancel`) entry in the SAME Prisma transaction. After this, no further attempts. 409 if the disbursement is already SUCCESSFUL or CANCELLED."
               }
             }
           ]

@@ -23,8 +23,9 @@ import {
   CurrentOpsUser,
   type AuthenticatedOpsUser,
 } from '@/common/decorators/current-ops-user.decorator';
-import { OpsLoansService } from './ops-loans.service';
+import { OpsLoansService, type OpsLoanQuoteResult } from './ops-loans.service';
 import { RestoreFromBadLiquidationDto } from './dto/restore-from-bad-liquidation.dto';
+import { CreateLoanQuoteDto } from './dto/create-loan-quote.dto';
 
 function readRequestId(req: Request): string | null {
   const raw = req.headers['x-request-id'];
@@ -38,6 +39,29 @@ function readRequestId(req: Request): string | null {
 @ApiCookieAuth('ops_session')
 export class OpsLoansController {
   constructor(private readonly service: OpsLoansService) {}
+
+  @Post('quote')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Generate an ops-managed loan quote (off-app / white-glove customer) — not tied to a registered account',
+    description:
+      'Takes a customer name + email (audit trail only) and a principal, returns the full fee + collateral breakdown and a real fixed-amount Lightning collateral invoice. Persists NOTHING — no Loan, no User, no PaymentRequest. A loan.create_quote row is written to ops_audit_logs capturing the customer identity, principal and invoice reference. IMPORTANT: because the invoice has no backing PaymentRequest, SAT paid to it will NOT auto-match — the collateral webhook lands as an unmatched Inflow and pages ops, who then reconcile and provision the real loan out-of-band. Use for customers who cannot use the web app or want an ops-managed service. The N10M self-serve ceiling and N10k floor still apply (rejected with 400).',
+  })
+  @ApiResponse({ status: 200, description: 'Quote + collateral invoice returned' })
+  @ApiResponse({ status: 400, description: 'Principal below minimum or above the self-serve maximum' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 500, description: 'Collateral provider failed to mint the invoice' })
+  async createLoanQuote(
+    @CurrentOpsUser() ops_user: AuthenticatedOpsUser,
+    @Body() dto: CreateLoanQuoteDto,
+    @Req() req: Request,
+  ): Promise<OpsLoanQuoteResult> {
+    return this.service.createLoanQuote(dto, {
+      ops_user_id: ops_user.id,
+      request_id:  readRequestId(req),
+      ip_address:  req.ip ?? null,
+    });
+  }
 
   @Post(':loan_id/restore-from-bad-liquidation')
   @HttpCode(HttpStatus.OK)

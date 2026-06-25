@@ -15,7 +15,7 @@ import { PrismaService } from '@/database/prisma.service';
 import { REDIS_CLIENT } from '@/database/redis.module';
 import { displayNgn } from '@/common/formatting/ngn-display';
 import { PriceFeedService } from '@/modules/price-feed/price-feed.service';
-import { CalculatorService } from './calculator.service';
+import { CalculatorService, type CalculatorResult } from './calculator.service';
 import { AccrualService, type AccrualRepaymentInput } from './accrual.service';
 import { LoanStatusService } from './loan-status.service';
 import { CollateralReleaseService } from './collateral-release.service';
@@ -26,6 +26,7 @@ import {
 } from '@/modules/payment-requests/collateral.provider.interface';
 import { PRICE_QUOTE_PROVIDER, type PriceQuoteProvider } from './price-quote.provider.interface';
 import {
+  COLLATERAL_INVOICE_EXPIRY_SEC,
   COLLATERAL_TOPUP_EXPIRY_SEC,
   INFLOW_OUTSTANDING_MATCH_TOLERANCE_NGN,
   KYC_EXEMPTION_THRESHOLD_NGN,
@@ -117,6 +118,15 @@ export interface RepaymentInstructionsResult {
     provider:             string;
   };
   minimum_partial_repayment_ngn: string;
+}
+
+// Stateless ops-quote invoice — minted via the collateral provider but never
+// persisted as a PaymentRequest (see LoansService.createOpsQuote).
+export interface OpsQuoteInvoice {
+  provider_reference: string;
+  payment_request:    string;
+  receiving_address:  string;
+  expires_at:         Date;
 }
 
 @Injectable()
@@ -288,6 +298,55 @@ export class LoansService {
         daily_interest_ngn:      displayNgn(calc.daily_interest_ngn, 'ceil'),
         daily_total_ngn:         displayNgn(daily_total_ngn, 'ceil'),
         amount_to_receive_ngn:   displayNgn(calc.amount_to_receive_ngn, 'floor'),
+      },
+    };
+  }
+
+  // Ops-managed loan quote (white-glove / off-app customers). Computes the same
+  // fee + collateral breakdown as the public calculator AND mints a real
+  // fixed-amount Lightning collateral invoice — but persists NOTHING: no Loan,
+  // no PaymentRequest, no User. There is no registered account behind this.
+  //
+  // CONSEQUENCE (intentional, per product call): because no PaymentRequest row
+  // exists, SAT sent to this invoice will NOT auto-match — the collateral
+  // webhook lands as an unmatched Inflow and pages ops (§5.7). Ops reconciles
+  // and provisions the real loan out-of-band. This endpoint is a quote +
+  // payable artifact for high-touch customers, not a self-driving loan.
+  async createOpsQuote(params: {
+    principal_ngn: Decimal;
+  }): Promise<{ calc: CalculatorResult; invoice: OpsQuoteInvoice }> {
+    const [sat_rates, btc_usd_rate] = await Promise.all([
+      this.price_feed.getCurrentRate(AssetPair.SAT_NGN),
+      this.price_quote.getBtcUsdRate(),
+    ]);
+
+    const calc = this.calculator.calculate({
+      principal_ngn: params.principal_ngn,
+      sat_ngn_rate:  sat_rates.rate_sell,
+      btc_usd_rate,
+    });
+
+    // Direct provider call (through the interface, never the SDK — §7.2). We
+    // deliberately bypass PaymentRequestsService.create here: that helper
+    // persists a PaymentRequest row, and this quote is stateless by design.
+    let invoice: Awaited<ReturnType<CollateralProvider['createPaymentRequest']>>;
+    try {
+      invoice = await this.collateral_provider.createPaymentRequest({
+        amount_sat:     calc.collateral_amount_sat,
+        memo:           `Bitmonie loan collateral (ops quote) — ${params.principal_ngn.toNumber().toLocaleString('en-NG')} NGN`,
+        expiry_seconds: COLLATERAL_INVOICE_EXPIRY_SEC,
+      });
+    } catch {
+      throw new CollateralInvoiceFailedException();
+    }
+
+    return {
+      calc,
+      invoice: {
+        provider_reference: invoice.provider_reference,
+        payment_request:    invoice.payment_request,
+        receiving_address:  invoice.receiving_address,
+        expires_at:         invoice.expires_at,
       },
     };
   }

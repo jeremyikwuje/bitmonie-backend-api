@@ -68,7 +68,12 @@ function makeService(loan: LoanRow | null) {
       new Error('collateral_release.releaseForLoan() is not expected on this code path'),
     ),
   } as unknown as import('@/modules/loans/collateral-release.service').CollateralReleaseService;
-  const service = new OpsLoansService(prisma as never, ops_audit, collateral_release);
+  const loans = {
+    createOpsQuote: jest.fn().mockRejectedValue(
+      new Error('loans.createOpsQuote() is not expected on this code path'),
+    ),
+  } as unknown as import('@/modules/loans/loans.service').LoansService;
+  const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, loans);
   return { service, prisma, tx, audit_write };
 }
 
@@ -222,7 +227,12 @@ describe('OpsLoansService.releaseCollateral', () => {
       releaseForLoan: release_mock,
     } as unknown as CollateralReleaseService;
 
-    const service = new OpsLoansService(prisma as never, ops_audit, collateral_release);
+    const loans = {
+      createOpsQuote: jest.fn().mockRejectedValue(
+        new Error('loans.createOpsQuote() is not expected on this code path'),
+      ),
+    } as unknown as import('@/modules/loans/loans.service').LoansService;
+    const service = new OpsLoansService(prisma as never, ops_audit, collateral_release, loans);
     return { service, audit_write, release_mock };
   }
 

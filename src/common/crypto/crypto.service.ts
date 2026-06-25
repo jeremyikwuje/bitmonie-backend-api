@@ -14,6 +14,7 @@ const AUTH_TAG_LENGTH = 16;
 @Injectable()
 export class CryptoService implements OnModuleInit {
   private encryption_key!: Buffer;
+  private kyc_id_pepper!: string;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -27,6 +28,15 @@ export class CryptoService implements OnModuleInit {
       throw new Error('ENCRYPTION_KEY must be 32 bytes (64 hex chars) for AES-256');
     }
     this.encryption_key = key;
+
+    const pepper_hex = this.config.get<string>('KYC_ID_HASH_PEPPER');
+    if (!pepper_hex) {
+      throw new Error('KYC_ID_HASH_PEPPER is required');
+    }
+    if (Buffer.from(pepper_hex, 'hex').length !== 32) {
+      throw new Error('KYC_ID_HASH_PEPPER must be 32 bytes (64 hex chars)');
+    }
+    this.kyc_id_pepper = pepper_hex;
   }
 
   encrypt(plaintext: string): string {
@@ -50,5 +60,14 @@ export class CryptoService implements OnModuleInit {
 
   hashSha256(value: string, salt = ''): string {
     return createHash('sha256').update(`${value}${salt}`).digest('hex');
+  }
+
+  // Deterministic hash for BVN/NIN/passport/drivers-license numbers. Same input
+  // → same output, so a unique index on the column enforces "one user per ID".
+  // The pepper is server-side only (not stored in the DB), so a row-level leak
+  // of `id_number_hash` does not let an attacker brute-force the 11-digit
+  // BVN/NIN keyspace — they would also need the pepper from app secrets.
+  hashKycIdNumber(id_number: string): string {
+    return createHash('sha256').update(`${this.kyc_id_pepper}${id_number}`).digest('hex');
   }
 }

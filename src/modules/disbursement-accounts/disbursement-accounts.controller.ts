@@ -37,18 +37,18 @@ export class DisbursementAccountsController {
 
   @Post()
   @ApiOperation({
-    summary: 'Add a disbursement account (email-verified users welcome)',
+    summary: 'Add a disbursement account',
     description:
-      'No KYC required. For BANK and MOBILE_MONEY kinds:\n' +
-      '- If user has KYC tier-1: account name is fetched from the rail and matched against KYC legal name (85%+ required). ' +
-      'Response includes account_holder_name and name_match_score.\n' +
-      '- If user has no KYC (kyc_tier=0): name verification is skipped. ' +
-      'account_holder_name and name_match_score will be null. Account is created without name validation.\n' +
-      'CRYPTO_ADDRESS always skips name lookup regardless of KYC status.',
+      'BANK and MOBILE_MONEY kinds require tier-1 KYC (verified BVN/NIN): the account name is fetched ' +
+      'from the rail and matched against the KYC legal name (85%+ required). Response includes ' +
+      'account_holder_name and name_match_score. A user without tier-1 KYC (kyc_tier=0) is rejected with ' +
+      'KYC_UPGRADE_REQUIRED.\n' +
+      'CRYPTO_ADDRESS requires no KYC and skips name lookup.',
   })
-  @ApiResponse({ status: 201, description: 'Account added (name verified if KYC present, unverified otherwise)' })
+  @ApiResponse({ status: 201, description: 'Account added (name-matched for BANK/MOBILE_MONEY)' })
   @ApiResponse({ status: 400, description: 'Max accounts reached' })
-  @ApiResponse({ status: 422, description: 'Name mismatch (only if user has KYC)' })
+  @ApiResponse({ status: 403, description: 'KYC tier-1 required (BANK/MOBILE_MONEY)' })
+  @ApiResponse({ status: 422, description: 'Name mismatch' })
   async addAccount(
     @Req() req: AuthRequest,
     @Body() dto: AddDisbursementAccountDto,

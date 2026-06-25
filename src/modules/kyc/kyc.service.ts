@@ -1,5 +1,4 @@
 import { Injectable, Inject, HttpStatus, Logger } from '@nestjs/common';
-import { createHash, randomBytes } from 'crypto';
 import { KycIdType, KycStatus, type Prisma } from '@prisma/client';
 import { PrismaService } from '@/database/prisma.service';
 import { CryptoService } from '@/common/crypto/crypto.service';
@@ -12,11 +11,13 @@ import {
   BitmonieException,
   KycAlreadyVerifiedException,
   KycBiodataMismatchException,
+  KycIdNumberTakenException,
   KycPendingException,
 } from '@/common/errors/bitmonie.errors';
 import { DISBURSEMENT_NAME_MATCH_THRESHOLD } from '@/common/constants';
 
 const TIER_1 = 1;
+const PRISMA_UNIQUE_VIOLATION = 'P2002';
 
 function normalize_dob(raw: string): string | null {
   // Accept YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY → normalise to YYYY-MM-DD
@@ -59,9 +60,23 @@ export class KycService {
     if (existing?.status === KycStatus.VERIFIED) throw new KycAlreadyVerifiedException();
     if (existing?.status === KycStatus.UNDER_REVIEW) throw new KycPendingException();
 
-    const salt = randomBytes(16).toString('hex');
-    const id_number_hash = createHash('sha256').update(salt + dto.id_number).digest('hex');
+    const id_number_hash = this.crypto_service.hashKycIdNumber(dto.id_number);
     const encrypted_id_number = this.crypto_service.encrypt(dto.id_number);
+
+    // Cross-user uniqueness pre-check — fail fast before burning a provider
+    // call. The partial unique index on (id_type, id_number_hash) is the
+    // race-proof guarantee; this check just gives a clean 409 in the common
+    // case. Same user re-submitting their own ID is allowed (their existing
+    // row will be updated by the upsert below).
+    const claimed_by_other = await this.prisma.kycVerification.findFirst({
+      where: {
+        id_type: dto.id_type,
+        id_number_hash,
+        user_id: { not: user_id },
+      },
+      select: { id: true },
+    });
+    if (claimed_by_other) throw new KycIdNumberTakenException();
 
     let legal_name: string;
     let provider_reference: string;
@@ -91,47 +106,57 @@ export class KycService {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.kycVerification.upsert({
-        where: { user_id_tier: { user_id, tier: TIER_1 } },
-        create: {
-          user_id,
-          tier: TIER_1,
-          id_type: dto.id_type,
-          id_number_hash,
-          encrypted_id_number,
-          legal_name,
-          date_of_birth: verified_dob,
-          provider_reference,
-          provider_raw_response: provider_raw_response as object,
-          status: KycStatus.VERIFIED,
-          verified_at: new Date(),
-        },
-        update: {
-          id_type: dto.id_type,
-          id_number_hash,
-          encrypted_id_number,
-          legal_name,
-          date_of_birth: verified_dob,
-          provider_reference,
-          provider_raw_response: provider_raw_response as object,
-          status: KycStatus.VERIFIED,
-          verified_at: new Date(),
-          failure_reason: null,
-        },
-      });
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.kycVerification.upsert({
+          where: { user_id_tier: { user_id, tier: TIER_1 } },
+          create: {
+            user_id,
+            tier: TIER_1,
+            id_type: dto.id_type,
+            id_number_hash,
+            encrypted_id_number,
+            legal_name,
+            date_of_birth: verified_dob,
+            provider_reference,
+            provider_raw_response: provider_raw_response as object,
+            status: KycStatus.VERIFIED,
+            verified_at: new Date(),
+          },
+          update: {
+            id_type: dto.id_type,
+            id_number_hash,
+            encrypted_id_number,
+            legal_name,
+            date_of_birth: verified_dob,
+            provider_reference,
+            provider_raw_response: provider_raw_response as object,
+            status: KycStatus.VERIFIED,
+            verified_at: new Date(),
+            failure_reason: null,
+          },
+        });
 
-      await tx.user.update({
-        where: { id: user_id },
-        data: {
-          kyc_tier: TIER_1,
-          first_name: dto.first_name,
-          middle_name: dto.middle_name ?? null,
-          last_name: dto.last_name,
-          date_of_birth: verified_dob,
-        },
+        await tx.user.update({
+          where: { id: user_id },
+          data: {
+            kyc_tier: TIER_1,
+            first_name: dto.first_name,
+            middle_name: dto.middle_name ?? null,
+            last_name: dto.last_name,
+            date_of_birth: verified_dob,
+          },
+        });
       });
-    });
+    } catch (err) {
+      if (
+        err && typeof err === 'object' && 'code' in err &&
+        (err as { code: string }).code === PRISMA_UNIQUE_VIOLATION
+      ) {
+        throw new KycIdNumberTakenException();
+      }
+      throw err;
+    }
 
     // Provision the customer's permanent NGN repayment VA. Wrapped — a provider
     // failure here must not fail the KYC verification itself; ops will retry.

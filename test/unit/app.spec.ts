@@ -13,6 +13,7 @@ describe('AppModule (smoke)', () => {
     process.env.REDIS_URL = 'redis://localhost:6379';
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
     process.env.SESSION_SECRET = '0'.repeat(64);
+    process.env.KYC_ID_HASH_PEPPER = '0'.repeat(64);
   });
 
   it('compiles the module graph with mocked Prisma + Redis', async () => {

@@ -21,8 +21,6 @@ import type { User } from '@prisma/client';
 import { AssetPair } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { SessionGuard } from '@/common/guards/session.guard';
-import { KycTierGuard } from '@/common/guards/kyc-tier.guard';
-import { RequiresKyc } from '@/common/decorators/requires-kyc.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { displayNgn } from '@/common/formatting/ngn-display';
 import { LoansService } from './loans.service';
@@ -46,13 +44,15 @@ export class LoansController {
   ) {}
 
   @Post('checkout')
-  @UseGuards(SessionGuard, KycTierGuard)
-  @RequiresKyc(1)
+  @UseGuards(SessionGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a new loan and generate a collateral payment request' })
+  @ApiOperation({
+    summary: 'Create a new loan and generate a collateral payment request',
+    description: 'KYC tier-1 (BVN/NIN) is required for loans > N500,000. Loans ≤ N500,000 can be created with email verification only.',
+  })
   @ApiResponse({ status: 201, description: 'Loan created — payment request returned' })
-  @ApiResponse({ status: 422, description: 'Price stale / disbursement account missing' })
+  @ApiResponse({ status: 422, description: 'Price stale / disbursement account missing / KYC required for amount > N500k' })
   async checkoutLoan(
     @CurrentUser() user: User,
     @Body() dto: CheckoutLoanDto,

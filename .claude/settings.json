@@ -47,10 +47,25 @@
       "Bash(awk -F= '/^MAILGUN_DOMAIN=/ {print \"MAILGUN_DOMAIN length:\", length\\($2\\), \"value_starts_with:\", substr\\($2, 1, 3\\)} /^MAILGUN_REGION=/ {print \"MAILGUN_REGION:\", $2} /^MAILGUN_FROM_ADDRESS=/ {print \"MAILGUN_FROM_ADDRESS:\", $2}' /Users/jeremy/source/apps/bitmonie/.env)",
       "Bash(awk -F= '/^MAILGUN_DOMAIN=/ {n=length\\($2\\); for \\(i=1; i<=n; i++\\) {c=substr\\($2,i,1\\); if \\(c ~ /[a-zA-Z0-9.-]/\\) printf \"%s\", c; else printf \"[\\\\\\\\x%02x]\", ord\\(c\\)} print \"\"} function ord\\(c\\) {return sprintf\\(\"%d\", index\\(\" !\\\\\"#$%&'\\\\''\\(\\)*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\\\\\\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\", c\\) + 31\\)}' /Users/jeremy/source/apps/bitmonie/.env)",
       "Bash(echo \"exit:$?\")",
-      "Bash(echo \"TSC_EXIT=$?\")"
+      "Bash(echo \"TSC_EXIT=$?\")",
+      "Bash(psql postgresql://bitmonie:bitmonie@localhost:55432/bitmonie -P pager=off -c ' *)",
+      "Bash(psql postgresql://bitmonie:bitmonie@localhost:55432/bitmonie_db -P pager=off -c ' *)",
+      "Bash(psql \"postgresql://bitmonie:bitmonie@localhost:55432/postgres\" -P pager=off -c \"\\\\l\")",
+      "Bash(sed -i '' -e 's/const onboarding_step = $derived.by\\(\\(\\): '\\\\''kyc'\\\\'' | '\\\\''add_bank'\\\\'' | null => {/const onboarding_step = $derived.by\\(\\(\\): '\\\\''add_bank'\\\\'' | null => {/' -e '/if \\($profile.data.kyc_tier < 1\\) return '\\\\''kyc'\\\\'';/d' '/Users/jeremy/source/apps/bitmonie-web/src/routes/\\(app\\)/+layout.svelte')",
+      "Bash(sed -n '64,73p' /Users/jeremy/source/apps/bitmonie-web/src/routes/\\\\\\(app\\\\\\)/+layout.svelte)",
+      "Bash(\n# Remove the kyc_open state variable and related effect\nsed -i '' \\\\\n  -e '/let kyc_open = \\\\$state\\(false\\);/d' \\\\\n  /Users/jeremy/source/apps/bitmonie-web/src/routes/\\\\\\(app\\\\\\)/+layout.svelte\n\n# Check the result\necho \"=== After removing kyc_open state ===\"\ngrep -n \"add_bank_open\\\\|kyc_open\\\\|prev_onboarding_step\" /Users/jeremy/source/apps/bitmonie-web/src/routes/\\\\\\(app\\\\\\)/+layout.svelte | head -10\n)",
+      "Bash(sed -i '' -f /tmp/layout_fix.sed /Users/jeremy/source/apps/bitmonie-web/src/routes/\\\\\\(app\\\\\\)/+layout.svelte)",
+      "Bash(sed -n '130,150p' /Users/jeremy/source/apps/bitmonie-web/src/routes/\\\\\\(app\\\\\\)/+layout.svelte)",
+      "Bash(sed -i '' -e '/import KycSheet from/d' '/Users/jeremy/source/apps/bitmonie-web/src/routes/\\(app\\)/+layout.svelte')",
+      "Bash(sed -i '' -e '/<KycSheet bind:open={kyc_open} \\\\/>/d' '/Users/jeremy/source/apps/bitmonie-web/src/routes/\\(app\\)/+layout.svelte')",
+      "Bash(sed -n '1,25p' /Users/jeremy/source/apps/bitmonie-web/src/routes/\\\\\\(app\\\\\\)/+layout.svelte)",
+      "Bash(git commit -m 'fix: export DisbursementAccountUnverifiedException and remove duplicate *)",
+      "Bash(git commit -m 'feat\\(low-kyc\\): remove KYC guard from disbursement accounts endpoint *)"
     ],
     "additionalDirectories": [
-      "/private/tmp"
+      "/private/tmp",
+      "/Users/jeremy/source/apps/bitmonie-web/src/lib",
+      "/Users/jeremy/source/apps/bitmonie-web/src/routes/(app)"
     ]
   }
 }

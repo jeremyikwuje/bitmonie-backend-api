@@ -41,7 +41,7 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 | `auth` | Passwordless customer login (email OTP), sessions, 2FA (TOTP), transaction PIN — see §5.13 |
 | `kyc` | BVN/NIN verification — required before first loan; provisions the user's permanent NGN repayment VA on tier-1 success |
 | `user-repayment-accounts` | One permanent PalmPay virtual account per user (tied to BVN), reused across every loan |
-| `disbursement-accounts` | Add/remove/default payout destinations (BANK / MOBILE_MONEY / CRYPTO_ADDRESS) — max 5 per kind; name-matched against User row first, KYC legal_name fallback |
+| `disbursement-accounts` | Add/remove/default payout destinations (BANK / MOBILE_MONEY / CRYPTO_ADDRESS) — max 5 per kind. BANK + MOBILE_MONEY require tier-1 KYC to add (kyc_tier=0 → `KYC_UPGRADE_REQUIRED`) and are name-matched against User row first, KYC legal_name fallback. CRYPTO_ADDRESS needs no KYC and skips name lookup |
 | `price-feed` | SAT/NGN, BTC/NGN, USDT/NGN — polled every 5 min |
 | `loans` | Full loan lifecycle: checkout → collateral → disbursement → accrual → partial / full repayment → release. Includes `add-collateral` (top-up) and `claim-inflow` (customer disambiguation) endpoints |
 | `payment-requests` | Customer-facing collateral payment instructions (initial loan collateral) |
@@ -49,7 +49,7 @@ You think in **loan lifecycles, not CRUD**. Every write is a financial event —
 | `disbursements` + `outflows` | Two-layer outbound payment system |
 | `webhooks` | Inbound provider events (collateral, disbursement, collection) |
 | `ops-alerts` | Internal ops-paging emails (unmatched inflows, credit failures); uses the same `EmailProvider` interface as auth OTP |
-| `workers` | Price feed, **liquidation monitor** (also fires customer coverage-tier nudges at 1.20 / 1.15 with recovery-aware Redis dedupe AND runs the collateral-release cycle for REPAID loans with NULL `collateral_released_at` + address SET), payment-request invoice expiry, **outflow-reconciler** (stale PROCESSING outflows) |
+| `workers` | Price feed, **liquidation monitor** (also fires customer coverage-tier nudges at 1.20 / 1.15 throttled per tier by an 8h Redis time cooldown — max 3 emails/day/tier, NOT recovery-aware — AND runs the collateral-release cycle for REPAID loans with NULL `collateral_released_at` + address SET), payment-request invoice expiry, **outflow-reconciler** (stale PROCESSING outflows) |
 | `calculator` | Public loan quote engine — daily rates only, no projections (loans are open-term) — no auth |
 | `get-quote` | Large-loan enquiry form (> N10M) — human follow-up |
 
@@ -332,7 +332,7 @@ Terminal: `REPAID`, `LIQUIDATED`, `EXPIRED`, `CANCELLED`. No further transitions
 | `ACTIVE` | `REPAID` | Final repayment closes outstanding to 0 | `REPAYMENT_COMPLETED` |
 | `ACTIVE` | `LIQUIDATED` | Liquidation monitor — `collateral_ngn < 1.10 × outstanding` | `LIQUIDATION_TRIGGERED` |
 
-**Open-term loans (v1.2).** No `due_at`, no maturity worker, no 7-day grace. The only forced-close path is LTV breach (`collateral_ngn < 1.10 × total outstanding`). Customer-facing nudges fire from the same liquidation-monitor sweep at coverage `< 1.20` (WARN) and `< 1.15` (MARGIN_CALL); recovery-aware dedupe via Redis. Daily interest (0.3% on outstanding principal) and daily custody accrue until repayment — even at flat BTC, accrual eventually pushes outstanding past the liquidation line, so loans self-terminate. See `docs/anytime-loans.md`.
+**Open-term loans (v1.2).** No `due_at`, no maturity worker, no 7-day grace. The only forced-close path is LTV breach (`collateral_ngn < 1.10 × total outstanding`). Customer-facing nudges fire from the same liquidation-monitor sweep at coverage `< 1.20` (WARN) and `< 1.15` (MARGIN_CALL); each tier throttled by an 8h Redis time cooldown (`COVERAGE_NOTIFY_COOLDOWN_SEC`) — at most 3 emails/day/tier, NOT recovery-aware. Daily interest (0.3% on outstanding principal) and daily custody accrue until repayment — even at flat BTC, accrual eventually pushes outstanding past the liquidation line, so loans self-terminate. See `docs/anytime-loans.md`.
 
 `StatusTrigger` enum: `CUSTOMER | SYSTEM | COLLATERAL_WEBHOOK | DISBURSEMENT_WEBHOOK` (role, not provider).
 
@@ -537,8 +537,15 @@ CUSTODY_FEE_PER_100_USD_NGN  = 0               // removed — no custody charge.
 MIN_LOAN_NGN                 = 10_000
 MAX_SELFSERVE_LOAN_NGN       = 10_000_000
 MIN_PARTIAL_REPAYMENT_NGN    = 10_000          // floor; below → unmatched, ops-paged
-// Customer-facing coverage-tier nudges (recovery-aware Redis dedupe in
-// the liquidation-monitor worker). Liquidation still triggers at 1.10.
+KYC_EXEMPTION_THRESHOLD_NGN  = 500_000         // low-KYC: loans ≤ this don't require tier-1 KYC
+                                                // Used in: loans.service.ts checkoutLoan() (backend gate)
+                                                // Mirrored: bitmonie-web/src/lib/constants.ts (frontend)
+                                                // NOTE: adding a BANK/MOBILE_MONEY payout account now requires tier-1 KYC,
+                                                // so new tier-0 users can't receive a loan even under this exemption
+                                                // (only grandfathered accounts added pre-gate still work).
+// Customer-facing coverage-tier nudges (per-tier 8h Redis time cooldown in
+// the liquidation-monitor worker — max 3 emails/day/tier, NOT recovery-aware).
+// Liquidation still triggers at 1.10.
 COVERAGE_WARN_TIER           = 1.20            // informational "your collateral is dropping"
 COVERAGE_MARGIN_CALL_TIER    = 1.15            // urgent "top up or repay immediately"
 
@@ -625,7 +632,7 @@ Each phase must have passing tests before the next begins.
 | Phase | Build | Acceptance |
 |---|---|---|
 | 17 | Drop `loans.duration_days` + `loans.due_at`; remove `MIN/MAX_LOAN_DURATION_DAYS` + `LOAN_GRACE_PERIOD_DAYS` + `MATURITY_GRACE_*` reason codes; delete `loan-reminder` worker + reminder templates; strip duration from `CheckoutLoanDto` + `CalculatorService` (single output shape, daily rates only) | Migration clean, `tsc --noEmit` clean, jest green |
-| 18 | Extend `liquidation-monitor` with three-tier coverage evaluation (WARN < 1.20, MARGIN_CALL < 1.15, LIQUIDATE < 1.10) + recovery-aware Redis dedupe; add `notifyCoverageWarn` + `notifyMarginCall` to `LoanNotificationsService` | Each tier fires once per crossing; recovery clears dedupe; emails sent via worker's `EmailProvider` |
+| 18 | Extend `liquidation-monitor` with three-tier coverage evaluation (WARN < 1.20, MARGIN_CALL < 1.15, LIQUIDATE < 1.10) + per-tier 8h Redis time cooldown (max 3 emails/day/tier); add `notifyCoverageWarn` + `notifyMarginCall` to `LoanNotificationsService` | Each tier fires at most once per cooldown window; emails sent via worker's `EmailProvider` |
 
 ---
 

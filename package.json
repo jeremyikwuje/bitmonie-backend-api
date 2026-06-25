@@ -38,6 +38,7 @@
     "ops:restore-bad-liquidations": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/restore-bad-rate-liquidations.ts",
     "ops:replay-dropped-collections": "ts-node -r dotenv/config -r tsconfig-paths/register scripts/replay-dropped-palmpay-collections.ts",
     "ops:release-collateral":         "ts-node -r dotenv/config -r tsconfig-paths/register scripts/release-collateral-for-repaid-loan.ts",
+    "ops:rehash-kyc-ids":             "ts-node -r dotenv/config -r tsconfig-paths/register scripts/rehash-kyc-id-numbers.ts",
     "ops:clean-va-names":             "ts-node -r dotenv/config -r tsconfig-paths/register scripts/clean-repayment-account-names.ts"
   },
   "dependencies": {

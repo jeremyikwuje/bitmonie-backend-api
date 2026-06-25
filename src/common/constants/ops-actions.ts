@@ -12,6 +12,7 @@ export const OPS_ACTION = {
   DISBURSEMENT_RECREATE:        'disbursement.recreate',
   LOAN_RESTORE_BAD_LIQUIDATION: 'loan.restore_bad_liquidation',
   LOAN_RELEASE_COLLATERAL:      'loan.release_collateral',
+  LOAN_CREATE_QUOTE:            'loan.create_quote',
 } as const;
 
 export type OpsAction = (typeof OPS_ACTION)[keyof typeof OPS_ACTION];
@@ -19,6 +20,7 @@ export type OpsAction = (typeof OPS_ACTION)[keyof typeof OPS_ACTION];
 export const OPS_TARGET_TYPE = {
   USER:         'user',
   LOAN:         'loan',
+  LOAN_QUOTE:   'loan_quote',
   DISBURSEMENT: 'disbursement',
 } as const;
 
