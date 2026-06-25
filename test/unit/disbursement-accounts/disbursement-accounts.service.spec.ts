@@ -33,7 +33,7 @@ const CRYPTO_DTO = {
 };
 
 function make_prisma() {
-  return {
+  const prisma = {
     user: { findUniqueOrThrow: jest.fn() },
     kycVerification: {
       findUnique: jest.fn().mockResolvedValue({ legal_name: 'Ada Obi' }),
@@ -43,19 +43,15 @@ function make_prisma() {
       create: jest.fn(),
       findMany: jest.fn(),
       findFirst: jest.fn(),
-      update: jest.fn(),
-      updateMany: jest.fn(),
-      delete: jest.fn(),
+      update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({}),
+      delete: jest.fn().mockResolvedValue({}),
     },
-    $transaction: jest.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        disbursementAccount: {
-          updateMany: jest.fn().mockResolvedValue({}),
-          update: jest.fn().mockResolvedValue({}),
-        },
-      }),
-    ),
+    $transaction: jest.fn(),
   };
+  // Run transaction callbacks against the same mock so tx and prisma share state.
+  prisma.$transaction.mockImplementation((fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma));
+  return prisma;
 }
 
 describe('DisbursementAccountsService', () => {
@@ -238,30 +234,43 @@ describe('DisbursementAccountsService', () => {
       expect(result.message).toContain('deleted');
     });
 
-    it('throws DISBURSEMENT_ACCOUNT_DEFAULT_DELETE when deleting sole default', async () => {
-      prisma.disbursementAccount.findFirst.mockResolvedValue({
-        id: 'acct-uuid',
-        kind: DisbursementAccountKind.BANK,
-        is_default: true,
-      });
-      prisma.disbursementAccount.count.mockResolvedValue(1);
-
-      await expect(service.deleteAccount('user-uuid', 'acct-uuid'))
-        .rejects.toMatchObject({ code: 'DISBURSEMENT_ACCOUNT_DEFAULT_DELETE' });
-    });
-
-    it('allows deleting default when another account exists for same kind', async () => {
-      prisma.disbursementAccount.findFirst.mockResolvedValue({
-        id: 'acct-uuid',
-        kind: DisbursementAccountKind.BANK,
-        is_default: true,
-      });
-      prisma.disbursementAccount.count.mockResolvedValue(2);
+    it('allows deleting the sole default account', async () => {
+      prisma.disbursementAccount.findFirst
+        .mockResolvedValueOnce({
+          id: 'acct-uuid',
+          kind: DisbursementAccountKind.BANK,
+          is_default: true,
+        })
+        // no remaining account of the same kind to promote
+        .mockResolvedValueOnce(null);
+      prisma.$transaction.mockImplementation((cb) => cb(prisma));
       prisma.disbursementAccount.delete.mockResolvedValue({});
 
       const result = await service.deleteAccount('user-uuid', 'acct-uuid');
 
       expect(result.message).toContain('deleted');
+      expect(prisma.disbursementAccount.update).not.toHaveBeenCalled();
+    });
+
+    it('promotes the oldest remaining account when deleting the default', async () => {
+      prisma.disbursementAccount.findFirst
+        .mockResolvedValueOnce({
+          id: 'acct-uuid',
+          kind: DisbursementAccountKind.BANK,
+          is_default: true,
+        })
+        .mockResolvedValueOnce({ id: 'next-uuid', kind: DisbursementAccountKind.BANK });
+      prisma.$transaction.mockImplementation((cb) => cb(prisma));
+      prisma.disbursementAccount.delete.mockResolvedValue({});
+      prisma.disbursementAccount.update.mockResolvedValue({});
+
+      const result = await service.deleteAccount('user-uuid', 'acct-uuid');
+
+      expect(result.message).toContain('deleted');
+      expect(prisma.disbursementAccount.update).toHaveBeenCalledWith({
+        where: { id: 'next-uuid' },
+        data: { is_default: true },
+      });
     });
 
     it('throws 404 when account not found', async () => {

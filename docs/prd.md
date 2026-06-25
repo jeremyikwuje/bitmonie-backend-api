@@ -10,21 +10,22 @@
 
 ### 1.1 Product Summary
 
-Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market. Customers lock Bitcoin (via Lightning Network) as collateral and receive Naira to their verified bank account within seconds. No crypto is sold. The loan is repaid in SAT (Lightning) or NGN, after which the locked SAT collateral is released to a customer-specified Lightning address.
+Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market. Customers lock Bitcoin (via Lightning Network) as collateral and receive Naira within seconds—**no forced KYC for loans up to N500,000**. Borrowers verify via email + crypto collateral; tier-1 KYC (BVN/NIN) is optional for smaller amounts and required only for loans exceeding N500,000. No crypto is sold. The loan is repaid in SAT (Lightning) or NGN, after which the locked SAT collateral is released to a customer-specified Lightning address.
 
 ### 1.2 Mission
 
-> "Lock your Bitcoin. Get Naira instantly. Keep your upside."
+> "Lock your Bitcoin. Get Naira instantly. No friction, no KYC delays — your collateral is your credential."
 
-### 1.3 MVP Scope (v1.0)
+### 1.3 MVP Scope (v1.0, evolved)
 
 - **Collateral:** SAT only via Lightning Network
-- **Disbursement:** NGN to customer's default bank account
+- **Disbursement:** NGN to customer's bank account (no name verification required for ≤ N500k loans)
 - **Repayment:** NGN bank transfer or SAT Lightning payment
 - **Collateral Release:** SAT sent to customer's specified Lightning address on loan closure
-- **KYC:** BVN verification
+- **KYC:** Email-verified only for ≤ N500k; BVN verification required for > N500k
 - **Price Feed:** SAT/NGN, BTC/NGN, USDT/NGN
 - **No wallet balances** — loan balances only
+- **Privacy-forward:** Positioning around crypto collateral as the primary credential for privacy-conscious Bitcoiners
 
 ### 1.4 Out of Scope (v1.0)
 
@@ -37,22 +38,23 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 
 ## 2. User Personas
 
-### 2.1 Persona A — The HODL Borrower
+### 2.1 Persona A — The Privacy-Conscious HODL Borrower
 **Name:** Shola, 31, Lagos  
-**Profile:** Holds 0.07 BTC (~$3,000). Believes NGN will weaken further. Needs N300,000 for business working capital for 10 days. Does not want to sell BTC and miss a potential N20+ rate appreciation.  
-**Goal:** Get Naira fast without losing BTC exposure.  
-**Pain point:** Every other option requires selling crypto or waiting days for bank loans.
+**Profile:** Holds 0.07 BTC (~$3,000). Values privacy; doesn't want to dox savings to CBN or a bank. Needs N300,000 for business working capital for 10 days.  
+**Goal:** Get Naira fast without surrendering BVN/NIN and risking account freeze.  
+**Pain point:** Traditional banks ask for KYC docs; P2P takes days; crypto platforms can be exploited. Wants crypto-backed lending without the paperwork or surveillance.
+**Key insight:** Crypto collateral IS the verification — they have an on-chain address; that's proof of custody.
 
-### 2.2 Persona B — The Rate Watcher
+### 2.2 Persona B — The Rate Watcher (Bitcoin Stacker)
 **Name:** Emeka, 27, Abuja  
-**Profile:** Stacks SAT monthly from remote work income. Rate volatility makes timing sales stressful.  
-**Goal:** Access short-term NGN liquidity when needed without market timing pressure.  
-**Pain point:** P2P selling takes time, fees are unpredictable, and he regrets every sale when rate jumps.
+**Profile:** Stacks SAT monthly from remote work income. Rate volatility makes timing sales stressful. Wants to keep BTC but needs Naira on short notice.  
+**Goal:** Access short-term NGN liquidity instantly, no KYC friction.  
+**Pain point:** P2P selling takes hours, requires bank details anyway, and he regrets every sale when the rate jumps.
 
 ### 2.3 Persona C — The High-Value Borrower
 **Name:** Funke, 44, Port Harcourt  
-**Profile:** Business owner holding significant BTC. Needs N15M+ for a supply chain payment.  
-**Goal:** Large loan with white-glove service.  
+**Profile:** Business owner holding significant BTC. Needs N15M+ for a supply chain payment. Willing to provide KYC for large amounts; values speed over privacy.  
+**Goal:** Large loan with white-glove service and fast approval (via KYC).  
 **Entry point:** Get Quote page → WhatsApp/email follow-up from Bitmonie team.
 
 ---
@@ -64,11 +66,12 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 | ID | As a... | I want to... | So that... |
 |----|---------|--------------|------------|
 | US-01 | Visitor | Use the loan calculator without signing up | I can explore before committing |
-| US-02 | New user | Sign up with email and password | I can create an account |
-| US-03 | New user | Verify my identity with BVN | My bank account can be validated and disbursement is legal |
-| US-04 | New user | Alternatively verify with NIN or Passport | I have options if BVN is unavailable |
-| US-05 | User | Receive email OTP for login | My account is secure without passwords alone |
-| US-06 | User | Enable 2FA (TOTP) | I can secure my account further |
+| US-02 | New user | Sign up with email only (no password) | I can create an account instantly |
+| US-03 | New user | Verify my email via OTP | My account is secure and I can proceed to borrowing |
+| US-04 | New user (≤ N500k) | Borrow up to N500,000 without KYC | I can access Naira without surrendering BVN/NIN |
+| US-05 | New user (> N500k) | Verify my identity with BVN for loans > N500k | I can borrow larger amounts with proper compliance |
+| US-06 | User | Optionally verify with NIN as alternative to BVN | I have flexibility if BVN is unavailable |
+| US-07 | User | Enable TOTP 2FA for account security | I can secure my account further (used for transaction step-up) |
 
 ### 3.2 Bank Account Management
 
@@ -93,11 +96,12 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 
 | ID | As a... | I want to... | So that... |
 |----|---------|--------------|------------|
-| US-16 | Verified user | Checkout a loan from the calculator | The flow is seamless from quote to funding |
-| US-17 | Verified user | See a final loan summary before confirming | I confirm exact terms before sending SAT |
-| US-18 | Verified user | Receive a Lightning invoice to send SAT collateral | I can pay from my Lightning wallet |
-| US-19 | Verified user | Have NGN credited to my default bank account within 60 seconds of SAT confirmation | The promise of instant funding is kept |
-| US-20 | Verified user | Receive a loan confirmation with all terms | I have a record of what I agreed to |
+| US-16 | Email-verified user (≤ N500k) | Checkout a loan without KYC | I can borrow quickly without paperwork |
+| US-17 | Email-verified user (> N500k) | Be prompted for KYC tier-1 at checkout if > N500k | Large loans are properly verified |
+| US-18 | Verified user | See a final loan summary before confirming | I confirm exact terms before sending SAT |
+| US-19 | Verified user | Receive a Lightning invoice to send SAT collateral | I can pay from my Lightning wallet |
+| US-20 | Verified user | Have NGN credited to my designated bank account within 60 seconds of SAT confirmation | The promise of instant funding is kept |
+| US-21 | Verified user | Receive a loan confirmation with all terms | I have a record of what I agreed to |
 
 ### 3.5 Loan Management
 
@@ -166,19 +170,26 @@ Bitmonie is a crypto-backed instant Naira credit product for the Nigerian market
 
 ### 4.3 KYC Requirements
 
+**Tier-1 KYC (BVN/NIN) is OPTIONAL for loans ≤ N500,000:**
+- Email verification alone is sufficient to checkout
+- Crypto collateral (on-chain address + SAT lock) serves as the primary credential
+- User can borrow and receive disbursement without BVN/NIN for amounts ≤ N500k
+
+**Tier-1 KYC is MANDATORY for loans > N500,000:**
 - BVN verification (primary)
 - NIN verification (secondary)
-- Passport (manual review fallback)
 - Bank account name must fuzzy-match BVN legal name (threshold: 85% similarity)
 - One KYC per user — reuse across all loans
+
+**Implementation note:** For loans ≤ N500k without KYC, disbursement account bank name verification is skipped. For loans > N500k or user-initiated KYC, full name-match validation applies.
 
 ### 4.4 Bank Account Rules
 
 - Minimum: 1 account (required before first loan)
 - Maximum: 5 accounts
 - All accounts must pass name-match against BVN
-- One account designated as default at all times
-- Default cannot be deleted unless another is promoted first
+- One account designated as default while any account of that kind exists
+- Any account may be deleted, including the sole/default one; deleting the default auto-promotes the oldest remaining account of that kind (if any)
 
 ### 4.5 Notifications
 

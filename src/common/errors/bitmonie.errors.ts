@@ -348,15 +348,6 @@ export class DisbursementAccountMaxPerKindException extends BitmonieException {
   }
 }
 
-export class DisbursementAccountDefaultDeleteException extends BitmonieException {
-  constructor() {
-    super(
-      'DISBURSEMENT_ACCOUNT_DEFAULT_DELETE',
-      'You cannot delete the sole default disbursement account for this kind. Promote another account first.',
-      HttpStatus.BAD_REQUEST,
-    );
-  }
-}
 
 export class DisbursementAccountUnverifiedException extends BitmonieException {
   constructor() {

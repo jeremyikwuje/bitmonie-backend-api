@@ -8,7 +8,6 @@ import {
   DisbursementAccountLookupFailedException,
   DisbursementAccountDuplicateException,
   DisbursementAccountMaxPerKindException,
-  DisbursementAccountDefaultDeleteException,
   DisbursementAccountUnverifiedException,
 } from '@/common/errors/bitmonie.errors';
 import { DISBURSEMENT_NAME_MATCH_THRESHOLD, MAX_DISBURSEMENT_ACCOUNTS_PER_KIND } from '@/common/constants';
@@ -222,14 +221,25 @@ export class DisbursementAccountsService {
 
     if (!account) throw new NotFoundException('Disbursement account not found.');
 
-    if (account.is_default) {
-      const same_kind_count = await this.prisma.disbursementAccount.count({
-        where: { user_id, kind: account.kind },
-      });
-      if (same_kind_count === 1) throw new DisbursementAccountDefaultDeleteException();
-    }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.disbursementAccount.delete({ where: { id: account_id } });
 
-    await this.prisma.disbursementAccount.delete({ where: { id: account_id } });
+      // If the deleted account was the default for its kind, promote the oldest
+      // remaining account (if any) so the kind never silently loses its default.
+      // The user is free to delete the sole account too — the kind is then empty.
+      if (account.is_default) {
+        const next_default = await tx.disbursementAccount.findFirst({
+          where: { user_id, kind: account.kind },
+          orderBy: { created_at: 'asc' },
+        });
+        if (next_default) {
+          await tx.disbursementAccount.update({
+            where: { id: next_default.id },
+            data: { is_default: true },
+          });
+        }
+      }
+    });
 
     return { message: 'Disbursement account deleted.' };
   }

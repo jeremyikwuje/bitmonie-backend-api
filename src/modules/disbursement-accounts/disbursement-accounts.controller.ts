@@ -88,8 +88,7 @@ export class DisbursementAccountsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Delete a disbursement account' })
   @ApiParam({ name: 'account_id', format: 'uuid' })
-  @ApiResponse({ status: 200, description: 'Account deleted' })
-  @ApiResponse({ status: 400, description: 'Cannot delete sole default account' })
+  @ApiResponse({ status: 200, description: 'Account deleted; default auto-promotes to oldest remaining of that kind' })
   @ApiResponse({ status: 404, description: 'Account not found' })
   async deleteAccount(
     @Req() req: AuthRequest,
