@@ -26,45 +26,52 @@ This spec is the contract between this API and the web client. The web codebase 
 
 ---
 
-## 3. Onboarding gates
+## 3. Onboarding gates — low-KYC flow
 
-The web client enforces a linear gate before mounting the app shell. Three of the four checks come from a single `GET /v1/users/me` call (which returns `email_verified`, `kyc_tier`, and the nested `repayment_account` block in one shot — see §4 for the full shape). The fourth needs a separate count.
+Only **email verification** routes away (to `/verify-email`); it runs pre-shell. Everything after it is a **dismissable sheet stacked on the mounted shell** — there are no `/kyc` or `/add-bank` routes any more. A dismissed sheet leaves a re-entry banner at the top of every authed surface, and Settings carries a standing entry point for each step.
 
-| Gate | Source | Failed → route to |
-|---|---|---|
-| Authenticated | `GET /v1/users/me` 200 (vs. 401) | `/login` |
-| Email verified | `users/me` → `email_verified === true` | `/verify-email` |
-| KYC tier-1 | `users/me` → `kyc_tier >= 1` | `/kyc` |
-| Has ≥ 1 disbursement account | `GET /v1/disbursement-accounts` → `accounts.length > 0` | `/add-bank` |
+| Gate                         | Source                                                  | Not met →                          |
+| ---------------------------- | ------------------------------------------------------- | ---------------------------------- |
+| Authenticated                | `GET /v1/users/me` 200 (vs. 401)                        | AuthSheet (visitors browse freely) |
+| Email verified               | `users/me` → `email_verified === true`                  | route to `/verify-email`           |
+| KYC tier-1                   | `users/me` → `kyc_tier >= 1`                            | `KycSheet` + re-entry banner       |
+| Has ≥ 1 disbursement account | `GET /v1/disbursement-accounts` → `accounts.length > 0` | `AddBankSheet` + re-entry banner   |
 
-Once all four pass, the web client mounts `/`, `/loans`, etc. The `KycTierGuard` + `RequiresKyc(1)` on `POST /v1/loans/checkout` is still the authoritative server-side enforcement — the gate is convenience, not security.
+**KYC is prompted, not mandated.** The shell stays usable at tier-0 — the sheet is dismissable. But two server-side gates make tier-1 unavoidable before money moves, and the API is the source of truth for both:
 
-> Note: `GET /v1/auth/me` also exists and returns a *minimal* identity payload (`id, email, email_verified, totp_enabled, transaction_pin_set, created_at`) but **not** `kyc_tier` or `repayment_account`. Use `users/me` for the gate; `auth/me` carries the security-flags the avatar sheet uses to render the "Set transaction PIN" / "Enable 2FA" nudges.
+- **Adding a BANK / MOBILE_MONEY payout account** requires tier-1. Tier-0 → 403 `KYC_UPGRADE_REQUIRED` from `POST /v1/disbursement-accounts`. The account name is matched against the KYC legal name, so there is nothing to match against until the user verifies. `CRYPTO_ADDRESS` is exempt.
+- **Loans > N500,000 (`KYC_EXEMPTION_THRESHOLD_NGN`)** → 403 `KYC_UPGRADE_REQUIRED` from `POST /v1/loans/checkout` (`KycTierGuard` + `RequiresKyc(1)`). Loans at or below the threshold are exempt.
+
+> **Ordering matters.** KYC is sequenced _before_ add-bank because of the first gate above. Prompting for a bank account first dead-ends a tier-0 user on a 403 they cannot resolve from that surface. Note the practical consequence: the low-KYC loan exemption is unreachable for a new tier-0 user, since they cannot add an account to _receive_ the money. Only accounts added before the gate landed (`4594426`) still work without tier-1.
+
+Both 403s above are **remediated, not pre-empted**: the client submits, and on `KYC_UPGRADE_REQUIRED` mounts `KycSheet` over the form rather than printing a dead-end error (`LoanCheckoutForm` and `AddBankSheet` both do this). Per bitmonie-web CLAUDE.md §4.8 the client does not pre-check `kyc_tier` to decide whether a request is allowed — the onboarding gate reads `kyc_tier` only to choose which sheet to _prompt_, and Settings → Identity reads it only to label the row. Settings → Identity is also the standing, always-available entry point to `KycSheet` for a user who dismissed the onboarding prompt.
+
+> Note: `GET /v1/auth/me` also exists and returns a _minimal_ identity payload (`id, email, email_verified, totp_enabled, transaction_pin_set, created_at`) but **not** `kyc_tier` or `repayment_account`. Use `users/me` for the gate; `auth/me` carries the security-flags the avatar sheet uses to render the "Set transaction PIN" / "Enable 2FA" nudges.
 
 ---
 
 ## 4. Screen → endpoint map
 
-| Screen | Endpoints |
-|---|---|
-| `/signup` | `POST /v1/auth/signup` (email-only — passwordless). 409 `AUTH_EMAIL_ALREADY_REGISTERED` if a verified account already exists — show "this email is already registered, log in instead" and link to `/login`. (An unverified email returns 201 and silently resends the verification OTP.) |
-| `/verify-email` | `POST /v1/auth/verify-email`, `POST /v1/auth/resend-verification` |
-| `/login` | `POST /v1/auth/login/request-otp` then `POST /v1/auth/login/verify-otp` (passwordless — see §4.1). TOTP is NOT consulted at login. `request-otp` now surfaces account state: 404 `AUTH_ACCOUNT_NOT_FOUND` (no account — show "no account found, sign up" + link `/signup`) and 422 `AUTH_EMAIL_NOT_VERIFIED` (account exists, unverified — route to `/verify-email`); 200 = code sent. |
-| `/kyc` | `POST /v1/kyc/tier-1`, `GET /v1/kyc/status` |
-| `/add-bank` + avatar-sheet bank management | `GET /v1/banks`, `POST /v1/disbursement-accounts`, `GET /v1/disbursement-accounts`, `PATCH /v1/disbursement-accounts/:id/default`, `DELETE /v1/disbursement-accounts/:id` |
-| **Top bar "You Owe" + Home attention banners** | **NEW** `GET /v1/me/summary` (§5.1) |
-| Home — calculator | `GET /v1/loans/calculate` (debounced on input) |
-| Home — checkout | `POST /v1/loans/checkout` (Idempotency-Key required) |
-| **Home — activity feed** | **NEW** `GET /v1/activity` (§5.2) |
-| Loans — list | `GET /v1/loans` |
-| Loans — inflows banner | `GET /v1/inflows/unmatched` (count + total — `me/summary` already carries this; full list only on tap-through) |
-| `/inflows` | `GET /v1/inflows/unmatched`, `POST /v1/inflows/:inflow_id/apply` (Idempotency-Key) |
-| Loan detail (PENDING_COLLATERAL) | `GET /v1/loans/:id` (response includes `payment_request: { bolt11, payment_uri, receiving_address, expires_at, amount_sat }` so the page can render the BOLT11 + QR + countdown after a reload — null on non-PENDING loans), `POST /v1/loans/:id/cancel` |
-| Loan detail (ACTIVE) | `GET /v1/loans/:id`, `GET /v1/loans/:id/repayment-instructions`, `POST /v1/loans/:id/add-collateral` (Idempotency-Key) |
-| Loan detail — set/change release address | `POST /v1/loans/:id/release-address/request-change-otp`, `PATCH /v1/loans/:id/release-address` (change requires email OTP + one of `transaction_pin` / `totp_code` — see §4.2) |
-| Avatar sheet — Profile / Security | `GET /v1/users/me`, `GET /v1/auth/2fa/setup`, `POST /v1/auth/2fa/confirm`, `POST /v1/auth/2fa/disable`, `POST /v1/auth/logout`, `POST /v1/auth/logout-all` — plus the transaction-PIN endpoints under `/v1/auth/transaction-pin/*` (see §4.3) |
-| Avatar sheet — Repayment account | `GET /v1/users/me` → `repayment_account: { virtual_account_no, virtual_account_name, bank_name, provider } \| null` (already nested in profile response — no extra call) |
-| Avatar sheet — Rates | `GET /v1/rates` — public, no auth. Returns `{ rates: [{ pair, rate_buy, rate_sell, fetched_at }] }` for SAT_NGN / BTC_NGN / USDT_NGN. Returns 422 if the feed is stale. |
+| Screen                                                                              | Endpoints                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/signup`                                                                           | `POST /v1/auth/signup` (email-only — passwordless). 409 `AUTH_EMAIL_ALREADY_REGISTERED` if a verified account already exists — show "this email is already registered, log in instead" and link to `/login`. (An unverified email returns 201 and silently resends the verification OTP.)                                                                                              |
+| `/verify-email`                                                                     | `POST /v1/auth/verify-email`, `POST /v1/auth/resend-verification`                                                                                                                                                                                                                                                                                                                      |
+| `/login`                                                                            | `POST /v1/auth/login/request-otp` then `POST /v1/auth/login/verify-otp` (passwordless — see §4.1). TOTP is NOT consulted at login. `request-otp` now surfaces account state: 404 `AUTH_ACCOUNT_NOT_FOUND` (no account — show "no account found, sign up" + link `/signup`) and 422 `AUTH_EMAIL_NOT_VERIFIED` (account exists, unverified — route to `/verify-email`); 200 = code sent. |
+| KycSheet (onboarding, AddBankSheet gate, LoanCheckoutForm 403, Settings → Identity) | `POST /v1/kyc/tier-1`, `GET /v1/kyc/status`                                                                                                                                                                                                                                                                                                                                            |
+| AddBankSheet (onboarding, Settings → Bank accounts → Add)                           | `GET /v1/banks`, `POST /v1/disbursement-accounts`, `GET /v1/disbursement-accounts`, `PATCH /v1/disbursement-accounts/:id/default`, `DELETE /v1/disbursement-accounts/:id`                                                                                                                                                                                                              |
+| **Top bar "You Owe" + Home attention banners**                                      | **NEW** `GET /v1/me/summary` (§5.1)                                                                                                                                                                                                                                                                                                                                                    |
+| Home — calculator                                                                   | `GET /v1/loans/calculate` (debounced on input)                                                                                                                                                                                                                                                                                                                                         |
+| Home — checkout                                                                     | `POST /v1/loans/checkout` (Idempotency-Key required)                                                                                                                                                                                                                                                                                                                                   |
+| **Home — activity feed**                                                            | **NEW** `GET /v1/activity` (§5.2)                                                                                                                                                                                                                                                                                                                                                      |
+| Loans — list                                                                        | `GET /v1/loans`                                                                                                                                                                                                                                                                                                                                                                        |
+| Loans — inflows banner                                                              | `GET /v1/inflows/unmatched` (count + total — `me/summary` already carries this; full list only on tap-through)                                                                                                                                                                                                                                                                         |
+| `/inflows`                                                                          | `GET /v1/inflows/unmatched`, `POST /v1/inflows/:inflow_id/apply` (Idempotency-Key)                                                                                                                                                                                                                                                                                                     |
+| Loan detail (PENDING_COLLATERAL)                                                    | `GET /v1/loans/:id` (response includes `payment_request: { bolt11, payment_uri, receiving_address, expires_at, amount_sat }` so the page can render the BOLT11 + QR + countdown after a reload — null on non-PENDING loans), `POST /v1/loans/:id/cancel`                                                                                                                               |
+| Loan detail (ACTIVE)                                                                | `GET /v1/loans/:id`, `GET /v1/loans/:id/repayment-instructions`, `POST /v1/loans/:id/add-collateral` (Idempotency-Key)                                                                                                                                                                                                                                                                 |
+| Loan detail — set/change release address                                            | `POST /v1/loans/:id/release-address/request-change-otp`, `PATCH /v1/loans/:id/release-address` (change requires email OTP + one of `transaction_pin` / `totp_code` — see §4.2)                                                                                                                                                                                                         |
+| Avatar sheet — Profile / Security                                                   | `GET /v1/users/me`, `GET /v1/auth/2fa/setup`, `POST /v1/auth/2fa/confirm`, `POST /v1/auth/2fa/disable`, `POST /v1/auth/logout`, `POST /v1/auth/logout-all` — plus the transaction-PIN endpoints under `/v1/auth/transaction-pin/*` (see §4.3)                                                                                                                                          |
+| Avatar sheet — Repayment account                                                    | `GET /v1/users/me` → `repayment_account: { virtual_account_no, virtual_account_name, bank_name, provider } \| null` (already nested in profile response — no extra call)                                                                                                                                                                                                               |
+| Avatar sheet — Rates                                                                | `GET /v1/rates` — public, no auth. Returns `{ rates: [{ pair, rate_buy, rate_sell, fetched_at }] }` for SAT_NGN / BTC_NGN / USDT_NGN. Returns 422 if the feed is stale.                                                                                                                                                                                                                |
 
 The web client does not call any deprecated endpoint. `POST /v1/loans/:id/claim-inflow` is replaced end-to-end by `GET /v1/inflows/unmatched` + `POST /v1/inflows/:id/apply`. `POST /v1/auth/login` (legacy password) and `POST /v1/auth/forgot-password` / `reset-password` are removed entirely — customer auth is passwordless.
 
@@ -90,26 +97,26 @@ The verify endpoint surfaces `AUTH_OTP_EXPIRED` (422) for wrong / missing / expi
 
 Error matrix the web client should map to UX:
 
-| Code | HTTP | What the web client should do |
-|---|---|---|
-| `TRANSACTION_FACTOR_NOT_SET` | 422 | Show "Set a PIN or enable 2FA first" and link to the security panel. |
-| `RELEASE_ADDRESS_OTP_REQUIRED` | 422 | Re-trigger the request-change-otp flow. |
-| `TRANSACTION_FACTOR_REQUIRED` | 422 | Re-prompt for PIN/TOTP — the email OTP was already consumed, so it survives this. The user must request a fresh email OTP if they then go idle. |
-| `TRANSACTION_PIN_INVALID` | 401 | "Wrong PIN" — let the user retry. The PIN locks after 5 wrong attempts (`TRANSACTION_PIN_LOCKED`, 429). |
-| `TRANSACTION_PIN_LOCKED` | 429 | Show "PIN locked until {`unlocks_at`}" — `details[0]` carries the ISO timestamp. The user can switch to TOTP if they have it. |
-| `AUTH_INVALID_CREDENTIALS` | 401 | Generic "Wrong code" for TOTP rejections. |
-| `COLLATERAL_ALREADY_RELEASED` | 409 | Replace the form with a release-history view; the address is no longer changeable. |
+| Code                           | HTTP | What the web client should do                                                                                                                   |
+| ------------------------------ | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TRANSACTION_FACTOR_NOT_SET`   | 422  | Show "Set a PIN or enable 2FA first" and link to the security panel.                                                                            |
+| `RELEASE_ADDRESS_OTP_REQUIRED` | 422  | Re-trigger the request-change-otp flow.                                                                                                         |
+| `TRANSACTION_FACTOR_REQUIRED`  | 422  | Re-prompt for PIN/TOTP — the email OTP was already consumed, so it survives this. The user must request a fresh email OTP if they then go idle. |
+| `TRANSACTION_PIN_INVALID`      | 401  | "Wrong PIN" — let the user retry. The PIN locks after 5 wrong attempts (`TRANSACTION_PIN_LOCKED`, 429).                                         |
+| `TRANSACTION_PIN_LOCKED`       | 429  | Show "PIN locked until {`unlocks_at`}" — `details[0]` carries the ISO timestamp. The user can switch to TOTP if they have it.                   |
+| `AUTH_INVALID_CREDENTIALS`     | 401  | Generic "Wrong code" for TOTP rejections.                                                                                                       |
+| `COLLATERAL_ALREADY_RELEASED`  | 409  | Replace the form with a release-history view; the address is no longer changeable.                                                              |
 
 ### 4.3 Transaction PIN management
 
 Customer-managed via:
 
-- `POST /v1/auth/transaction-pin/request-set-otp`            — emails the set-PIN OTP (refused with `TRANSACTION_PIN_ALREADY_SET` if a PIN already exists).
-- `POST /v1/auth/transaction-pin/set`                        — body `{ email_otp, transaction_pin }`. PIN is 6 digits.
-- `POST /v1/auth/transaction-pin/request-change-otp`         — for rotating an existing PIN.
-- `POST /v1/auth/transaction-pin/change`                     — body `{ current_transaction_pin, email_otp, new_transaction_pin }`.
-- `POST /v1/auth/transaction-pin/request-disable-otp`        — for removing the PIN.
-- `POST /v1/auth/transaction-pin/disable`                    — body `{ email_otp, current_transaction_pin? | totp_code? }` (recovery path: a user who forgot the PIN but has TOTP can still disable it).
+- `POST /v1/auth/transaction-pin/request-set-otp` — emails the set-PIN OTP (refused with `TRANSACTION_PIN_ALREADY_SET` if a PIN already exists).
+- `POST /v1/auth/transaction-pin/set` — body `{ email_otp, transaction_pin }`. PIN is 6 digits.
+- `POST /v1/auth/transaction-pin/request-change-otp` — for rotating an existing PIN.
+- `POST /v1/auth/transaction-pin/change` — body `{ current_transaction_pin, email_otp, new_transaction_pin }`.
+- `POST /v1/auth/transaction-pin/request-disable-otp` — for removing the PIN.
+- `POST /v1/auth/transaction-pin/disable` — body `{ email_otp, current_transaction_pin? | totp_code? }` (recovery path: a user who forgot the PIN but has TOTP can still disable it).
 
 `GET /v1/auth/me` returns `transaction_pin_set: boolean` so the security panel can render the right call-to-action without an extra round-trip. Subtle nudge — don't blocking-modal the user into setting one. The hard requirement only fires at the sensitive-op call site (§4.2).
 
@@ -266,12 +273,12 @@ These are duplicated in the web repo's `CLAUDE.md`; restated here so backend dev
 
 These were open in the first cut of this spec; resolved against the codebase on 2026-05-05. Kept here so future readers see what was checked and where.
 
-| Question | Answer | Where it lives |
-|---|---|---|
-| Rates endpoint path + shape | `GET /v1/rates` (public). Response: `{ rates: [{ pair: AssetPair, rate_buy: string, rate_sell: string, fetched_at: ISO8601 }] }`. 422 if stale. | `src/modules/price-feed/price-feed.controller.ts`, `dto/rate-item.dto.ts` |
-| Where the permanent NGN VA is exposed | `GET /v1/users/me` → `repayment_account: { virtual_account_no, virtual_account_name, bank_name, provider } \| null`. The `user-repayment-accounts` module has a service but **no controller** — there is no separate endpoint to call. | `src/modules/users/users.service.ts` |
-| `auth/me` vs `users/me` | `auth/me` returns a minimal identity payload (`id, email, email_verified, totp_enabled, created_at`); `users/me` returns the full profile including names, `kyc_tier`, `disbursement_enabled`, `loan_enabled`, and `repayment_account`. Web uses `users/me` for the onboarding gate and the Profile/Repayment cards; `auth/me` is unused. | `src/modules/auth/auth.controller.ts:194`, `src/modules/users/users.service.ts` |
-| `GET /v1/loans/calculate` reachable unauthenticated | Yes. No method-level guard, no class-level guard on `LoansController`, no global guard registered in `main.ts` / `app.module.ts`. Safe to call from marketing or pre-signup flows. | `src/modules/loans/loans.controller.ts:63` |
+| Question                                            | Answer                                                                                                                                                                                                                                                                                                                                    | Where it lives                                                                  |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Rates endpoint path + shape                         | `GET /v1/rates` (public). Response: `{ rates: [{ pair: AssetPair, rate_buy: string, rate_sell: string, fetched_at: ISO8601 }] }`. 422 if stale.                                                                                                                                                                                           | `src/modules/price-feed/price-feed.controller.ts`, `dto/rate-item.dto.ts`       |
+| Where the permanent NGN VA is exposed               | `GET /v1/users/me` → `repayment_account: { virtual_account_no, virtual_account_name, bank_name, provider } \| null`. The `user-repayment-accounts` module has a service but **no controller** — there is no separate endpoint to call.                                                                                                    | `src/modules/users/users.service.ts`                                            |
+| `auth/me` vs `users/me`                             | `auth/me` returns a minimal identity payload (`id, email, email_verified, totp_enabled, created_at`); `users/me` returns the full profile including names, `kyc_tier`, `disbursement_enabled`, `loan_enabled`, and `repayment_account`. Web uses `users/me` for the onboarding gate and the Profile/Repayment cards; `auth/me` is unused. | `src/modules/auth/auth.controller.ts:194`, `src/modules/users/users.service.ts` |
+| `GET /v1/loans/calculate` reachable unauthenticated | Yes. No method-level guard, no class-level guard on `LoansController`, no global guard registered in `main.ts` / `app.module.ts`. Safe to call from marketing or pre-signup flows.                                                                                                                                                        | `src/modules/loans/loans.controller.ts:63`                                      |
 
 ## 9. Still open
 
