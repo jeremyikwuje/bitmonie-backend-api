@@ -34,6 +34,22 @@ export interface UnmatchedInflowAlertParams {
   detail?:          string;          // free-form (error message, etc.)
 }
 
+// Fired by the PalmPay collection webhook when a repayment was credited on
+// the webhook signature alone, because PalmPay's order lookup could not find
+// the order (true of every deposit into a Boost-hosted 0100… VA since
+// October 2026). The money moved the loan; ops confirms it settled.
+export interface SignatureOnlyCreditAlertParams {
+  provider:         string;          // 'palmpay'
+  order_no:         string;
+  amount_ngn:       string;
+  user_id:          string;
+  virtual_account:  string | undefined;
+  payer_name?:      string;
+  loan_id:          string;
+  session_id:       string | null;
+  requery_result:   string;
+}
+
 export interface DisbursementOnHoldAlertParams {
   disbursement_id: string;
   user_id:         string;
@@ -129,6 +145,30 @@ export class OpsAlertsService {
           error: err instanceof Error ? err.message : String(err),
         },
         'Failed to send unmatched-inflow ops alert email',
+      );
+    }
+  }
+
+  async alertSignatureOnlyCredit(params: SignatureOnlyCreditAlertParams): Promise<void> {
+    const recipient = this.config.get<AppConfig>('app')?.internal_alert_email;
+    if (!recipient) {
+      this.logger.warn(
+        { order_no: params.order_no, loan_id: params.loan_id },
+        'Signature-only credit but INTERNAL_ALERT_EMAIL is unset — alert skipped',
+      );
+      return;
+    }
+
+    const subject = `[Bitmonie ops] ${params.provider} repayment credited on signature only — ₦${params.amount_ngn}`;
+    const text_body = this._buildSignatureOnlyCreditTextBody(params);
+    const html_body = this._buildSignatureOnlyCreditHtmlBody(params);
+
+    try {
+      await this.email.sendTransactional({ to: recipient, subject, text_body, html_body });
+    } catch (err) {
+      this.logger.error(
+        { order_no: params.order_no, error: err instanceof Error ? err.message : String(err) },
+        'Failed to send signature-only-credit ops alert email',
       );
     }
   }
@@ -328,6 +368,40 @@ export class OpsAlertsService {
         ${p.amount_sat         ? row('Amount (SAT)',    p.amount_sat) : ''}
         ${p.provider_reference ? row('Provider ref',    p.provider_reference) : ''}
         ${row('Failure reason',  p.failure_reason)}
+      </table>
+    `.trim();
+  }
+
+  private _buildSignatureOnlyCreditTextBody(p: SignatureOnlyCreditAlertParams): string {
+    const lines = [
+      "A repayment was credited on the PalmPay webhook signature alone: PalmPay's order lookup could not find the order. Confirm it settled in the PalmPay merchant dashboard.",
+      '',
+      `Order No:        ${p.order_no}`,
+      `Amount (NGN):    ${p.amount_ngn}`,
+      `Loan ID:         ${p.loan_id}`,
+      `User ID:         ${p.user_id}`,
+      `Virtual account: ${p.virtual_account ?? ''}`,
+    ];
+    if (p.payer_name) lines.push(`Payer:           ${p.payer_name}`);
+    if (p.session_id) lines.push(`Session ID:      ${p.session_id}`);
+    lines.push(`Lookup result:   ${p.requery_result}`);
+    return lines.join('\n');
+  }
+
+  private _buildSignatureOnlyCreditHtmlBody(p: SignatureOnlyCreditAlertParams): string {
+    const row = (label: string, value: string | null | undefined) =>
+      `<tr><td style="padding:4px 12px 4px 0;color:#666"><b>${label}</b></td><td style="padding:4px 0">${escapeHtml(value ?? '')}</td></tr>`;
+    return `
+      <p>A repayment was credited on the PalmPay webhook signature alone: PalmPay's order lookup could not find the order. Confirm it settled in the PalmPay merchant dashboard.</p>
+      <table style="font-family:system-ui,sans-serif;font-size:14px">
+        ${row('Order No',        p.order_no)}
+        ${row('Amount (NGN)',    p.amount_ngn)}
+        ${row('Loan ID',         p.loan_id)}
+        ${row('User ID',         p.user_id)}
+        ${row('Virtual account', p.virtual_account)}
+        ${p.payer_name ? row('Payer',      p.payer_name) : ''}
+        ${p.session_id ? row('Session ID', p.session_id) : ''}
+        ${row('Lookup result',   p.requery_result)}
       </table>
     `.trim();
   }

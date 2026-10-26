@@ -64,7 +64,9 @@ type UnmatchedReason =
 // hit `getCollectionOrderStatus` so the platform's books are the
 // authoritative source for "did funds actually settle on this VA with this
 // amount". Same verify-before-act discipline used on the payout side
-// (getTransferStatus).
+// (getTransferStatus). One exception: PalmPay's lookup cannot find orders into
+// the Boost-hosted (0100…) VAs at all, so for those a signed webhook is
+// credited on its signature and ops is paged to reconcile.
 @ApiTags('webhooks')
 @Controller('webhooks/palmpay/collection/va')
 export class PalmpayCollectionVaWebhookController {
@@ -198,7 +200,15 @@ export class PalmpayCollectionVaWebhookController {
       where: { virtual_account_no: payload.virtualAccountNo },
     });
     if (!repayment_account) {
-      await this._storeUnmatchedInflow(payload, parsed, amount_ngn, null, 'no_user_for_va');
+      // The PalmPay merchant is shared with Monierate, and both apps' webhook
+      // endpoints receive every collection. A VA we never issued belongs to
+      // the other app: acknowledge and skip it. No Inflow row and no ops page —
+      // it is not Bitmonie money, and an unmatched row would invite someone to
+      // apply it to a loan.
+      this.logger.log(
+        { order_no: payload.orderNo, virtual_account: payload.virtualAccountNo },
+        'PalmPay collection: VA is not a Bitmonie repayment account — skipping',
+      );
       return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'no_user_for_va', external_reference: ext_ref };
     }
 
@@ -273,7 +283,22 @@ export class PalmpayCollectionVaWebhookController {
       return { outcome: WebhookOutcome.DEFERRED, outcome_detail: 'requery threw', external_reference: ext_ref };
     }
 
-    if (verified.status !== 'successful') {
+    // PalmPay's lookup cannot see orders into the Boost-hosted (0100…) VAs at
+    // all, so a real repayment comes back "not found". handle() has already
+    // verified the signature; credit on it — but only if one was actually
+    // present (allow_unsigned_webhooks must never be enough) — and page ops to
+    // reconcile it against the PalmPay dashboard.
+    const signature_only = verified.status === 'not_found';
+    if (signature_only && !payload.sign) {
+      this.logger.warn(
+        { order_no: payload.orderNo },
+        'PalmPay collection: order not found at PalmPay and webhook unsigned — refusing to credit',
+      );
+      await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'requery_unconfirmed');
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'requery_not_found_unsigned', external_reference: ext_ref };
+    }
+
+    if (!signature_only && verified.status !== 'successful') {
       // Platform query did NOT confirm success. Either still settling (webhook
       // outran the books — defer for PalmPay's retry to clear) or definitively
       // failed (rare; treat as unmatched + page ops).
@@ -291,9 +316,10 @@ export class PalmpayCollectionVaWebhookController {
     // Cross-check fields PalmPay returned in the query against the webhook
     // payload — any disagreement on amount or VA means the webhook can't be
     // trusted to credit the loan. Persist an Inflow so duplicates dedupe and
-    // ops can investigate, but don't credit.
+    // ops can investigate, but don't credit. (Nothing to cross-check when the
+    // lookup found no order.)
     const requery_kobo = verified.amount_kobo;
-    if (requery_kobo == null || Math.abs(requery_kobo - payload.orderAmount) > REQUERY_AMOUNT_TOLERANCE_KOBO) {
+    if (!signature_only && (requery_kobo == null || Math.abs(requery_kobo - payload.orderAmount) > REQUERY_AMOUNT_TOLERANCE_KOBO)) {
       this.logger.warn(
         { order_no: payload.orderNo, webhook_amount_kobo: payload.orderAmount, requery_amount_kobo: requery_kobo },
         'PalmPay collection: re-query amount disagrees with webhook — refusing to credit',
@@ -302,7 +328,7 @@ export class PalmpayCollectionVaWebhookController {
       return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'requery_amount_mismatch', external_reference: ext_ref };
     }
 
-    if (verified.virtual_account_no && verified.virtual_account_no !== payload.virtualAccountNo) {
+    if (!signature_only && verified.virtual_account_no && verified.virtual_account_no !== payload.virtualAccountNo) {
       this.logger.warn(
         { order_no: payload.orderNo, webhook_va: payload.virtualAccountNo, requery_va: verified.virtual_account_no },
         'PalmPay collection: re-query VA disagrees with webhook — refusing to credit',
@@ -325,7 +351,9 @@ export class PalmpayCollectionVaWebhookController {
           receiving_address:  payload.virtualAccountNo,
           provider_reference: payload.orderNo,
           is_matched:         false,
-          provider_response:  parsed as never,
+          provider_response:  (signature_only
+            ? { ...parsed, bitmonie_verified_by: 'signature_only', bitmonie_requery: verified.failure_reason }
+            : parsed) as never,
         },
         update: {},
       });
@@ -364,7 +392,24 @@ export class PalmpayCollectionVaWebhookController {
         },
         'PalmPay repayment auto-matched and credited',
       );
-      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: `loan ${matched_loan_id} → ${credit.new_status}`, external_reference: ext_ref };
+      if (signature_only) {
+        await this.ops_alerts.alertSignatureOnlyCredit({
+          provider:        'palmpay',
+          order_no:        payload.orderNo,
+          amount_ngn:      amount_ngn.toFixed(2),
+          user_id,
+          virtual_account: payload.virtualAccountNo,
+          payer_name:      payload.payerAccountName,
+          loan_id:         matched_loan_id,
+          session_id:      payload.sessionId ?? null,
+          requery_result:  verified.failure_reason ?? 'not found',
+        });
+      }
+      return {
+        outcome:            WebhookOutcome.PROCESSED,
+        outcome_detail:     `loan ${matched_loan_id} → ${credit.new_status}${signature_only ? ' (signature only — PalmPay lookup: not found)' : ''}`,
+        external_reference: ext_ref,
+      };
     } catch (err) {
       this.logger.error(
         {
