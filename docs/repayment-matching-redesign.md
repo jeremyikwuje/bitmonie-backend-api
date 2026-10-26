@@ -322,7 +322,9 @@ Sibling routes:
     NOTE: collection scheme uses 1=success / 2=failed. This DIVERGES from
     payouts (where 2=success). Reusing the payout enum drops every repayment.
  4. Resolve user: virtual_account_no → UserRepaymentAccount.user_id.
-    No match → Inflow(is_matched=false, reason='no_user_for_va'), alert ops.
+    No match → not a Bitmonie VA (the PalmPay merchant is shared with
+    Monierate): IGNORED, no Inflow, no ops page, ACK 200. (Until 2026-10-27
+    this wrote an unmatched Inflow and paged ops.)
  5. amount_ngn = orderAmount / 100.
  6. Floor check: amount_ngn < N10,000
       → Inflow(is_matched=false, reason='below_floor'), alert ops. Return ACK.

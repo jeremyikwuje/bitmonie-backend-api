@@ -30,6 +30,9 @@ export interface PalmpayConfig {
   webhook_pub_key: string;  // PEM RSA public key   — PalmPay platform key, verifies inbound webhook signatures
   base_url: string;
   webhook_ip_allowlist: string[];
+  // Local/dev only: accept PalmPay webhooks with no `sign` (Postman simulation).
+  // Off in production — an unsigned payload there is rejected.
+  allow_unsigned_webhooks?: boolean;
 }
 
 export interface QoreidConfig {
@@ -116,6 +119,7 @@ export default registerAs('providers', (): ProvidersConfig => ({
     webhook_pub_key:     process.env.PALMPAY_WEBHOOK_PUB_KEY     ?? '',
     base_url:            process.env.PALMPAY_BASE_URL            ?? 'https://open-gw-prod.palmpay-inc.com',
     webhook_ip_allowlist: splitCsv(process.env.PALMPAY_WEBHOOK_IP_ALLOWLIST),
+    allow_unsigned_webhooks: process.env.PALMPAY_ALLOW_UNSIGNED_WEBHOOKS === 'true',
   },
   qoreid: {
     client_id:     process.env.QOREID_CLIENT_ID     ?? '',

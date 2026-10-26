@@ -200,6 +200,55 @@ describe('PalmpayCollectionVaWebhookController', () => {
     expect(loans.creditInflow).not.toHaveBeenCalled();
   });
 
+  // PalmPay's lookup cannot see orders into the Boost-hosted (0100…) VAs, so
+  // a real, signed repayment comes back "not found". It is credited on the
+  // signature and ops is paged to reconcile.
+  it('credits a signed repayment PalmPay\'s lookup cannot find, and pages ops', async () => {
+    prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
+    prisma.loan.findMany.mockResolvedValue([ACTIVE_LOAN] as never);
+    provider.getCollectionOrderStatus.mockResolvedValue({
+      status: 'not_found', failure_reason: '00000001 order is not find',
+    });
+    ops_alerts.alertSignatureOnlyCredit.mockResolvedValue();
+
+    await request(app.getHttpServer())
+      .post('/webhooks/palmpay/collection/va')
+      .send(COLLECTION_NOTIFICATION)
+      .expect(200);
+
+    expect(prisma.inflow.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          provider_response: expect.objectContaining({ bitmonie_verified_by: 'signature_only' }),
+        }),
+      }),
+    );
+    expect(loans.creditInflow).toHaveBeenCalledWith(
+      expect.objectContaining({ loan_id: LOAN_ID, match_method: 'AUTO_AMOUNT' }),
+    );
+    expect(ops_alerts.alertSignatureOnlyCredit).toHaveBeenCalledWith(
+      expect.objectContaining({ order_no: ORDER_NO, amount_ngn: '50000.00', loan_id: LOAN_ID }),
+    );
+  });
+
+  it('does not credit an UNSIGNED repayment PalmPay\'s lookup cannot find', async () => {
+    prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
+    prisma.loan.findMany.mockResolvedValue([ACTIVE_LOAN] as never);
+    provider.getCollectionOrderStatus.mockResolvedValue({ status: 'not_found' });
+    const { sign: _sign, ...unsigned } = COLLECTION_NOTIFICATION;
+
+    await request(app.getHttpServer())
+      .post('/webhooks/palmpay/collection/va')
+      .send(unsigned)
+      .expect(200);
+
+    expect(loans.creditInflow).not.toHaveBeenCalled();
+    expect(ops_alerts.alertSignatureOnlyCredit).not.toHaveBeenCalled();
+    expect(ops_alerts.alertUnmatchedInflow).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'requery_unconfirmed' }),
+    );
+  });
+
   it('refuses to credit when re-query amount disagrees with webhook', async () => {
     prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
     prisma.loan.findMany.mockResolvedValue([ACTIVE_LOAN] as never);
@@ -250,25 +299,26 @@ describe('PalmpayCollectionVaWebhookController', () => {
 
   // ── matching flow ──────────────────────────────────────────────────────────
 
-  it('writes unmatched inflow with reason "no_user_for_va" when VA is unknown', async () => {
+  // The PalmPay merchant is shared with Monierate, so its deposits reach this
+  // endpoint too. They are acknowledged (200 — errors make Svix retry and,
+  // repeated, disable the endpoint) and skipped: no Inflow, no ops page.
+  it('skips a VA that is not a Bitmonie repayment account — 200, no inflow, no page', async () => {
     prisma.userRepaymentAccount.findUnique.mockResolvedValue(null);
 
-    await request(app.getHttpServer())
+    const res = await request(app.getHttpServer())
       .post('/webhooks/palmpay/collection/va')
       .send(COLLECTION_NOTIFICATION)
       .expect(200);
 
-    expect(prisma.inflow.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          is_matched:        false,
-          user_id:           null,
-          provider_response: expect.objectContaining({ bitmonie_unmatched_reason: 'no_user_for_va' }),
-        }),
-      }),
-    );
+    expect(res.text).toBe('success');
+    expect(prisma.inflow.upsert).not.toHaveBeenCalled();
+    expect(ops_alerts.alertUnmatchedInflow).not.toHaveBeenCalled();
     expect(loans.creditInflow).not.toHaveBeenCalled();
     expect(provider.getCollectionOrderStatus).not.toHaveBeenCalled(); // gated before re-query
+    expect(webhooks_log.updateOutcome).toHaveBeenCalledWith(
+      'webhook-log-id',
+      expect.objectContaining({ outcome: 'IGNORED', outcome_detail: 'no_user_for_va' }),
+    );
   });
 
   it('writes unmatched inflow with reason "below_floor" when amount is below N10,000 and does not close any loan', async () => {
@@ -428,8 +478,9 @@ describe('PalmpayCollectionVaWebhookController', () => {
 
   // ── ops alerts ─────────────────────────────────────────────────────────────
 
-  it('pages ops via OpsAlertsService when an inflow is unmatched (e.g. no user for VA)', async () => {
-    prisma.userRepaymentAccount.findUnique.mockResolvedValue(null);
+  it('pages ops via OpsAlertsService when an inflow is unmatched (e.g. no active loans)', async () => {
+    prisma.userRepaymentAccount.findUnique.mockResolvedValue({ user_id: USER_ID } as never);
+    prisma.loan.findMany.mockResolvedValue([] as never);
 
     await request(app.getHttpServer())
       .post('/webhooks/palmpay/collection/va')
@@ -438,11 +489,11 @@ describe('PalmpayCollectionVaWebhookController', () => {
 
     expect(ops_alerts.alertUnmatchedInflow).toHaveBeenCalledWith(
       expect.objectContaining({
-        reason:          'no_user_for_va',
+        reason:          'no_active_loans',
         provider:        'palmpay',
         order_no:        ORDER_NO,
         amount_ngn:      '50000.00',
-        user_id:         null,
+        user_id:         USER_ID,
         virtual_account: VA_NO,
         payer_name:      'Ada Obi',
         payer_account:   '0123456789',
