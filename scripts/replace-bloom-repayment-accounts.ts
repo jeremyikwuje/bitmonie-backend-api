@@ -21,6 +21,7 @@
  * Usage:
  *   pnpm ops:replace-bloom-vas              # dry-run (default)
  *   pnpm ops:replace-bloom-vas -- --apply   # issue new VAs, retire Bloom ones, email
+ *   pnpm ops:replace-bloom-vas -- --apply --user=<user id>   # one customer only
  *   pnpm ops:replace-bloom-vas -- --help
  */
 
@@ -34,13 +35,18 @@ import { LoanNotificationsService } from '@/modules/loan-notifications/loan-noti
 const BLOOM_BANK_NAME = 'Bloom Microfinance Bank';
 
 interface CliArgs {
-  apply: boolean;
-  help:  boolean;
+  apply:    boolean;
+  help:     boolean;
+  user_id?: string;
 }
 
 function parseArgs(): CliArgs {
   const args: CliArgs = { apply: false, help: false };
   for (const a of process.argv.slice(2)) {
+    if (a.startsWith('--user=')) {
+      args.user_id = a.slice('--user='.length);
+      continue;
+    }
     switch (a) {
       case '--':      break;
       case '--apply': args.apply = true; break;
@@ -64,6 +70,7 @@ Usage:
 
 Flags:
   --apply         Actually issue, retire and email (default is dry-run).
+  --user=<id>     Only this customer (e.g. to try one before the rest).
   --help, -h      Show this help.
 `);
 }
@@ -93,7 +100,7 @@ async function main(): Promise<void> {
     const notifications = app.get(LoanNotificationsService);
 
     const rows = await prisma.userRepaymentAccount.findMany({
-      where:   { is_active: true, bank_name: BLOOM_BANK_NAME },
+      where:   { is_active: true, bank_name: BLOOM_BANK_NAME, ...(args.user_id && { user_id: args.user_id }) },
       select:  { user_id: true, virtual_account_no: true, created_at: true },
       orderBy: { created_at: 'asc' },
     });
