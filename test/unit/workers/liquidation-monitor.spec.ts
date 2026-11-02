@@ -64,7 +64,7 @@ function makeDeps(
     loanRepayment: { findMany: jest.fn().mockResolvedValue(repayments) },
     user: { findUnique: jest.fn().mockResolvedValue({ email: 'borrower@example.com', first_name: 'Ada' }) },
     userRepaymentAccount: {
-      findUnique: jest.fn().mockResolvedValue({
+      findFirst: jest.fn().mockResolvedValue({
         virtual_account_no:   '1234567890',
         virtual_account_name: 'Ada Borrower',
         bank_name:            'PalmPay',

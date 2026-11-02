@@ -46,7 +46,7 @@ model User {
   payment_requests      PaymentRequest[]
   inflows               Inflow[]
   disbursements         Disbursement[]
-  repayment_account     UserRepaymentAccount?
+  repayment_accounts    UserRepaymentAccount[]
   audit_logs            AuditLog[]
   sessions              Session[]
 
@@ -554,7 +554,7 @@ model Loan {
 
 model UserRepaymentAccount {
   id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id              String   @unique @db.Uuid
+  user_id              String   @db.Uuid
   virtual_account_no   String   @unique @db.VarChar(50)
   virtual_account_name String   @db.VarChar(255)
   // Human-readable bank that hosts the VA — what the customer's banking app
@@ -565,10 +565,19 @@ model UserRepaymentAccount {
   bank_name            String   @default("Boost Microfinance Bank") @db.VarChar(100)
   provider             String   @db.VarChar(50) // 'palmpay'
   provider_reference   String?  @db.VarChar(255)
-  created_at           DateTime @default(now()) @db.Timestamptz
+  // The user's current VA is the active one. A VA that was replaced (the
+  // Bloom 99… VAs, replaced with Boost ones in Nov 2026) keeps its row,
+  // inactive: the collection webhook routes by virtual_account_no and ignores
+  // is_active, so a transfer into a retired VA still credits its owner.
+  is_active            Boolean   @default(true)
+  deactivated_at       DateTime? @db.Timestamptz
+  created_at           DateTime  @default(now()) @db.Timestamptz
 
   user User @relation(fields: [user_id], references: [id], onDelete: Restrict)
 
+  // Partial unique index added in migration raw SQL:
+  //   (user_id) WHERE is_active = true — at most one active VA per user
+  @@index([user_id])
   @@map("user_repayment_accounts")
 }
 

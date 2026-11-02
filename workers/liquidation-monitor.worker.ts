@@ -418,8 +418,8 @@ async function sendCoverageNotice(params: {
       where:  { id: loan.user_id },
       select: { email: true, first_name: true },
     }),
-    prisma.userRepaymentAccount.findUnique({
-      where:  { user_id: loan.user_id },
+    prisma.userRepaymentAccount.findFirst({
+      where:  { user_id: loan.user_id, is_active: true },
       select: { virtual_account_no: true, virtual_account_name: true, bank_name: true },
     }),
   ]);

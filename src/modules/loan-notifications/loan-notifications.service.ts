@@ -12,6 +12,7 @@ import {
   buildLoanCreatedEmail,
   buildLoanDisbursedEmail,
   buildMarginCallEmail,
+  buildRepaymentAccountChangedEmail,
   buildRepaymentEmail,
   type RepaymentAccountSummary,
 } from './loan-notification-templates';
@@ -95,6 +96,11 @@ export interface NotifyMarginCallParams {
   user_id:          string;
   coverage_percent: string;     // "112" — collateral as % of outstanding
   outstanding_ngn:  Decimal;
+}
+
+export interface NotifyRepaymentAccountChangedParams {
+  user_id:          string;
+  previous_account: RepaymentAccountSummary;
 }
 
 @Injectable()
@@ -393,6 +399,30 @@ export class LoanNotificationsService {
     await this._send(user.email, email, { event: 'margin_call', loan_id: params.loan_id });
   }
 
+  // Sent when a customer's repayment VA is replaced (UserRepaymentAccountsService
+  // .replaceForUser), so they stop paying into the old one.
+  async notifyRepaymentAccountChanged(params: NotifyRepaymentAccountChangedParams): Promise<void> {
+    const [user, va] = await Promise.all([
+      this._loadUser(params.user_id),
+      this._loadRepaymentAccount(params.user_id),
+    ]);
+    if (!user || !va) {
+      this.logger.warn(
+        { event: 'repayment_account_changed', user_id: params.user_id },
+        'Notification skipped — user or active repayment VA not found',
+      );
+      return;
+    }
+
+    const email = buildRepaymentAccountChangedEmail({
+      first_name:        user.first_name,
+      repayment_account: va,
+      previous_account:  params.previous_account,
+    });
+
+    await this._send(user.email, email, { event: 'repayment_account_changed', user_id: params.user_id });
+  }
+
   private async _loadUser(user_id: string): Promise<{ email: string; first_name: string | null } | null> {
     return this.prisma.user.findUnique({
       where:  { id: user_id },
@@ -401,8 +431,8 @@ export class LoanNotificationsService {
   }
 
   private async _loadRepaymentAccount(user_id: string): Promise<RepaymentAccountSummary | null> {
-    const va = await this.prisma.userRepaymentAccount.findUnique({
-      where:  { user_id },
+    const va = await this.prisma.userRepaymentAccount.findFirst({
+      where:  { user_id, is_active: true },
       select: { virtual_account_no: true, virtual_account_name: true, bank_name: true },
     });
     return va ?? null;
