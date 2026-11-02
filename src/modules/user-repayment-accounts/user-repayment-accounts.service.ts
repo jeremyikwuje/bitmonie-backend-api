@@ -32,6 +32,28 @@ export interface EnsureForUserResult {
   created: boolean;
 }
 
+export interface ReplaceForUserResult {
+  summary: UserRepaymentAccountSummary;
+  // The VA this one replaced, now inactive. Null when the user had none.
+  retired: UserRepaymentAccountSummary | null;
+}
+
+type RepaymentAccountRow = {
+  virtual_account_no:   string;
+  virtual_account_name: string;
+  bank_name:            string;
+  provider:             string;
+};
+
+function toSummary(row: RepaymentAccountRow): UserRepaymentAccountSummary {
+  return {
+    virtual_account_no:   row.virtual_account_no,
+    virtual_account_name: row.virtual_account_name,
+    bank_name:            row.bank_name,
+    provider:             row.provider,
+  };
+}
+
 @Injectable()
 export class UserRepaymentAccountsService {
   private readonly logger = new Logger(UserRepaymentAccountsService.name);
@@ -44,7 +66,7 @@ export class UserRepaymentAccountsService {
     private readonly collection: CollectionProvider,
   ) {}
 
-  // Idempotent: returns the existing VA for the user, or provisions one via the
+  // Idempotent: returns the user's active VA, or provisions one via the
   // collection provider on first call. Triggered after tier-1 KYC verification
   // succeeds (see KycService.submitTier1) so every customer ready for a loan
   // already has a permanent NGN VA tied to their tier-1 identity (BVN or NIN).
@@ -64,21 +86,87 @@ export class UserRepaymentAccountsService {
     user_id: string,
     on_created_in_tx?: (tx: Prisma.TransactionClient) => Promise<void>,
   ): Promise<EnsureForUserResult | null> {
-    const existing = await this.prisma.userRepaymentAccount.findUnique({
-      where: { user_id },
-    });
-    if (existing) {
-      return {
-        summary: {
-          virtual_account_no:   existing.virtual_account_no,
-          virtual_account_name: existing.virtual_account_name,
-          bank_name:            existing.bank_name,
-          provider:             existing.provider,
-        },
-        created: false,
-      };
-    }
+    const existing = await this.findActive(user_id);
+    if (existing) return { summary: toSummary(existing), created: false };
 
+    const provisioned = await this._provision(user_id, user_id);
+    if (!provisioned) return null;
+    const { result, provider_name } = provisioned;
+
+    const account = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.userRepaymentAccount.create({
+        data: {
+          user_id,
+          virtual_account_no:   result.virtual_account_no,
+          virtual_account_name: result.virtual_account_name,
+          bank_name:            result.bank_name,
+          provider:             provider_name,
+        },
+      });
+      if (on_created_in_tx) await on_created_in_tx(tx);
+      return created;
+    });
+
+    this.logger.log(
+      { user_id, provider: provider_name, virtual_account_no: account.virtual_account_no },
+      'User repayment VA provisioned',
+    );
+
+    return { summary: toSummary(account), created: true };
+  }
+
+  // Issues the user a new VA and retires the active one, in that order: the
+  // old VA stays active until the provider has issued the new one, so a
+  // failure (null, or a thrown provider error) leaves the customer with a
+  // working account. The retired row is kept, inactive — the collection
+  // webhook routes by VA number, so a transfer into it still credits them.
+  async replaceForUser(user_id: string): Promise<ReplaceForUserResult | null> {
+    const current = await this.findActive(user_id);
+
+    // The first VA was issued with account_reference = user_id; each
+    // replacement gets its own, as PalmPay may hold that reference to one VA.
+    const provisioned = await this._provision(user_id, `${user_id}-${Date.now()}`);
+    if (!provisioned) return null;
+    const { result, provider_name } = provisioned;
+
+    const account = await this.prisma.$transaction(async (tx) => {
+      await tx.userRepaymentAccount.updateMany({
+        where: { user_id, is_active: true },
+        data:  { is_active: false, deactivated_at: new Date() },
+      });
+      return tx.userRepaymentAccount.create({
+        data: {
+          user_id,
+          virtual_account_no:   result.virtual_account_no,
+          virtual_account_name: result.virtual_account_name,
+          bank_name:            result.bank_name,
+          provider:             provider_name,
+        },
+      });
+    });
+
+    this.logger.log(
+      {
+        user_id,
+        provider:           provider_name,
+        virtual_account_no: account.virtual_account_no,
+        retired:            current?.virtual_account_no ?? null,
+      },
+      'User repayment VA replaced',
+    );
+
+    return { summary: toSummary(account), retired: current ? toSummary(current) : null };
+  }
+
+  findActive(user_id: string) {
+    return this.prisma.userRepaymentAccount.findFirst({
+      where: { user_id, is_active: true },
+    });
+  }
+
+  // Opens a VA at the collection provider against the user's tier-1 identity.
+  // Null when tier-1 KYC can't back one (see ensureForUser).
+  private async _provision(user_id: string, account_reference: string) {
     const verification = await this.prisma.kycVerification.findUnique({
       where: { user_id_tier: { user_id, tier: 1 } },
       select: {
@@ -125,36 +213,9 @@ export class UserRepaymentAccountsService {
       identity_type,
       license_number,
       customer_name:        verification.legal_name,
-      account_reference:    user_id,
+      account_reference,
     });
 
-    const account = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.userRepaymentAccount.create({
-        data: {
-          user_id,
-          virtual_account_no:   result.virtual_account_no,
-          virtual_account_name: result.virtual_account_name,
-          bank_name:            result.bank_name,
-          provider:             provider_name,
-        },
-      });
-      if (on_created_in_tx) await on_created_in_tx(tx);
-      return created;
-    });
-
-    this.logger.log(
-      { user_id, provider: provider_name, virtual_account_no: account.virtual_account_no },
-      'User repayment VA provisioned',
-    );
-
-    return {
-      summary: {
-        virtual_account_no:   account.virtual_account_no,
-        virtual_account_name: account.virtual_account_name,
-        bank_name:            account.bank_name,
-        provider:             account.provider,
-      },
-      created: true,
-    };
+    return { result, provider_name };
   }
 }

@@ -54,7 +54,9 @@ export class UsersService {
         loan_enabled: true,
         created_at: true,
         updated_at: true,
-        repayment_account: {
+        repayment_accounts: {
+          where: { is_active: true },
+          take: 1,
           select: {
             virtual_account_no: true,
             virtual_account_name: true,
@@ -64,7 +66,11 @@ export class UsersService {
         },
       },
     });
-    const { transaction_pin_hash, ...rest } = row;
-    return { ...rest, transaction_pin_set: transaction_pin_hash !== null };
+    const { transaction_pin_hash, repayment_accounts, ...rest } = row;
+    return {
+      ...rest,
+      transaction_pin_set: transaction_pin_hash !== null,
+      repayment_account: repayment_accounts[0] ?? null,
+    };
   }
 }

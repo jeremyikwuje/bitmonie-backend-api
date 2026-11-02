@@ -40,7 +40,8 @@
     "ops:release-collateral":         "ts-node -r dotenv/config -r tsconfig-paths/register scripts/release-collateral-for-repaid-loan.ts",
     "ops:rehash-kyc-ids":             "ts-node -r dotenv/config -r tsconfig-paths/register scripts/rehash-kyc-id-numbers.ts",
     "ops:clean-va-names":             "ts-node -r dotenv/config -r tsconfig-paths/register scripts/clean-repayment-account-names.ts",
-    "ops:correct-va-bank-name":       "ts-node -r dotenv/config -r tsconfig-paths/register scripts/correct-repayment-account-bank-name.ts"
+    "ops:correct-va-bank-name":       "ts-node -r dotenv/config -r tsconfig-paths/register scripts/correct-repayment-account-bank-name.ts",
+    "ops:replace-bloom-vas":          "ts-node -r dotenv/config -r tsconfig-paths/register scripts/replace-bloom-repayment-accounts.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.6",

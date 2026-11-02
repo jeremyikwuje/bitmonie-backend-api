@@ -201,7 +201,8 @@ export class PalmpayCollectionVaWebhookController {
 
     const amount_ngn = new Decimal(payload.orderAmount).div(100);
 
-    // 1. Resolve user from VA number.
+    // 1. Resolve user from VA number. Retired (inactive) VAs included: a
+    //    customer may still pay into the VA they had before it was replaced.
     const repayment_account = await this.prisma.userRepaymentAccount.findUnique({
       where: { virtual_account_no: payload.virtualAccountNo },
     });

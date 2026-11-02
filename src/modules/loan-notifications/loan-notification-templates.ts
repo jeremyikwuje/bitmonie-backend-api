@@ -12,6 +12,7 @@
 //   7. Collateral released     — SAT sent back to customer (REPAID follow-up)
 //   8. Coverage warning        — informational, collateral coverage < 1.20
 //   9. Margin call             — urgent, collateral coverage < 1.15
+//  10. Repayment account changed — the customer's VA was replaced
 //
 // Loans are open-term (no due date, no maturity). Customers repay anytime;
 // daily interest accrues on outstanding principal until the loan closes
@@ -122,6 +123,12 @@ export interface CollateralReleasedParams {
   release_address:    string;
   provider_reference: string;
   released_at:        Date;
+}
+
+export interface RepaymentAccountChangedParams {
+  first_name:        string | null;
+  repayment_account: RepaymentAccountSummary;   // the new, active VA
+  previous_account:  RepaymentAccountSummary;   // the retired VA
 }
 
 // ── helpers (kept local; reminder-templates.ts has its own copy) ─────────────
@@ -581,6 +588,32 @@ export function buildMarginCallEmail(p: MarginCallParams): NotificationEmail {
       paymentBlockHtml(p.repayment_account) +
       `<p style="color:#a00">If coverage drops to 110%, the loan auto-liquidates — no further notice. ` +
       `If BTC moves quickly, liquidation can happen in minutes.</p>` +
+      FOOTER_HTML,
+  };
+}
+
+// ── 10. Repayment account changed ────────────────────────────────────────────
+
+export function buildRepaymentAccountChangedEmail(p: RepaymentAccountChangedParams): NotificationEmail {
+  const previous = `${p.previous_account.bank_name}, ${p.previous_account.virtual_account_no}`;
+
+  return {
+    subject: 'Your Bitmonie repayment account has changed',
+    text_body:
+      `${greet(p.first_name)},\n\n` +
+      `Your loan repayment account has changed. From now on, send repayments to:\n\n` +
+      `${paymentBlock(p.repayment_account)}\n\n` +
+      `Your old account (${previous}) is no longer your repayment account. ` +
+      `If you saved it in your banking app, replace it with the new one. ` +
+      `A payment you have already sent to the old account will still be applied to your loan.` +
+      `${FOOTER_TEXT}`,
+    html_body:
+      `<p>${greet(p.first_name)},</p>` +
+      `<p>Your loan repayment account has changed. From now on, send repayments to:</p>` +
+      paymentBlockHtml(p.repayment_account) +
+      `<p>Your old account (${escapeHtml(previous)}) is no longer your repayment account. ` +
+      `If you saved it in your banking app, replace it with the new one. ` +
+      `A payment you have already sent to the old account will still be applied to your loan.</p>` +
       FOOTER_HTML,
   };
 }
