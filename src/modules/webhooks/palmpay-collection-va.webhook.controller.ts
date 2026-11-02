@@ -41,6 +41,12 @@ const PALMPAY_ACK = 'success';
 // row, so any difference is suspicious — block the credit and page ops.
 const REQUERY_AMOUNT_TOLERANCE_KOBO = 0;
 
+const PRISMA_UNIQUE_VIOLATION = 'P2002';
+
+// outcome_detail of a delivery whose creditInflow threw. Also how a re-send
+// finds that ops was already paged for the order.
+const CREDIT_FAILED_DETAIL = 'creditInflow failed';
+
 // Reasons that get stored on unmatched Inflow rows so ops can triage.
 type UnmatchedReason =
   | 'no_user_for_va'
@@ -64,7 +70,9 @@ type UnmatchedReason =
 // hit `getCollectionOrderStatus` so the platform's books are the
 // authoritative source for "did funds actually settle on this VA with this
 // amount". Same verify-before-act discipline used on the payout side
-// (getTransferStatus).
+// (getTransferStatus). One exception: PalmPay's lookup cannot find orders into
+// the Boost-hosted (0100…) VAs at all, so for those a signed webhook is
+// credited on its signature and ops is paged to reconcile.
 @ApiTags('webhooks')
 @Controller('webhooks/palmpay/collection/va')
 export class PalmpayCollectionVaWebhookController {
@@ -198,7 +206,15 @@ export class PalmpayCollectionVaWebhookController {
       where: { virtual_account_no: payload.virtualAccountNo },
     });
     if (!repayment_account) {
-      await this._storeUnmatchedInflow(payload, parsed, amount_ngn, null, 'no_user_for_va');
+      // The PalmPay merchant is shared with Monierate, and both apps' webhook
+      // endpoints receive every collection. A VA we never issued belongs to
+      // the other app: acknowledge and skip it. No Inflow row and no ops page —
+      // it is not Bitmonie money, and an unmatched row would invite someone to
+      // apply it to a loan.
+      this.logger.log(
+        { order_no: payload.orderNo, virtual_account: payload.virtualAccountNo },
+        'PalmPay collection: VA is not a Bitmonie repayment account — skipping',
+      );
       return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'no_user_for_va', external_reference: ext_ref };
     }
 
@@ -273,7 +289,22 @@ export class PalmpayCollectionVaWebhookController {
       return { outcome: WebhookOutcome.DEFERRED, outcome_detail: 'requery threw', external_reference: ext_ref };
     }
 
-    if (verified.status !== 'successful') {
+    // PalmPay's lookup cannot see orders into the Boost-hosted (0100…) VAs at
+    // all, so a real repayment comes back "not found". handle() has already
+    // verified the signature; credit on it — but only if one was actually
+    // present (allow_unsigned_webhooks must never be enough) — and page ops to
+    // reconcile it against the PalmPay dashboard.
+    const signature_only = verified.status === 'not_found';
+    if (signature_only && !payload.sign) {
+      this.logger.warn(
+        { order_no: payload.orderNo },
+        'PalmPay collection: order not found at PalmPay and webhook unsigned — refusing to credit',
+      );
+      await this._storeUnmatchedInflow(payload, parsed, amount_ngn, user_id, 'requery_unconfirmed');
+      return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'requery_not_found_unsigned', external_reference: ext_ref };
+    }
+
+    if (!signature_only && verified.status !== 'successful') {
       // Platform query did NOT confirm success. Either still settling (webhook
       // outran the books — defer for PalmPay's retry to clear) or definitively
       // failed (rare; treat as unmatched + page ops).
@@ -291,9 +322,10 @@ export class PalmpayCollectionVaWebhookController {
     // Cross-check fields PalmPay returned in the query against the webhook
     // payload — any disagreement on amount or VA means the webhook can't be
     // trusted to credit the loan. Persist an Inflow so duplicates dedupe and
-    // ops can investigate, but don't credit.
+    // ops can investigate, but don't credit. (Nothing to cross-check when the
+    // lookup found no order.)
     const requery_kobo = verified.amount_kobo;
-    if (requery_kobo == null || Math.abs(requery_kobo - payload.orderAmount) > REQUERY_AMOUNT_TOLERANCE_KOBO) {
+    if (!signature_only && (requery_kobo == null || Math.abs(requery_kobo - payload.orderAmount) > REQUERY_AMOUNT_TOLERANCE_KOBO)) {
       this.logger.warn(
         { order_no: payload.orderNo, webhook_amount_kobo: payload.orderAmount, requery_amount_kobo: requery_kobo },
         'PalmPay collection: re-query amount disagrees with webhook — refusing to credit',
@@ -302,7 +334,7 @@ export class PalmpayCollectionVaWebhookController {
       return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'requery_amount_mismatch', external_reference: ext_ref };
     }
 
-    if (verified.virtual_account_no && verified.virtual_account_no !== payload.virtualAccountNo) {
+    if (!signature_only && verified.virtual_account_no && verified.virtual_account_no !== payload.virtualAccountNo) {
       this.logger.warn(
         { order_no: payload.orderNo, webhook_va: payload.virtualAccountNo, requery_va: verified.virtual_account_no },
         'PalmPay collection: re-query VA disagrees with webhook — refusing to credit',
@@ -325,7 +357,9 @@ export class PalmpayCollectionVaWebhookController {
           receiving_address:  payload.virtualAccountNo,
           provider_reference: payload.orderNo,
           is_matched:         false,
-          provider_response:  parsed as never,
+          provider_response:  (signature_only
+            ? { ...parsed, bitmonie_verified_by: 'signature_only', bitmonie_requery: verified.failure_reason }
+            : parsed) as never,
         },
         update: {},
       });
@@ -364,8 +398,35 @@ export class PalmpayCollectionVaWebhookController {
         },
         'PalmPay repayment auto-matched and credited',
       );
-      return { outcome: WebhookOutcome.PROCESSED, outcome_detail: `loan ${matched_loan_id} → ${credit.new_status}`, external_reference: ext_ref };
+      if (signature_only) {
+        await this.ops_alerts.alertSignatureOnlyCredit({
+          provider:        'palmpay',
+          order_no:        payload.orderNo,
+          amount_ngn:      amount_ngn.toFixed(2),
+          user_id,
+          virtual_account: payload.virtualAccountNo,
+          payer_name:      payload.payerAccountName,
+          loan_id:         matched_loan_id,
+          session_id:      payload.sessionId ?? null,
+          requery_result:  verified.failure_reason ?? 'not found',
+        });
+      }
+      return {
+        outcome:            WebhookOutcome.PROCESSED,
+        outcome_detail:     `loan ${matched_loan_id} → ${credit.new_status}${signature_only ? ' (signature only — PalmPay lookup: not found)' : ''}`,
+        external_reference: ext_ref,
+      };
     } catch (err) {
+      // loan_repayments.inflow_id is unique, so when two deliveries of the same
+      // order race, the loser throws here after the winner credited it.
+      if (await this._inflowIsMatched(inflow.id)) {
+        this.logger.log(
+          { loan_id: matched_loan_id, order_no: payload.orderNo },
+          'PalmPay collection: inflow matched by a concurrent delivery — duplicate webhook, no-op',
+        );
+        return { outcome: WebhookOutcome.IGNORED, outcome_detail: 'inflow already matched (duplicate webhook)', external_reference: ext_ref };
+      }
+
       this.logger.error(
         {
           loan_id:    matched_loan_id,
@@ -375,6 +436,13 @@ export class PalmpayCollectionVaWebhookController {
         },
         'PalmPay collection: creditInflow failed — inflow remains unmatched, ops must investigate',
       );
+
+      // PalmPay re-sends each order for a day, so a credit that keeps failing
+      // fails on every re-send. Ops is paged on the first.
+      if (await this._creditFailedBefore(payload.orderNo)) {
+        return { outcome: WebhookOutcome.ERROR, outcome_detail: CREDIT_FAILED_DETAIL, external_reference: ext_ref };
+      }
+
       await this.ops_alerts.alertUnmatchedInflow({
         reason:          'credit_failed',
         provider:        'palmpay',
@@ -387,14 +455,43 @@ export class PalmpayCollectionVaWebhookController {
         loan_id:         matched_loan_id,
         detail:          err instanceof Error ? err.message : String(err),
       });
-      return { outcome: WebhookOutcome.ERROR, outcome_detail: 'creditInflow failed', external_reference: ext_ref };
+      return { outcome: WebhookOutcome.ERROR, outcome_detail: CREDIT_FAILED_DETAIL, external_reference: ext_ref };
     }
   }
 
-  // Insert (upsert) an Inflow row that the auto-match path could not credit
-  // and page ops. Reason persisted in provider_response.bitmonie_unmatched_reason
-  // for triage. Idempotent on provider_reference @unique — duplicate webhooks
-  // re-resolve to the same row.
+  // Failure to read either answer pages ops: a duplicate page beats a missed one.
+  private async _inflowIsMatched(inflow_id: string): Promise<boolean> {
+    try {
+      const row = await this.prisma.inflow.findUnique({ where: { id: inflow_id }, select: { is_matched: true } });
+      return row?.is_matched ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  private async _creditFailedBefore(order_no: string): Promise<boolean> {
+    try {
+      const earlier = await this.prisma.webhookLog.findFirst({
+        where: {
+          provider:           'palmpay',
+          external_reference: order_no,
+          outcome:            WebhookOutcome.ERROR,
+          outcome_detail:     CREDIT_FAILED_DETAIL,
+        },
+        select: { id: true },
+      });
+      return earlier !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  // Insert an Inflow row that the auto-match path could not credit and page
+  // ops. Reason persisted in provider_response.bitmonie_unmatched_reason for
+  // triage. Idempotent on provider_reference @unique: PalmPay re-sends each
+  // order for a day, and a re-send finds the row already there — stored and
+  // paged on the first delivery (or credited, e.g. a repayment that closed the
+  // loan now reads as no_active_loans), so it neither writes nor pages.
   private async _storeUnmatchedInflow(
     payload: PalmpayCollectionNotification,
     raw: Record<string, unknown>,
@@ -403,9 +500,8 @@ export class PalmpayCollectionVaWebhookController {
     reason: UnmatchedReason,
   ): Promise<void> {
     try {
-      await this.prisma.inflow.upsert({
-        where:  { provider_reference: payload.orderNo },
-        create: {
+      await this.prisma.inflow.create({
+        data: {
           user_id,
           asset:              'NGN',
           amount:             amount_ngn,
@@ -416,9 +512,18 @@ export class PalmpayCollectionVaWebhookController {
           is_matched:         false,
           provider_response:  { ...raw, bitmonie_unmatched_reason: reason } as never,
         },
-        update: {},
       });
     } catch (err) {
+      if (
+        err && typeof err === 'object' && 'code' in err &&
+        (err as { code: string }).code === PRISMA_UNIQUE_VIOLATION
+      ) {
+        this.logger.log(
+          { order_no: payload.orderNo, reason },
+          'PalmPay collection: inflow already recorded — re-delivered webhook, ops already paged',
+        );
+        return;
+      }
       this.logger.error(
         { order_no: payload.orderNo, reason, error: err instanceof Error ? err.message : String(err) },
         'PalmPay collection: failed to persist unmatched inflow record',

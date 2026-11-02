@@ -18,6 +18,10 @@ export const PALMPAY_ORDER_STATUS_FAILED       = 3;   // payout failed
 export const PALMPAY_COLLECTION_STATUS_SUCCESS = 1;   // collection success (DO NOT use on payouts)
 export const PALMPAY_COLLECTION_STATUS_FAILED  = 2;   // collection failed
 export const PALMPAY_RESP_CODE_SUCCESS         = '00000000';
+// Undocumented; observed as "order is not find" from /api/v2/virtual/order/detail.
+// Since October 2026 it is what EVERY order into a Boost-hosted (0100…) VA
+// returns, though the webhook for it is real and signed.
+export const PALMPAY_RESP_CODE_ORDER_NOT_FOUND = '00000001';
 
 // Hardcoded payout callback URL passed to PalmPay as the `notifyUrl` field on
 // every payout request. Pinned to the production host so the URL cannot drift
@@ -186,7 +190,7 @@ export const PalmpayCollectionNotificationSchema = z.object({
   accountReference:  z.string().optional(),  // Our reference set on the virtual account
   sessionId:         z.string().optional(),  // Channel response params (not always present)
   appId:             z.string().optional(),  // Echoed back by PalmPay
-  sign:              z.string().optional(),  // RSA signature — verify when present
+  sign:              z.string().optional(),  // RSA signature — required unless allow_unsigned_webhooks
 });
 
 export type PalmpayCollectionNotification = z.infer<typeof PalmpayCollectionNotificationSchema>;

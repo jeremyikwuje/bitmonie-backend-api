@@ -559,10 +559,10 @@ model UserRepaymentAccount {
   virtual_account_name String   @db.VarChar(255)
   // Human-readable bank that hosts the VA — what the customer's banking app
   // shows on the transfer screen. PalmPay's createVirtualAccount response
-  // does not include this field, so it falls back to the partner bank
-  // (Bloom MFB) at the provider layer. Default on the column backfills
-  // existing rows non-destructively.
-  bank_name            String   @default("Bloom Microfinance Bank") @db.VarChar(100)
+  // does not include this field, so the provider layer supplies the partner
+  // bank: Boost MFB for the 0100… VAs issued now; the older 9900… VAs were
+  // Bloom MFB. Default on the column backfills existing rows non-destructively.
+  bank_name            String   @default("Boost Microfinance Bank") @db.VarChar(100)
   provider             String   @db.VarChar(50) // 'palmpay'
   provider_reference   String?  @db.VarChar(255)
   created_at           DateTime @default(now()) @db.Timestamptz

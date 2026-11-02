@@ -363,6 +363,35 @@ describe('PalmpayProvider.createVirtualAccount', () => {
   });
 });
 
+// ── getCollectionOrderStatus ──────────────────────────────────────────────────
+
+describe('PalmpayProvider.getCollectionOrderStatus', () => {
+  it('returns "successful" with the amount and VA PalmPay reports', async () => {
+    mock_ok({
+      respCode: '00000000', respMsg: 'success',
+      data: { orderNo: 'MI1', orderStatus: 1, orderAmount: 150000, currency: 'NGN', virtualAccountNo: '9900776022' },
+    });
+    const result = await make_provider().getCollectionOrderStatus('MI1');
+    expect(result).toEqual(expect.objectContaining({
+      status: 'successful', amount_kobo: 150000, virtual_account_no: '9900776022',
+    }));
+  });
+
+  // What PalmPay answers for every order into a Boost-hosted (0100…) VA.
+  it('returns "not_found" for respCode 00000001', async () => {
+    mock_ok({ respCode: '00000001', respMsg: 'order is not find', data: null });
+    const result = await make_provider().getCollectionOrderStatus('MI2114827732830531584');
+    expect(result.status).toBe('not_found');
+    expect(result.failure_reason).toBe('00000001 order is not find');
+  });
+
+  it('returns "unknown" for any other non-success respCode', async () => {
+    mock_ok({ respCode: 'OPEN_GW_000012', respMsg: 'request ip not in ip white list', data: null });
+    const result = await make_provider().getCollectionOrderStatus('MI1');
+    expect(result.status).toBe('unknown');
+  });
+});
+
 // ── verifyWebhookSignature ────────────────────────────────────────────────────
 
 describe('PalmpayProvider.verifyWebhookSignature', () => {
@@ -377,9 +406,16 @@ describe('PalmpayProvider.verifyWebhookSignature', () => {
     expect(make_provider().verifyWebhookSignature(raw_body, '')).toBe(true);
   });
 
-  it('returns true when sign field is missing (collection notifications have optional sign)', () => {
+  // A Boost-VA repayment PalmPay's lookup cannot find is credited on the
+  // signature alone, so a missing signature is no longer waved through.
+  it('returns false when sign field is missing', () => {
     const raw_body = JSON.stringify({ orderId: 'txn_001', orderStatus: 2 });
-    expect(make_provider().verifyWebhookSignature(raw_body, '')).toBe(true);
+    expect(make_provider().verifyWebhookSignature(raw_body, '')).toBe(false);
+  });
+
+  it('returns true when sign is missing only if allow_unsigned_webhooks is set (local Postman)', () => {
+    const raw_body = JSON.stringify({ orderId: 'txn_001', orderStatus: 2 });
+    expect(make_provider({ allow_unsigned_webhooks: true }).verifyWebhookSignature(raw_body, '')).toBe(true);
   });
 
   it('returns false when payload is tampered after signing', () => {

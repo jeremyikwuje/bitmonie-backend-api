@@ -14,6 +14,7 @@ import {
   PalmpayQueryCollectionOrderResponseSchema,
   PalmpayCreateVirtualAccountResponseSchema,
   PALMPAY_RESP_CODE_SUCCESS,
+  PALMPAY_RESP_CODE_ORDER_NOT_FOUND,
   PALMPAY_ORDER_STATUS_SUCCESS,
   PALMPAY_ORDER_STATUS_FAILED,
   PALMPAY_COLLECTION_STATUS_SUCCESS,
@@ -22,11 +23,13 @@ import {
 } from './palmpay.types';
 
 // PalmPay's createVirtualAccount response does not include the host bank's
-// human-readable name. For PalmPay-hosted VAs the partner bank visible on
-// the customer's banking-app transfer screen is Bloom MFB. Centralised here
-// so the same default backs both the provider return value and the
-// schema-level column default — keeps the two in lockstep.
-const PALMPAY_VA_DEFAULT_BANK_NAME = 'Bloom Microfinance Bank';
+// human-readable name. VAs PalmPay issues now (0100… numbers) are hosted by
+// Boost MFB, the bank the customer must pick on their transfer screen. The
+// older 9900… VAs were Bloom MFB, and new VAs went out labelled Bloom until
+// 2026-10-27, which sent payers to the wrong bank. Centralised here so the
+// same default backs both the provider return value and the schema-level
+// column default — keeps the two in lockstep.
+const PALMPAY_VA_DEFAULT_BANK_NAME = 'Boost Microfinance Bank';
 
 // PalmPay echoes the merchant's brand label appended in parentheses on the
 // returned virtualAccountName (e.g. "Jeremiah Ikwuje(PROCESSWITH SOFTWARE
@@ -441,7 +444,7 @@ export class PalmpayProvider implements DisbursementProvider {
   // Returns CENTS in `amount_kobo` so
   // the caller does the divide-by-100 once with Decimal.
   async getCollectionOrderStatus(order_no: string): Promise<{
-    status:           'successful' | 'failed' | 'unknown';
+    status:           'successful' | 'failed' | 'not_found' | 'unknown';
     amount_kobo?:     number;
     currency?:        string;
     virtual_account_no?: string;
@@ -471,6 +474,12 @@ export class PalmpayProvider implements DisbursementProvider {
       },
       'PalmPay queryCollectionOrder response',
     );
+
+    if (data.respCode === PALMPAY_RESP_CODE_ORDER_NOT_FOUND) {
+      // PalmPay's lookup cannot see orders into the Boost-hosted VAs at all.
+      // The caller decides what a signed webhook for one is worth.
+      return { status: 'not_found', failure_reason: `${data.respCode} ${data.respMsg}` };
+    }
 
     if (data.respCode !== PALMPAY_RESP_CODE_SUCCESS) {
       // respCode != 00000000 means PalmPay couldn't query the order at all
@@ -553,11 +562,11 @@ export class PalmpayProvider implements DisbursementProvider {
     try {
       const params = JSON.parse(raw_body) as Record<string, unknown>;
       const { sign } = params;
-      // Payout notifications always include sign (required).
-      // Collection (payin) notifications mark sign as optional — skip
-      // verification only when the field is genuinely absent, not when
-      // it is present but invalid.
-      if (sign === undefined || sign === null) return true;
+      // PalmPay's docs mark `sign` optional on collection notifications, but
+      // every real one carries it, and a deposit PalmPay's lookup cannot find
+      // is credited on the signature alone. So an unsigned payload is
+      // rejected — unless allow_unsigned_webhooks is set (local Postman only).
+      if (sign === undefined || sign === null) return this.config.allow_unsigned_webhooks === true;
       if (typeof sign !== 'string') return false;
       return this.verify_webhook_sign(params, sign);
     } catch {

@@ -32,6 +32,29 @@ describe('OpsAlertsService', () => {
 
   // ── happy path ────────────────────────────────────────────────────────────
 
+  it('pages ops when a repayment was credited on the signature alone', async () => {
+    await service.alertSignatureOnlyCredit({
+      provider:        'palmpay',
+      order_no:        'MI2114827732830531584',
+      amount_ngn:      '1500.00',
+      user_id:         'user-uuid-001',
+      virtual_account: '0100825705',
+      payer_name:      'Ada Obi',
+      loan_id:         'loan-uuid-001',
+      session_id:      '2026102621131110827333897',
+      requery_result:  '00000001 order is not find',
+    });
+
+    expect(email.sendTransactional).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to:        ALERT_RECIPIENT,
+        subject:   '[Bitmonie ops] palmpay repayment credited on signature only — ₦1500.00',
+        text_body: expect.stringContaining('MI2114827732830531584'),
+        html_body: expect.stringContaining('loan-uuid-001'),
+      }),
+    );
+  });
+
   it('sends email with subject including provider + reason', async () => {
     await service.alertUnmatchedInflow({
       reason:          'no_user_for_va',
