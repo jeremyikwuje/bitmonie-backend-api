@@ -247,7 +247,7 @@ describe('BlinkProvider.createOnchainAddress', () => {
 
 // ── sendToLightningAddress ────────────────────────────────────────────────────
 
-describe('BlinkProvider.sendToLightningAddress', () => {
+describe('BlinkProvider.sendToLightningAddress (external LNURL address)', () => {
   afterEach(() => jest.resetAllMocks());
 
   it('returns a reference string on SUCCESS', async () => {
@@ -262,13 +262,13 @@ describe('BlinkProvider.sendToLightningAddress', () => {
 
     const provider = make_provider();
     const ref = await provider.sendToLightningAddress({
-      address: 'user@blink.sv',
+      address: 'user@walletofsatoshi.com',
       amount_sat: 50000n,
       memo: 'collateral release',
     });
 
     expect(typeof ref).toBe('string');
-    expect(ref).toContain('user@blink.sv');
+    expect(ref).toContain('user@walletofsatoshi.com');
     expect(ref).toContain('50000');
   });
 
@@ -284,7 +284,7 @@ describe('BlinkProvider.sendToLightningAddress', () => {
 
     const provider = make_provider();
     await provider.sendToLightningAddress({
-      address: 'alice@blink.sv',
+      address: 'alice@walletofsatoshi.com',
       amount_sat: 75000n,
       memo: 'surplus',
     });
@@ -292,7 +292,7 @@ describe('BlinkProvider.sendToLightningAddress', () => {
     const call = (global.fetch as jest.Mock).mock.calls[0];
     const body = JSON.parse(call[1].body as string) as { variables: { input: Record<string, unknown> } };
     expect(body.variables.input.walletId).toBe(WALLET_ID);
-    expect(body.variables.input.lnAddress).toBe('alice@blink.sv');
+    expect(body.variables.input.lnAddress).toBe('alice@walletofsatoshi.com');
     expect(body.variables.input.amount).toBe(75000);
   });
 
@@ -311,7 +311,7 @@ describe('BlinkProvider.sendToLightningAddress', () => {
 
     const provider = make_provider();
     await expect(
-      provider.sendToLightningAddress({ address: 'user@blink.sv', amount_sat: 1n, memo: 'test' }),
+      provider.sendToLightningAddress({ address: 'user@walletofsatoshi.com', amount_sat: 1n, memo: 'test' }),
     ).rejects.toThrow('Insufficient balance');
   });
 
@@ -330,8 +330,111 @@ describe('BlinkProvider.sendToLightningAddress', () => {
 
     const provider = make_provider();
     await expect(
-      provider.sendToLightningAddress({ address: 'user@blink.sv', amount_sat: 1n, memo: 'test' }),
+      provider.sendToLightningAddress({ address: 'user@walletofsatoshi.com', amount_sat: 1n, memo: 'test' }),
     ).rejects.toThrow('Route not found');
+  });
+});
+
+// Blink-hosted addresses (user@blink.sv) are paid intraledger by username:
+// Blink refuses to LNURL-resolve its own addresses ("LNURL service unreachable
+// or not allowed"), so lnAddressPaymentSend must never be used for them.
+describe('BlinkProvider.sendToLightningAddress (Blink-hosted address)', () => {
+  const RECIPIENT_WALLET_ID = 'recipient-wallet-btc';
+
+  function mock_blink(intraledger: Record<string, unknown>): jest.Mock {
+    const fetch_mock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        json: () =>
+          Promise.resolve({ data: { accountDefaultWallet: { id: RECIPIENT_WALLET_ID } } }),
+      })
+      .mockResolvedValueOnce({
+        json: () => Promise.resolve({ data: { intraLedgerPaymentSend: intraledger } }),
+      });
+    global.fetch = fetch_mock;
+    return fetch_mock;
+  }
+
+  function body_of(fetch_mock: jest.Mock, call_index: number): {
+    query: string;
+    variables: Record<string, unknown> & { input?: Record<string, unknown> };
+  } {
+    return JSON.parse(fetch_mock.mock.calls[call_index][1].body as string) as {
+      query: string;
+      variables: Record<string, unknown> & { input?: Record<string, unknown> };
+    };
+  }
+
+  afterEach(() => jest.resetAllMocks());
+
+  it.each(['amilachi@blink.sv', 'Amilachi@Blink.SV', 'amilachi@pay.blink.sv'])(
+    'resolves the username to its BTC wallet and pays intraledger (%s)',
+    async (address) => {
+      const fetch_mock = mock_blink({ status: 'SUCCESS', errors: [], transaction: { id: 'txn-1' } });
+
+      const provider = make_provider();
+      await provider.sendToLightningAddress({ address, amount_sat: 75000n, memo: 'collateral back' });
+
+      expect(fetch_mock).toHaveBeenCalledTimes(2);
+
+      const lookup = body_of(fetch_mock, 0);
+      expect(lookup.query).toContain('accountDefaultWallet');
+      expect(lookup.variables).toEqual({ username: 'amilachi', walletCurrency: 'BTC' });
+
+      const send = body_of(fetch_mock, 1);
+      expect(send.query).toContain('intraLedgerPaymentSend');
+      expect(send.query).not.toContain('lnAddressPaymentSend');
+      expect(send.variables.input).toEqual({
+        walletId:          WALLET_ID,
+        recipientWalletId: RECIPIENT_WALLET_ID,
+        amount:            75000,
+        memo:              'collateral back',
+      });
+    },
+  );
+
+  it('returns the Blink transaction id as the reference', async () => {
+    mock_blink({ status: 'SUCCESS', errors: [], transaction: { id: 'txn-abc' } });
+
+    const ref = await make_provider().sendToLightningAddress({
+      address: 'amilachi@blink.sv', amount_sat: 1000n, memo: 'm',
+    });
+
+    expect(ref).toBe('blink:intraledger:txn-abc');
+  });
+
+  it('falls back to an intent reference when no transaction is returned', async () => {
+    mock_blink({ status: 'SUCCESS', errors: [], transaction: null });
+
+    const ref = await make_provider().sendToLightningAddress({
+      address: 'amilachi@blink.sv', amount_sat: 1000n, memo: 'm',
+    });
+
+    expect(ref).toMatch(/^blink:intraledger:amilachi@blink\.sv:1000:\d+$/);
+  });
+
+  it('throws when intraLedgerPaymentSend returns FAILURE', async () => {
+    mock_blink({
+      status: 'FAILURE',
+      errors: [{ message: 'Insufficient balance', code: 'INSUFFICIENT_BALANCE' }],
+    });
+
+    await expect(
+      make_provider().sendToLightningAddress({ address: 'amilachi@blink.sv', amount_sat: 1n, memo: 'm' }),
+    ).rejects.toThrow('Insufficient balance');
+  });
+
+  it('throws without sending when the username does not resolve', async () => {
+    const fetch_mock = jest.fn().mockResolvedValueOnce({
+      json: () =>
+        Promise.resolve({ data: null, errors: [{ message: 'Account does not exist for username nobody' }] }),
+    });
+    global.fetch = fetch_mock;
+
+    await expect(
+      make_provider().sendToLightningAddress({ address: 'nobody@blink.sv', amount_sat: 1n, memo: 'm' }),
+    ).rejects.toThrow('could not resolve Blink user "nobody"');
+    expect(fetch_mock).toHaveBeenCalledTimes(1);
   });
 });
 

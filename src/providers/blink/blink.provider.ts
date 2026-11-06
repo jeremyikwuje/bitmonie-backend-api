@@ -13,12 +13,22 @@ import {
   BlinkOnchainAddressCreateResponseSchema,
   BlinkOnchainPaymentSendResponseSchema,
   BlinkIntraLedgerPaymentSendResponseSchema,
+  BlinkAccountDefaultWalletResponseSchema,
   BlinkRealtimePriceResponseSchema,
   type BlinkWebhookHeaders,
 } from './blink.types';
 
 // Svix replay-attack window: reject timestamps older than 5 minutes.
 const SVIX_TOLERANCE_SECONDS = 300;
+
+// Lightning-address domains served by Blink itself. lnAddressPaymentSend makes
+// Blink resolve the address over LNURL-pay via HTTP, and Blink refuses that
+// hairpin call back into its own LNURL service ("LNURL service unreachable or
+// not allowed") — so a release to user@blink.sv fails even though the address
+// resolves fine from the public internet. Recipients on these domains are paid
+// intraledger by username instead: no LNURL hop, instant, fee-free, and the
+// memo actually reaches the customer's wallet.
+const BLINK_HOSTED_LN_ADDRESS_DOMAINS = new Set(['blink.sv', 'pay.blink.sv']);
 
 @Injectable()
 export class BlinkProvider implements CollateralProvider, PriceQuoteProvider {
@@ -216,6 +226,15 @@ export class BlinkProvider implements CollateralProvider, PriceQuoteProvider {
     amount_sat: bigint;
     memo: string;
   }): Promise<string> {
+    const blink_username = this._blinkHostedUsername(params.address);
+    if (blink_username !== null) {
+      return this._sendIntraLedgerToUsername({
+        username:   blink_username,
+        amount_sat: params.amount_sat,
+        memo:       params.memo,
+      });
+    }
+
     const mutation = `
       mutation LnAddressPaymentSend($input: LnAddressPaymentSendInput!) {
         lnAddressPaymentSend(input: $input) {
@@ -251,6 +270,92 @@ export class BlinkProvider implements CollateralProvider, PriceQuoteProvider {
     // Blink does not return a payment hash for lnAddressPaymentSend.
     // Encode the intent as a stable audit reference.
     return `blink:ln_address:${params.address}:${params.amount_sat}:${Date.now()}`;
+  }
+
+  // Returns the Blink username when `address` is a Lightning address hosted by
+  // Blink (see BLINK_HOSTED_LN_ADDRESS_DOMAINS), else null. Usernames are
+  // case-insensitive on Blink, so normalise to lowercase.
+  private _blinkHostedUsername(address: string): string | null {
+    const at = address.lastIndexOf('@');
+    if (at <= 0) return null;
+    const local_part = address.slice(0, at).trim().toLowerCase();
+    const domain = address.slice(at + 1).trim().toLowerCase();
+    if (!BLINK_HOSTED_LN_ADDRESS_DOMAINS.has(domain) || local_part === '') return null;
+    return local_part;
+  }
+
+  // Pays another Blink account by username, ledger-internal. Resolves the
+  // recipient's BTC wallet explicitly (not their default wallet, which may be
+  // the USD stable-sats one) — the customer posted BTC collateral, so it goes
+  // back as BTC with no dealer conversion in between.
+  private async _sendIntraLedgerToUsername(params: {
+    username: string;
+    amount_sat: bigint;
+    memo: string;
+  }): Promise<string> {
+    const wallet_query = `
+      query AccountDefaultWallet($username: Username!, $walletCurrency: WalletCurrency) {
+        accountDefaultWallet(username: $username, walletCurrency: $walletCurrency) {
+          id
+        }
+      }
+    `;
+
+    let recipient_wallet_id: string;
+    try {
+      const wallet = await this.graphql(
+        wallet_query,
+        { username: params.username, walletCurrency: 'BTC' },
+        BlinkAccountDefaultWalletResponseSchema,
+      );
+      recipient_wallet_id = wallet.data.accountDefaultWallet.id;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Blink sendToLightningAddress failed: could not resolve Blink user "${params.username}": ${reason}`,
+      );
+    }
+
+    const mutation = `
+      mutation IntraLedgerPaymentSend($input: IntraLedgerPaymentSendInput!) {
+        intraLedgerPaymentSend(input: $input) {
+          status
+          errors {
+            message
+            code
+          }
+          transaction {
+            id
+          }
+        }
+      }
+    `;
+
+    const data = await this.graphql(
+      mutation,
+      {
+        input: {
+          walletId:          this.config.wallet_btc_id,
+          recipientWalletId: recipient_wallet_id,
+          amount:            Number(params.amount_sat),
+          memo:              params.memo,
+        },
+      },
+      BlinkIntraLedgerPaymentSendResponseSchema,
+    );
+
+    const result = data.data.intraLedgerPaymentSend;
+
+    if (result.status === 'FAILURE' || result.errors.length > 0) {
+      const reason = result.errors.map((e) => e.message).join(', ') || 'FAILURE';
+      this.logger.error('intraLedgerPaymentSend (ln address) failed', { result });
+      throw new Error(`Blink sendToLightningAddress failed: ${reason}`);
+    }
+
+    const txn_id = result.transaction?.id;
+    return txn_id
+      ? `blink:intraledger:${txn_id}`
+      : `blink:intraledger:${params.username}@blink.sv:${params.amount_sat}:${Date.now()}`;
   }
 
   // ── sendToOnchainAddress ───────────────────────────────────────────────────
