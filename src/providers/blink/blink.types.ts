@@ -70,19 +70,40 @@ export type BlinkOnchainPaymentSendResponse = z.infer<
   typeof BlinkOnchainPaymentSendResponseSchema
 >;
 
-// ── Intraledger payment send (BTC → USD stable-sats swap) ────────────────────
+// ── Intraledger payment send ─────────────────────────────────────────────────
+// Used for (a) the BTC → USD stable-sats swap after liquidation and (b) paying
+// a Blink-hosted Lightning address (user@blink.sv) by username — see
+// BlinkProvider.sendToLightningAddress. `transaction` is only requested by (b).
 
 export const BlinkIntraLedgerPaymentSendResponseSchema = z.object({
   data: z.object({
     intraLedgerPaymentSend: z.object({
       status: z.enum(['SUCCESS', 'FAILURE', 'PENDING']),
       errors: z.array(z.object({ message: z.string(), code: z.string().optional() })),
+      transaction: z.object({ id: z.string() }).nullable().optional(),
     }),
   }),
 });
 
 export type BlinkIntraLedgerPaymentSendResponse = z.infer<
   typeof BlinkIntraLedgerPaymentSendResponseSchema
+>;
+
+// ── accountDefaultWallet — resolve a Blink username to a wallet id ───────────
+// Public query (no auth scope needed). Errors (unknown username, invalid
+// Username scalar) come back as a top-level GraphQL error envelope, which the
+// provider's transport surfaces before this schema runs.
+
+export const BlinkAccountDefaultWalletResponseSchema = z.object({
+  data: z.object({
+    accountDefaultWallet: z.object({
+      id: z.string(),
+    }),
+  }),
+});
+
+export type BlinkAccountDefaultWalletResponse = z.infer<
+  typeof BlinkAccountDefaultWalletResponseSchema
 >;
 
 // ── Inbound webhook ───────────────────────────────────────────────────────────
