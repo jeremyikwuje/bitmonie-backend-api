@@ -91,6 +91,7 @@ describe('InflowsController', () => {
       loan_id:              LOAN_ID,
       new_status:           LoanStatus.ACTIVE,
       applied_to_custody:   '0.00',
+      applied_to_origination: '0.00',
       applied_to_interest:  '0.00',
       applied_to_principal: '10130.00',
       overpay_ngn:          '0.00',

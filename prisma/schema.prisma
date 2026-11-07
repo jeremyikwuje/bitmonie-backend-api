@@ -497,6 +497,12 @@ model Loan {
 
   principal_ngn       Decimal @db.Decimal(20, 2)
   origination_fee_ngn Decimal @db.Decimal(20, 2)
+  // How the origination fee is collected. false (every loan from 2026-11 on):
+  // the full principal is disbursed and the fee is owed — part of outstanding,
+  // paid via the repayment waterfall (LoanRepayment.applied_to_origination).
+  // true (legacy loans priced before then): the fee was netted from the
+  // disbursement, so it's already collected and never part of outstanding.
+  origination_fee_netted Boolean @default(false)
 
   // Accrual-based fee inputs (v1.1) — see docs/repayment-matching-redesign.md §3
   daily_interest_rate_bps Int     @default(30) // 30 bps = 0.3% daily on outstanding principal
@@ -595,6 +601,7 @@ model LoanRepayment {
   applied_to_principal Decimal  @db.Decimal(20, 2)
   applied_to_interest  Decimal  @db.Decimal(20, 2)
   applied_to_custody   Decimal  @db.Decimal(20, 2)
+  applied_to_origination Decimal @default(0) @db.Decimal(20, 2) // origination fee paid by this repayment (waterfall: custody → origination → interest → principal)
   overpay_ngn          Decimal  @default(0) @db.Decimal(20, 2)
   match_method         String   @db.VarChar(20) // AUTO_AMOUNT | CUSTOMER_CLAIM | OPS_MANUAL
   created_at           DateTime @default(now()) @db.Timestamptz

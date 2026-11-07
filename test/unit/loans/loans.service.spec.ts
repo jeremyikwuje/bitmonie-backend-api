@@ -106,6 +106,7 @@ const DB_LOAN = {
   disbursement_id:          null,
   principal_ngn:            new Decimal('300000'),
   origination_fee_ngn:      new Decimal('1500'),
+  origination_fee_netted:   false,
   daily_interest_rate_bps:  30,
   daily_custody_fee_ngn:    new Decimal('300'),
   initial_collateral_usd:   new Decimal('250'),
@@ -372,7 +373,9 @@ describe('LoansService', () => {
         daily_total_ngn:         expect.any(String),
         amount_to_receive_ngn:   expect.any(String),
       });
-      // Disclosure: origination currently waived → customer receives full principal.
+      // Disclosure: N1,000 per started N100k, owed at repayment — the
+      // customer receives the full principal.
+      expect(result.fee_breakdown.origination_fee_ngn).toBe('3000');
       expect(result.fee_breakdown.amount_to_receive_ngn).toBe('300000');
     });
 
@@ -507,15 +510,18 @@ describe('LoansService', () => {
         principal_ngn:         expect.any(String),
         accrued_interest_ngn:  expect.any(String),
         accrued_custody_ngn:   expect.any(String),
+        origination_fee_ngn:   expect.any(String),
         total_outstanding_ngn: expect.any(String),
         days_elapsed:          expect.any(Number),
       }));
       // Day-1 of a N300k principal at 30 bps → N900 interest. Custody removed.
+      // The N1,500 origination fee is owed on top until a repayment settles it.
       // Customer-facing strings are whole-naira (kobo internally; ceil at display).
       expect(result.outstanding.principal_ngn).toBe('300000');
       expect(result.outstanding.accrued_interest_ngn).toBe('900');
       expect(result.outstanding.accrued_custody_ngn).toBe('0');
-      expect(result.outstanding.total_outstanding_ngn).toBe('300900');
+      expect(result.outstanding.origination_fee_ngn).toBe('1500');
+      expect(result.outstanding.total_outstanding_ngn).toBe('302400');
       expect(result.outstanding.days_elapsed).toBe(1);
     });
   });
@@ -837,6 +843,8 @@ describe('LoansService', () => {
       collateral_received_at?: Date | null;
       principal_ngn?: Decimal;
       daily_custody_fee_ngn?: Decimal;
+      origination_fee_ngn?: Decimal;
+      repayments?: unknown[];
     } = {}) {
       const base = DB_LOAN as Record<string, unknown>;
       return {
@@ -846,7 +854,9 @@ describe('LoansService', () => {
         principal_ngn:           opts.principal_ngn         ?? new Decimal('500000'),
         daily_interest_rate_bps: 30,
         daily_custody_fee_ngn:   opts.daily_custody_fee_ngn ?? new Decimal('700'),
-        repayments:              [],
+        origination_fee_ngn:     opts.origination_fee_ngn   ?? new Decimal('0'),
+        origination_fee_netted:  false,
+        repayments:              opts.repayments            ?? [],
       };
     }
 
@@ -1027,6 +1037,88 @@ describe('LoansService', () => {
       );
     });
 
+    // ── Origination fee owed at repayment ───────────────────────────────────
+    // 500k principal at day 30 → interest 45,000; fee 5,000 (N1,000 / N100k).
+    // Outstanding = 500,000 + 45,000 + 5,000 = 550,000.
+
+    it('applies a partial repayment to the origination fee first', async () => {
+      const handles = setupTx(makeActiveLoan({ origination_fee_ngn: new Decimal('5000') }));
+
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('100000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      // custody 0 → origination 5,000 → interest 45,000 → principal 50,000
+      expect(result.new_status).toBe(LoanStatus.ACTIVE);
+      expect(result.applied_to_origination).toBe('5000');
+      expect(result.applied_to_interest).toBe('45000');
+      expect(result.applied_to_principal).toBe('50000');
+      expect(result.outstanding_ngn).toBe('450000');
+      expect(handles.tx_repayment_create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ applied_to_origination: new Decimal('5000') }),
+        }),
+      );
+    });
+
+    it('does not close the loan while the origination fee is unpaid', async () => {
+      setupTx(makeActiveLoan({ origination_fee_ngn: new Decimal('5000') }));
+
+      // Principal + interest alone (545k) is N5,000 short of the 550k owed.
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('545000'),
+        match_method: 'CUSTOMER_CLAIM',
+      });
+
+      expect(result.new_status).toBe(LoanStatus.ACTIVE);
+      expect(result.outstanding_ngn).toBe('5000');
+    });
+
+    it('closes the loan when the repayment covers fee + interest + principal', async () => {
+      setupTx(makeActiveLoan({ origination_fee_ngn: new Decimal('5000') }));
+
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('550000'),
+        match_method: 'CUSTOMER_CLAIM',
+      });
+
+      expect(result.new_status).toBe(LoanStatus.REPAID);
+      expect(result.applied_to_origination).toBe('5000');
+      expect(result.applied_to_principal).toBe('500000');
+      expect(result.overpay_ngn).toBe('0');
+    });
+
+    it('does not charge the fee again once a previous repayment paid it', async () => {
+      setupTx(makeActiveLoan({
+        origination_fee_ngn: new Decimal('5000'),
+        repayments: [{
+          applied_to_principal:   new Decimal('0'),
+          applied_to_interest:    new Decimal('0'),
+          applied_to_custody:     new Decimal('0'),
+          applied_to_origination: new Decimal('5000'),
+          created_at:             new Date(Date.now() - 29.5 * 86400_000),
+        }],
+      }));
+
+      const result = await service.creditInflow({
+        inflow_id:    INFLOW_ID,
+        loan_id:      LOAN_ID,
+        amount_ngn:   new Decimal('100000'),
+        match_method: 'AUTO_AMOUNT',
+      });
+
+      expect(result.applied_to_origination).toBe('0');
+      expect(result.applied_to_interest).toBe('45000');
+      expect(result.applied_to_principal).toBe('55000');
+    });
+
     it('is idempotent against an already-REPAID loan (no-op return)', async () => {
       setupTx({ ...makeActiveLoan(), status: LoanStatus.REPAID });
 
@@ -1155,6 +1247,7 @@ describe('LoansService', () => {
         collateral_received_at: new Date(Date.now() - 29.5 * 86400_000),
         principal_ngn:          new Decimal('500000'),
         daily_custody_fee_ngn:  new Decimal('700'),
+        origination_fee_ngn:    new Decimal('0'),
         repayments:             [],
       };
     }

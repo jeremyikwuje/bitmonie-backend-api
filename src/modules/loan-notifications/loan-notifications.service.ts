@@ -58,6 +58,7 @@ export interface NotifyRepaymentParams {
   user_id:              string;
   amount_paid_ngn:      Decimal;
   applied_to_custody:   Decimal;
+  applied_to_origination: Decimal;
   applied_to_interest:  Decimal;
   applied_to_principal: Decimal;
   overpay_ngn:          Decimal;
@@ -152,13 +153,10 @@ export class LoanNotificationsService {
       return;
     }
 
-    // Net amount that will actually hit the customer's bank — the headline
-    // figure in the email. Computing here (rather than carrying through the
-    // call chain) keeps the loan→notification boundary thin: the caller only
-    // needs to say "this loan's collateral landed", not re-do the math.
+    // The full principal hits the customer's bank — the origination fee is
+    // owed at repayment, not netted from the payout.
     const principal_decimal   = new Decimal(loan.principal_ngn.toString());
     const origination_decimal = new Decimal(loan.origination_fee_ngn.toString());
-    const net_decimal         = principal_decimal.minus(origination_decimal);
     const daily_custody       = new Decimal(loan.daily_custody_fee_ngn.toString());
     // Day-0 daily interest (drops as principal pays down — surfaced as the
     // headline rate; future repayments lower it piecewise).
@@ -169,7 +167,7 @@ export class LoanNotificationsService {
       loan_id:               params.loan_id,
       principal_ngn:         displayNgn(principal_decimal, 'ceil'),
       origination_fee_ngn:   displayNgn(origination_decimal, 'ceil'),
-      amount_to_receive_ngn: displayNgn(net_decimal, 'floor'),
+      amount_to_receive_ngn: displayNgn(principal_decimal, 'floor'),
       daily_interest_ngn:    displayNgn(daily_interest, 'ceil'),
       daily_custody_fee_ngn: displayNgn(daily_custody, 'ceil'),
     });
@@ -271,6 +269,7 @@ export class LoanNotificationsService {
       // Money customer paid us / applied to debts → ceil. Refundable overpay → floor.
       amount_paid_ngn:            displayNgn(params.amount_paid_ngn, 'ceil'),
       applied_to_custody:         displayNgn(params.applied_to_custody, 'ceil'),
+      applied_to_origination:     displayNgn(params.applied_to_origination, 'ceil'),
       applied_to_interest:        displayNgn(params.applied_to_interest, 'ceil'),
       applied_to_principal:       displayNgn(params.applied_to_principal, 'ceil'),
       overpay_ngn:                displayNgn(params.overpay_ngn, 'floor'),

@@ -87,6 +87,7 @@ export interface CreditInflowResult {
   loan_id:                string;
   new_status:             LoanStatus;
   applied_to_custody:     string;
+  applied_to_origination: string;
   applied_to_interest:    string;
   applied_to_principal:   string;
   overpay_ngn:            string;
@@ -108,6 +109,7 @@ export interface RepaymentInstructionsResult {
     principal_ngn:         string;
     accrued_interest_ngn:  string;
     accrued_custody_ngn:   string;
+    origination_fee_ngn:   string;
     total_outstanding_ngn: string;
     days_elapsed:          number;
   };
@@ -433,6 +435,7 @@ export class LoansService {
         principal_ngn:         displayNgn(outstanding.principal_ngn, 'ceil'),
         accrued_interest_ngn:  displayNgn(outstanding.accrued_interest_ngn, 'ceil'),
         accrued_custody_ngn:   displayNgn(outstanding.accrued_custody_ngn, 'ceil'),
+        origination_fee_ngn:   displayNgn(outstanding.origination_fee_ngn, 'ceil'),
         total_outstanding_ngn: displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
         days_elapsed:          outstanding.days_elapsed,
       },
@@ -486,6 +489,7 @@ export class LoansService {
         principal_ngn:         displayNgn(outstanding.principal_ngn, 'ceil'),
         accrued_interest_ngn:  displayNgn(outstanding.accrued_interest_ngn, 'ceil'),
         accrued_custody_ngn:   displayNgn(outstanding.accrued_custody_ngn, 'ceil'),
+        origination_fee_ngn:   displayNgn(outstanding.origination_fee_ngn, 'ceil'),
         total_outstanding_ngn: displayNgn(outstanding.total_outstanding_ngn, 'ceil'),
         days_elapsed:          outstanding.days_elapsed,
       },
@@ -666,9 +670,9 @@ export class LoansService {
   // ─────────────────────────────────────────────────────────────────────────
   // creditInflow
   //
-  // Credits an inflow to a specific loan with the waterfall (custody → interest
-  // → principal → overpay). All work runs in a single Prisma transaction that
-  // locks the loan FOR UPDATE, inserts a LoanRepayment, marks the Inflow
+  // Credits an inflow to a specific loan with the waterfall (custody →
+  // origination → interest → principal → overpay). All work runs in a single
+  // Prisma transaction that locks the loan FOR UPDATE, inserts a LoanRepayment, marks the Inflow
   // matched, and transitions ACTIVE → REPAID if outstanding is fully cleared.
   //
   // Called by:
@@ -706,6 +710,7 @@ export class LoansService {
     type RepaymentReceipt = {
       user_id:              string;
       applied_to_custody:   Decimal;
+      applied_to_origination: Decimal;
       applied_to_interest:  Decimal;
       applied_to_principal: Decimal;
       overpay_ngn:          Decimal;
@@ -735,6 +740,7 @@ export class LoansService {
             loan_id:              loan.id,
             new_status:           loan.status,
             applied_to_custody:   '0',
+            applied_to_origination: '0',
             applied_to_interest:  '0',
             applied_to_principal: '0',
             overpay_ngn:          '0',
@@ -756,9 +762,14 @@ export class LoansService {
         as_of: now,
       });
 
-      // Waterfall: custody → interest → principal → overpay
-      const { applied_to_custody, applied_to_interest, applied_to_principal, overpay_ngn } =
-        this._waterfall(params.amount_ngn, outstanding);
+      // Waterfall: custody → origination → interest → principal → overpay
+      const {
+        applied_to_custody,
+        applied_to_origination,
+        applied_to_interest,
+        applied_to_principal,
+        overpay_ngn,
+      } = this._waterfall(params.amount_ngn, outstanding);
 
       await tx.loanRepayment.create({
         data: {
@@ -766,6 +777,7 @@ export class LoansService {
           inflow_id:            params.inflow_id,
           amount_ngn:           params.amount_ngn,
           applied_to_custody,
+          applied_to_origination,
           applied_to_interest,
           applied_to_principal,
           overpay_ngn,
@@ -786,6 +798,7 @@ export class LoansService {
       // Recompute outstanding after applying this repayment.
       const new_outstanding_total = outstanding.total_outstanding_ngn
         .minus(applied_to_custody)
+        .minus(applied_to_origination)
         .minus(applied_to_interest)
         .minus(applied_to_principal);
 
@@ -815,6 +828,7 @@ export class LoansService {
             applied_to_principal: applied_to_principal.toFixed(2),
             applied_to_interest:  applied_to_interest.toFixed(2),
             applied_to_custody:   applied_to_custody.toFixed(2),
+            applied_to_origination: applied_to_origination.toFixed(2),
             overpay_ngn:          overpay_ngn.toFixed(2),
           },
         });
@@ -831,6 +845,7 @@ export class LoansService {
             applied_to_principal: applied_to_principal.toFixed(2),
             applied_to_interest:  applied_to_interest.toFixed(2),
             applied_to_custody:   applied_to_custody.toFixed(2),
+            applied_to_origination: applied_to_origination.toFixed(2),
             remaining_ngn:        new_outstanding_total.toFixed(2),
           },
         });
@@ -844,6 +859,7 @@ export class LoansService {
           // the LoanRepayment row + flow into the next accrual computation.
           // Money-they-paid-us → ceil; refundable overpay (we'll pay them) → floor.
           applied_to_custody:   displayNgn(applied_to_custody, 'ceil'),
+          applied_to_origination: displayNgn(applied_to_origination, 'ceil'),
           applied_to_interest:  displayNgn(applied_to_interest, 'ceil'),
           applied_to_principal: displayNgn(applied_to_principal, 'ceil'),
           overpay_ngn:          displayNgn(overpay_ngn, 'floor'),
@@ -852,6 +868,7 @@ export class LoansService {
         receipt: {
           user_id:              loan.user_id,
           applied_to_custody,
+          applied_to_origination,
           applied_to_interest,
           applied_to_principal,
           overpay_ngn,
@@ -871,6 +888,7 @@ export class LoansService {
         user_id:              receipt.user_id,
         amount_paid_ngn:      params.amount_ngn,
         applied_to_custody:   receipt.applied_to_custody,
+        applied_to_origination: receipt.applied_to_origination,
         applied_to_interest:  receipt.applied_to_interest,
         applied_to_principal: receipt.applied_to_principal,
         overpay_ngn:          receipt.overpay_ngn,
@@ -1244,33 +1262,47 @@ export class LoansService {
   // Maps a Prisma LoanRepayment row to the shape accepted by AccrualService.
   // Decimal columns come back as Prisma Decimal — convert to decimal.js Decimal.
   private _toAccrualRepayment(r: {
-    applied_to_principal: { toString: () => string };
-    applied_to_interest:  { toString: () => string };
-    applied_to_custody:   { toString: () => string };
-    created_at:           Date;
+    applied_to_principal:   { toString: () => string };
+    applied_to_interest:    { toString: () => string };
+    applied_to_custody:     { toString: () => string };
+    applied_to_origination: { toString: () => string };
+    created_at:             Date;
   }): AccrualRepaymentInput {
     return {
-      applied_to_principal: new Decimal(r.applied_to_principal.toString()),
-      applied_to_interest:  new Decimal(r.applied_to_interest.toString()),
-      applied_to_custody:   new Decimal(r.applied_to_custody.toString()),
-      created_at:           r.created_at,
+      applied_to_principal:   new Decimal(r.applied_to_principal.toString()),
+      applied_to_interest:    new Decimal(r.applied_to_interest.toString()),
+      applied_to_custody:     new Decimal(r.applied_to_custody.toString()),
+      applied_to_origination: new Decimal(r.applied_to_origination.toString()),
+      created_at:             r.created_at,
     };
   }
 
-  // Pure waterfall: splits `amount` across custody → interest → principal → overpay.
+  // Pure waterfall: splits `amount` across
+  // custody → origination → interest → principal → overpay.
+  // Fees first (custody is always 0 now), so the first repayment settles the
+  // origination fee before reducing interest or principal.
   private _waterfall(
     amount: Decimal,
-    outstanding: { accrued_custody_ngn: Decimal; accrued_interest_ngn: Decimal; principal_ngn: Decimal },
+    outstanding: {
+      accrued_custody_ngn:  Decimal;
+      origination_fee_ngn:  Decimal;
+      accrued_interest_ngn: Decimal;
+      principal_ngn:        Decimal;
+    },
   ): {
-    applied_to_custody:   Decimal;
-    applied_to_interest:  Decimal;
-    applied_to_principal: Decimal;
-    overpay_ngn:          Decimal;
+    applied_to_custody:     Decimal;
+    applied_to_origination: Decimal;
+    applied_to_interest:    Decimal;
+    applied_to_principal:   Decimal;
+    overpay_ngn:            Decimal;
   } {
     let remaining = amount;
 
     const applied_to_custody = Decimal.min(remaining, outstanding.accrued_custody_ngn);
     remaining = remaining.minus(applied_to_custody);
+
+    const applied_to_origination = Decimal.min(remaining, outstanding.origination_fee_ngn);
+    remaining = remaining.minus(applied_to_origination);
 
     const applied_to_interest = Decimal.min(remaining, outstanding.accrued_interest_ngn);
     remaining = remaining.minus(applied_to_interest);
@@ -1280,6 +1312,12 @@ export class LoansService {
 
     const overpay_ngn = remaining;
 
-    return { applied_to_custody, applied_to_interest, applied_to_principal, overpay_ngn };
+    return {
+      applied_to_custody,
+      applied_to_origination,
+      applied_to_interest,
+      applied_to_principal,
+      overpay_ngn,
+    };
   }
 }

@@ -196,11 +196,10 @@ export class BlinkWebhookController {
     // not here.
     const disbursement_account = loan.disbursement_account as never as { account_holder_name: string | null };
 
-    // Net disbursement: customer receives principal − origination_fee. The
-    // origination fee is collected as the spread between what we send out
-    // and what they repay. Accrual + repayment waterfall stay on full
-    // principal_ngn — origination is NOT a separate outstanding bucket.
-    const disburse_amount = loan.principal_ngn.minus(loan.origination_fee_ngn);
+    // The customer receives the full principal. The origination fee is owed
+    // on top and collected through the repayment waterfall (part of
+    // outstanding — see AccrualService), not netted from the payout.
+    const disburse_amount = loan.principal_ngn;
 
     const disbursement = await this.disbursements.createForLoan({
       user_id:           loan.user_id,

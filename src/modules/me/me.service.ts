@@ -214,12 +214,14 @@ function toAccrualRepayment(r: {
   applied_to_principal: { toString: () => string };
   applied_to_interest: { toString: () => string };
   applied_to_custody: { toString: () => string };
+  applied_to_origination: { toString: () => string };
   created_at: Date;
 }): AccrualRepaymentInput {
   return {
     applied_to_principal: new Decimal(r.applied_to_principal.toString()),
     applied_to_interest: new Decimal(r.applied_to_interest.toString()),
     applied_to_custody: new Decimal(r.applied_to_custody.toString()),
+    applied_to_origination: new Decimal(r.applied_to_origination.toString()),
     created_at: r.created_at,
   };
 }

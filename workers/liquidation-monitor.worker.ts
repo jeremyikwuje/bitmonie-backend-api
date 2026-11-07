@@ -146,6 +146,8 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
     principal_ngn: string;
     daily_interest_rate_bps: number;
     daily_custody_fee_ngn: string;
+    origination_fee_ngn: string;
+    origination_fee_netted: boolean;
     collateral_received_at: Date | null;
     sat_ngn_rate_at_creation: string;
     collateral_release_address: string | null;
@@ -156,6 +158,8 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
            principal_ngn::text,
            daily_interest_rate_bps,
            daily_custody_fee_ngn::text,
+           origination_fee_ngn::text,
+           origination_fee_netted,
            collateral_received_at,
            sat_ngn_rate_at_creation::text,
            collateral_release_address
@@ -171,6 +175,7 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
     applied_to_principal: Decimal;
     applied_to_interest:  Decimal;
     applied_to_custody:   Decimal;
+    applied_to_origination: Decimal;
     created_at:           Date;
   }>>();
 
@@ -182,6 +187,7 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
         applied_to_principal: true,
         applied_to_interest:  true,
         applied_to_custody:   true,
+        applied_to_origination: true,
         created_at:           true,
       },
     });
@@ -191,6 +197,7 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
         applied_to_principal: new Decimal(row.applied_to_principal.toString()),
         applied_to_interest:  new Decimal(row.applied_to_interest.toString()),
         applied_to_custody:   new Decimal(row.applied_to_custody.toString()),
+        applied_to_origination: new Decimal(row.applied_to_origination.toString()),
         created_at:           row.created_at,
       });
       repayments_by_loan.set(row.loan_id, list);
@@ -209,7 +216,7 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
     const principal = new Decimal(loan.principal_ngn);
     const rate_at_creation = new Decimal(loan.sat_ngn_rate_at_creation);
 
-    // Compute live outstanding (principal + accrued interest + accrued custody)
+    // Compute live outstanding (principal + accrued interest + unpaid origination fee)
     // per CLAUDE.md §5.4a. Liquidation ratio is collateral / outstanding,
     // NOT collateral / principal.
     const outstanding = accrual.compute({
@@ -217,6 +224,8 @@ export async function runLiquidationCycle(deps: LiquidationDeps): Promise<void> 
         principal_ngn:           principal,
         daily_interest_rate_bps: loan.daily_interest_rate_bps,
         daily_custody_fee_ngn:   new Decimal(loan.daily_custody_fee_ngn),
+        origination_fee_ngn:     new Decimal(loan.origination_fee_ngn),
+        origination_fee_netted:  loan.origination_fee_netted,
         collateral_received_at:  loan.collateral_received_at,
       },
       repayments: repayments_by_loan.get(loan.id) ?? [],
