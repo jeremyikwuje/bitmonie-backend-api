@@ -17,6 +17,8 @@ const LOAN: AccrualLoanInput = {
   principal_ngn:           new Decimal('500000'),
   daily_interest_rate_bps: 30,
   daily_custody_fee_ngn:   new Decimal('700'),
+  origination_fee_ngn:     new Decimal('0'),   // fee behaviour covered in its own block below
+  origination_fee_netted:  false,
   collateral_received_at:  COLLATERAL_AT,
 };
 
@@ -118,6 +120,7 @@ describe('AccrualService — single partial repayment', () => {
   // custody balance — the field is preserved on past rows for audit only.
   const REPAYMENT: AccrualRepaymentInput = {
     applied_to_custody:   new Decimal('21000'),
+    applied_to_origination: new Decimal('0'),
     applied_to_interest:  new Decimal('45000'),
     applied_to_principal: new Decimal('34000'),
     created_at:           addMs(COLLATERAL_AT, DAYS(30)),
@@ -157,6 +160,7 @@ describe('AccrualService — single partial repayment', () => {
   it('repayment at t=0 reduces principal for all interest accrual', () => {
     const zero_day: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal(0),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal(0),
       applied_to_principal: new Decimal('100000'),
       created_at:           COLLATERAL_AT,
@@ -178,6 +182,7 @@ describe('AccrualService — multiple repayments', () => {
   it('two repayments segment correctly — day 10, day 20', () => {
     const r1: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal('7000'),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal('15000'),
       applied_to_principal: new Decimal('28000'),
       created_at:           addMs(COLLATERAL_AT, DAYS(10)),
@@ -185,6 +190,7 @@ describe('AccrualService — multiple repayments', () => {
     const r2: AccrualRepaymentInput = {
       // At day 20: unpaid custody = 14,000 − 7,000 = 7,000; unpaid interest = 14,160; principal 472k
       applied_to_custody:   new Decimal('7000'),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal('14160'),
       applied_to_principal: new Decimal('28840'),
       created_at:           addMs(COLLATERAL_AT, DAYS(20)),
@@ -212,12 +218,14 @@ describe('AccrualService — multiple repayments', () => {
   it('repayments out of order in input are still processed chronologically', () => {
     const r_later: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal(0),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal(0),
       applied_to_principal: new Decimal('100000'),
       created_at:           addMs(COLLATERAL_AT, DAYS(20)),
     };
     const r_earlier: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal(0),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal(0),
       applied_to_principal: new Decimal('50000'),
       created_at:           addMs(COLLATERAL_AT, DAYS(10)),
@@ -232,6 +240,7 @@ describe('AccrualService — multiple repayments', () => {
   it('repayments after as_of are ignored', () => {
     const future_repayment: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal('1000'),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal('1000'),
       applied_to_principal: new Decimal('1000'),
       created_at:           addMs(COLLATERAL_AT, DAYS(60)),
@@ -254,6 +263,7 @@ describe('AccrualService — flooring', () => {
   it('over-paid principal → outstanding_principal = 0 (not negative)', () => {
     const over: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal(0),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal(0),
       applied_to_principal: new Decimal('600000'),   // > principal
       created_at:           addMs(COLLATERAL_AT, DAYS(1)),
@@ -269,6 +279,7 @@ describe('AccrualService — flooring', () => {
   it('over-paid interest → accrued_interest = 0 (not negative)', () => {
     const over: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal(0),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal('1000000'),   // absurdly over
       applied_to_principal: new Decimal(0),
       created_at:           COLLATERAL_AT,
@@ -284,6 +295,7 @@ describe('AccrualService — flooring', () => {
   it('custody is always 0 regardless of stored daily rate or past applied_to_custody', () => {
     const past: AccrualRepaymentInput = {
       applied_to_custody:   new Decimal('1000000'),
+      applied_to_origination: new Decimal('0'),
       applied_to_interest:  new Decimal(0),
       applied_to_principal: new Decimal(0),
       created_at:           COLLATERAL_AT,
@@ -306,6 +318,7 @@ describe('AccrualService — determinism', () => {
       repayments: [
         {
           applied_to_custody:   new Decimal('700'),
+          applied_to_origination: new Decimal('0'),
           applied_to_interest:  new Decimal('1500'),
           applied_to_principal: new Decimal('5000'),
           created_at:           addMs(COLLATERAL_AT, DAYS(7)),
@@ -319,5 +332,94 @@ describe('AccrualService — determinism', () => {
     expect(a.principal_ngn).toEqual(b.principal_ngn);
     expect(a.accrued_interest_ngn).toEqual(b.accrued_interest_ngn);
     expect(a.accrued_custody_ngn).toEqual(b.accrued_custody_ngn);
+  });
+});
+
+// ── Origination fee (owed at repayment) ───────────────────────────────────────
+// N170,000 loan → N2,000 fee (N1,000 per started N100k). The fee is a fixed
+// amount added to outstanding — it does not accrue interest and does not
+// grow with time.
+
+describe('AccrualService — origination fee owed at repayment', () => {
+  const FEE_LOAN: AccrualLoanInput = {
+    principal_ngn:           new Decimal('170000'),
+    daily_interest_rate_bps: 30,
+    daily_custody_fee_ngn:   new Decimal('0'),
+    origination_fee_ngn:     new Decimal('2000'),
+    origination_fee_netted:  false,
+    collateral_received_at:  COLLATERAL_AT,
+  };
+
+  function repayment(origination: string, interest: string, principal: string, day: number): AccrualRepaymentInput {
+    return {
+      applied_to_custody:     new Decimal('0'),
+      applied_to_origination: new Decimal(origination),
+      applied_to_interest:    new Decimal(interest),
+      applied_to_principal:   new Decimal(principal),
+      created_at:             addMs(COLLATERAL_AT, DAYS(day)),
+    };
+  }
+
+  it('is part of outstanding from day 0 and does not accrue', () => {
+    const day0 = svc().compute({ loan: FEE_LOAN, repayments: [], as_of: COLLATERAL_AT });
+    expect(day0.origination_fee_ngn).toEqual(new Decimal('2000'));
+    expect(day0.total_outstanding_ngn).toEqual(new Decimal('172000'));
+
+    // Day 5: interest = 170,000 × 0.003 × 5 = 2,550; fee unchanged.
+    const day5 = svc().compute({ loan: FEE_LOAN, repayments: [], as_of: addMs(COLLATERAL_AT, DAYS(5)) });
+    expect(day5.origination_fee_ngn).toEqual(new Decimal('2000'));
+    expect(day5.accrued_interest_ngn).toEqual(new Decimal('2550'));
+    expect(day5.total_outstanding_ngn).toEqual(new Decimal('174550'));
+  });
+
+  it('is included for a never-activated loan', () => {
+    const result = svc().compute({
+      loan: { ...FEE_LOAN, collateral_received_at: null },
+      repayments: [],
+      as_of: COLLATERAL_AT,
+    });
+    expect(result.origination_fee_ngn).toEqual(new Decimal('2000'));
+    expect(result.total_outstanding_ngn).toEqual(new Decimal('172000'));
+  });
+
+  it('drops by what repayments applied to it', () => {
+    // Day-2 partial of N1,500 went entirely to the fee (fees first).
+    const result = svc().compute({
+      loan: FEE_LOAN,
+      repayments: [repayment('1500', '0', '0', 2)],
+      as_of: addMs(COLLATERAL_AT, DAYS(5)),
+    });
+    expect(result.origination_fee_ngn).toEqual(new Decimal('500'));
+    // Principal untouched → interest still on 170,000 for 5 days.
+    expect(result.accrued_interest_ngn).toEqual(new Decimal('2550'));
+    expect(result.total_outstanding_ngn).toEqual(new Decimal('173050'));
+  });
+
+  it('is 0 once paid and never goes negative', () => {
+    const result = svc().compute({
+      loan: FEE_LOAN,
+      repayments: [repayment('2500', '0', '0', 1)],
+      as_of: addMs(COLLATERAL_AT, DAYS(1)),
+    });
+    expect(result.origination_fee_ngn).toEqual(new Decimal(0));
+  });
+
+  it('a repayment covering fee + interest + principal clears the loan', () => {
+    const result = svc().compute({
+      loan: FEE_LOAN,
+      repayments: [repayment('2000', '2550', '170000', 5)],
+      as_of: addMs(COLLATERAL_AT, DAYS(5)),
+    });
+    expect(result.total_outstanding_ngn).toEqual(new Decimal(0));
+  });
+
+  it('is never owed on legacy loans whose fee was netted at disbursement', () => {
+    const result = svc().compute({
+      loan: { ...FEE_LOAN, origination_fee_netted: true },
+      repayments: [repayment('0', '2550', '170000', 5)],
+      as_of: addMs(COLLATERAL_AT, DAYS(5)),
+    });
+    expect(result.origination_fee_ngn).toEqual(new Decimal(0));
+    expect(result.total_outstanding_ngn).toEqual(new Decimal(0));
   });
 });

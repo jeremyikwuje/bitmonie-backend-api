@@ -58,7 +58,7 @@ export class InflowsController {
     summary: 'Apply this unmatched inflow to a loan',
     description:
       'Credits the chosen unmatched inflow against the chosen ACTIVE loan via the standard ' +
-      'waterfall (custody → interest → principal → overpay). The N10,000 floor is bypassed on ' +
+      'waterfall (custody → origination → interest → principal → overpay). The N10,000 floor is bypassed on ' +
       'this customer-explicit path — the floor exists to keep auto-matching from acting on ' +
       'tiny accidental transfers, which doesn\'t apply when the customer themselves directs ' +
       'the apply. Idempotency-Key header required.',

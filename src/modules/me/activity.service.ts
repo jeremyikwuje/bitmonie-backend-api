@@ -320,10 +320,12 @@ function sumApplied(meta: Record<string, unknown>): Decimal | null {
   const principal = readDecimal(meta.applied_to_principal);
   const interest = readDecimal(meta.applied_to_interest);
   const custody = readDecimal(meta.applied_to_custody);
-  if (!principal && !interest && !custody) return null;
+  const origination = readDecimal(meta.applied_to_origination);
+  if (!principal && !interest && !custody && !origination) return null;
   return (principal ?? new Decimal(0))
     .plus(interest ?? new Decimal(0))
-    .plus(custody ?? new Decimal(0));
+    .plus(custody ?? new Decimal(0))
+    .plus(origination ?? new Decimal(0));
 }
 
 function readDecimal(value: unknown): Decimal | null {

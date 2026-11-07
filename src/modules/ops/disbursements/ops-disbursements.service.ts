@@ -228,9 +228,10 @@ export class OpsDisbursementsService {
       throw new LoanDisbursementAccountRequiredException();
     }
 
-    // Net disbursement — origination fee is collected as the spread between
-    // what's sent and what's repaid. Mirrors blink.webhook.controller.ts.
-    const disburse_amount = loan.principal_ngn.minus(loan.origination_fee_ngn);
+    // Full principal — the origination fee is owed at repayment, not netted.
+    // Mirrors blink.webhook.controller.ts. (Legacy loans with
+    // origination_fee_netted=true are all terminal, so never re-disbursed.)
+    const disburse_amount = loan.principal_ngn;
 
     await this.prisma.$transaction(async (tx) => {
       await this.ops_audit.write(tx, {

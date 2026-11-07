@@ -25,7 +25,7 @@ export interface CalculatorInput {
 export interface CalculatorResult {
   // Known at origination — stored on Loan
   principal_ngn:             Decimal;
-  origination_fee_ngn:       Decimal;      // ceil(principal / 100k) × 500
+  origination_fee_ngn:       Decimal;      // ceil(principal / 100k) × 1,000
   daily_custody_fee_ngn:     Decimal;      // always 0 — custody fee removed (legacy field retained for schema/API stability)
   daily_interest_rate_bps:   number;       // 30 → 0.3%
   daily_interest_ngn:        Decimal;      // 0.3% × principal at day 0 (drops as customer repays principal)
@@ -37,7 +37,7 @@ export interface CalculatorResult {
   sat_ngn_rate_at_creation:  Decimal;
 
   // Disclosure (FCCPC / CBN consumer-protection)
-  amount_to_receive_ngn:     Decimal;      // principal − origination — what hits the customer's bank
+  amount_to_receive_ngn:     Decimal;      // = principal — fee is owed at repayment, not netted
 
   // Display-only thresholds (UI shows "liquidation if BTC drops to X")
   // Not stored on Loan — liquidation monitor recomputes against live outstanding.
@@ -67,7 +67,10 @@ export class CalculatorService {
       .div(SATS_PER_BTC)
       .mul(btc_usd_rate);
 
-    // ── Origination fee (one-time, netted at disbursement) ─────────────────
+    // ── Origination fee (one-time, owed at repayment) ──────────────────────
+    // Per *started* N100k — ceil, so any loan pays at least one unit. The full
+    // principal is disbursed; the fee is added to outstanding and collected
+    // first in the repayment waterfall.
     const origination_units = principal_ngn.div(HUNDRED_K_NGN).ceil();
     const origination_fee_ngn = origination_units.mul(ORIGINATION_FEE_PER_100K_NGN);
 
@@ -81,8 +84,8 @@ export class CalculatorService {
     // checkout-time disclosure so the customer sees what each idle day costs.
     const daily_interest_ngn = principal_ngn.mul(DAILY_INTEREST_RATE_BPS).div(BPS_DENOMINATOR);
 
-    // ── Disclosure: net disbursement (origination netted upfront) ──────────
-    const amount_to_receive_ngn = principal_ngn.minus(origination_fee_ngn);
+    // ── Disclosure: what hits the customer's bank — the full principal ─────
+    const amount_to_receive_ngn = principal_ngn;
 
     // ── Display-only thresholds — based on principal alone at day 0 ────────
     const sat_decimal = new Decimal(collateral_amount_sat.toString());

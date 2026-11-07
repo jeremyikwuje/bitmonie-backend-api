@@ -138,13 +138,14 @@ Provider name lives in `processing_provider`, `triggered_by_id`, etc. — as dat
 ### 5.4a Outstanding & liquidation math (accrual-based)
 
 - Outstanding is **never stored** as a column. Always computed live by `AccrualService.compute({ loan, repayments, as_of })`. Source of truth.
-- `outstanding = principal_remaining + accrued_interest_unpaid` (custody removed), where:
+- `outstanding = principal_remaining + accrued_interest_unpaid + origination_fee_unpaid` (custody removed), where:
   - `principal_remaining = principal_ngn − sum(repayments.applied_to_principal)`
   - Interest is piecewise-linear in time: `0.3% × current_principal × days_in_segment` between repayments.
+  - `origination_fee_unpaid = origination_fee_ngn − sum(repayments.applied_to_origination)` — a fixed amount owed from disbursement, never accrues. **0 when `loans.origination_fee_netted = true`** (legacy loans priced before 2026-11 had the fee deducted from the payout — already collected, never owed). New loans disburse the full principal.
   - Custody fee is **removed** — `accrued_custody_ngn` is always 0 regardless of any non-zero `daily_custody_fee_ngn` stored on legacy loans. The schema columns (`loans.daily_custody_fee_ngn`, `loan_repayments.applied_to_custody`) are retained to preserve historical audit trail; already-paid custody on past repayments stays in those rows but does not affect new math.
   - Day boundary: `ceil((as_of − collateral_received_at) / 24h)` — partial days count as full.
 - Liquidation: `collateral_ngn < 1.10 × outstanding` (LIQUIDATION_THRESHOLD against TOTAL outstanding, not principal alone). Recomputed on every monitor tick.
-- Repayment waterfall: **custody → interest → principal → overpay**. Apply in this order so principal-based interest accrual the next day uses the correctly-reduced principal.
+- Repayment waterfall: **custody → origination → interest → principal → overpay**. Fees first (the first repayment settles the origination fee); principal last so principal-based interest accrual the next day uses the correctly-reduced principal. A loan only closes to REPAID once the fee is paid too.
 - Collateral release is **all-or-nothing on REPAID**. Partial repayments never release collateral — releasing partial collateral creates an attack surface (repay N1 of N1M, demand N0.99 back).
 - **Release pipeline (CollateralReleaseService).** Three callers converge on the same service method, coordinated by a per-loan Redis SETNX lock so a customer never gets double-paid:
   1. **Post-commit fire-and-forget** in `LoansService.creditInflow`: when a repayment closes a loan to REPAID, `releaseForLoan(loan_id)` is called outside the credit transaction. Does not block the credit response.
@@ -530,7 +531,7 @@ LIQUIDATION_THRESHOLD        = 1.10            // 110% of TOTAL outstanding (pri
 ALERT_THRESHOLD              = 1.20            // 120% of TOTAL outstanding
 
 // v1.1 accrual-based pricing
-ORIGINATION_FEE_PER_100K_NGN = 0               // waived — customer receives full principal at disbursement
+ORIGINATION_FEE_PER_100K_NGN = 1_000           // per STARTED N100k (ceil) → every loan pays ≥ N1,000; owed at repayment (full principal disbursed)
 DAILY_INTEREST_RATE_BPS      = 30              // 0.3% daily on outstanding principal (simple, non-compounding)
 CUSTODY_FEE_PER_100_USD_NGN  = 0               // removed — no custody charge. Schema columns retained for legacy audit only.
 
@@ -567,7 +568,7 @@ Two components, all `Decimal`:
 
 | Fee | Rule | When |
 |---|---|---|
-| **Origination** | waived (constant currently 0) | One-time, upfront at disbursement |
+| **Origination** | `ceil(principal / 100k) × N1,000` — N1,000 per started N100k, so every loan pays ≥ N1,000 (N170k → N2,000). **Owed at repayment, not netted** — the customer receives the full principal; the fee is part of outstanding and settled first by the waterfall. Stored on the Loan at checkout, so a pricing change never re-prices an existing loan | One-time, collected at repayment |
 | **Interest** | `0.3% daily × current outstanding principal` (simple, non-compounding) | Accrues daily |
 | ~~**Custody**~~ | ~~removed~~ — `daily_custody_fee_ngn` is always 0; AccrualService floors `accrued_custody_ngn` at 0 regardless of any non-zero column value on legacy loan rows | — |
 
@@ -578,22 +579,23 @@ Loans are **open-term** — there is no chosen term to project against. The calc
 **Worked example.** N500,000 principal:
 
 ```
-origination          = 0 (waived)
+origination          = ceil(500_000 / 100_000) × 1,000    = N5,000  → owed at repayment; customer receives the full 500,000
 daily_interest (day 1) = 500_000 × 0.003                  = N1,500/day
 
 Day 30 (no repayments yet):
   accrued_interest   = 500_000 × 0.003 × 30              = N45,000
-  outstanding_total  = 500_000 + 45_000                  = N545,000
+  outstanding_total  = 500_000 + 45_000 + 5_000 (fee)    = N550,000
 
-Day 30 customer pays N100,000 — waterfall: custody (always 0) → interest → principal:
-  applied_to_custody    = 0
-  applied_to_interest   = 45,000
-  applied_to_principal  = 55,000
-  → outstanding_principal becomes 445,000
+Day 30 customer pays N100,000 — waterfall: custody (always 0) → origination → interest → principal:
+  applied_to_custody     = 0
+  applied_to_origination = 5,000
+  applied_to_interest    = 45,000
+  applied_to_principal   = 50,000
+  → outstanding_principal becomes 450,000, fee settled
 
 Day 31-60 interest at the new principal:
-  interest_segment    = 445_000 × 0.003 × 30             = N40,050
-  outstanding_total at day 60 = 445_000 + 40,050         = N485,050
+  interest_segment    = 450_000 × 0.003 × 30             = N40,500
+  outstanding_total at day 60 = 450_000 + 40,500         = N490,500
 ```
 
 ---

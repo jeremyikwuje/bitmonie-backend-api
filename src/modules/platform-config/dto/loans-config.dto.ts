@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 export class LoansFeesDto {
-  @ApiProperty({ example: '500.00', description: 'Origination fee per N100,000 of principal — one-time, upfront' })
+  @ApiProperty({ example: '1000.00', description: 'Origination fee per started N100,000 of principal — one-time, owed at repayment (the full principal is disbursed)' })
   origination_fee_per_100k_ngn!: string;
 
   @ApiProperty({ example: 30, description: 'Daily interest on outstanding principal in basis points (30 bps = 0.3%)' })
