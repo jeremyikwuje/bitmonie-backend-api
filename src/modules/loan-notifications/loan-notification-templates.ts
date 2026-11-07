@@ -16,8 +16,10 @@
 //
 // Loans are open-term (no due date, no maturity). Customers repay anytime;
 // daily interest accrues on outstanding principal until the loan closes
-// (custody fee removed). The only forced-close trigger is coverage falling
-// below 1.10 (auto-liquidation).
+// (custody fee removed). The one-time origination fee is NOT netted from the
+// payout — the customer receives the full principal and the fee is owed on
+// top, settled first by their repayment. The only forced-close trigger is
+// coverage falling below 1.10 (auto-liquidation).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { MIN_PARTIAL_REPAYMENT_NGN } from '@/common/constants';
@@ -43,8 +45,8 @@ export interface LoanCreatedParams {
   first_name:            string | null;
   loan_id:               string;
   principal_ngn:         string;     // whole NGN, ceil
-  origination_fee_ngn:   string;     // whole NGN, ceil
-  amount_to_receive_ngn: string;     // whole NGN, floor — net of origination
+  origination_fee_ngn:   string;     // whole NGN, ceil — owed at repayment
+  amount_to_receive_ngn: string;     // whole NGN, floor — the full principal
   daily_interest_ngn:    string;     // whole NGN, ceil — 0.3% × principal at day 0
   daily_custody_fee_ngn: string;     // whole NGN, ceil — fixed at origination
   collateral_amount_sat: bigint;
@@ -56,8 +58,8 @@ export interface CollateralReceivedParams {
   first_name:            string | null;
   loan_id:               string;
   principal_ngn:         string;     // whole NGN, ceil — gross loan amount
-  origination_fee_ngn:   string;     // whole NGN, ceil — netted from disbursement
-  amount_to_receive_ngn: string;     // whole NGN, floor — what actually hits the bank
+  origination_fee_ngn:   string;     // whole NGN, ceil — owed at repayment
+  amount_to_receive_ngn: string;     // whole NGN, floor — what hits the bank (full principal)
   daily_interest_ngn:    string;     // whole NGN, ceil
   daily_custody_fee_ngn: string;     // whole NGN, ceil
 }
@@ -65,9 +67,9 @@ export interface CollateralReceivedParams {
 export interface LoanDisbursedParams {
   first_name:            string | null;
   loan_id:               string;
-  amount_ngn:            string;         // whole NGN, floor — what hit the customer's bank (netted)
+  amount_ngn:            string;         // whole NGN, floor — what hit the customer's bank
   principal_ngn:         string;         // whole NGN, ceil — gross loan amount
-  origination_fee_ngn:   string;         // whole NGN, ceil — netted from disbursement
+  origination_fee_ngn:   string;         // whole NGN, ceil — owed at repayment
   daily_interest_ngn:    string;         // whole NGN, ceil
   daily_custody_fee_ngn: string;         // whole NGN, ceil
   bank_name:             string;
@@ -99,6 +101,7 @@ export interface RepaymentParams {
   loan_id:                    string;
   amount_paid_ngn:            string;      // whole NGN, ceil
   applied_to_custody:         string;      // whole NGN, ceil
+  applied_to_origination:     string;      // whole NGN, ceil
   applied_to_interest:        string;      // whole NGN, ceil
   applied_to_principal:       string;      // whole NGN, ceil
   overpay_ngn:                string;      // whole NGN, floor — refundable to customer
@@ -137,6 +140,10 @@ const FOOTER_TEXT = '\n\n— Bitmonie';
 const FOOTER_HTML = '<p style="color:#666;font-size:12px;margin-top:20px">— Bitmonie</p>';
 
 const NGN = (amount: string) => `₦${formatThousands(amount)}`;
+
+// The origination fee is owed on top of the principal and settled first by
+// the customer's repayment — never deducted from the payout.
+const originationValue = (fee: string) => `${NGN(fee)} (paid when you repay)`;
 
 // Input is a whole-naira integer string ("50000"). Producing service rounds
 // kobo away at the boundary; templates only ever render whole naira.
@@ -185,7 +192,6 @@ function escapeHtml(s: string): string {
 export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
   const sid              = shortLoanId(p.loan_id);
   const principal        = NGN(p.principal_ngn);
-  const origination      = NGN(p.origination_fee_ngn);
   const amount_receive   = NGN(p.amount_to_receive_ngn);
   const daily_interest   = NGN(p.daily_interest_ngn);
   const sats             = formatSats(p.collateral_amount_sat);
@@ -197,8 +203,9 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
       `${greet(p.first_name)},\n\n` +
       `Your Bitmonie loan ${sid} has been created. We're now waiting for your BTC collateral.\n\n` +
       `  Loan amount:        ${principal}\n` +
+      `  You will receive:   ${amount_receive}\n` +
       (has_origination
-        ? `  Origination fee:    −${origination}\n  You will receive:   ${amount_receive}\n`
+        ? `  Origination fee:    ${originationValue(p.origination_fee_ngn)}\n`
         : '') +
       `  Daily interest:     ${daily_interest}\n` +
       `  Collateral needed:  ${sats}\n\n` +
@@ -211,8 +218,9 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
       `<p>Your Bitmonie loan <code>${sid}</code> has been created. We're now waiting for your BTC collateral.</p>` +
       `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
         row('Loan amount',        principal) +
+        row('You will receive',   amount_receive) +
         (has_origination
-          ? row('Origination fee',  `−${origination}`) + row('You will receive', amount_receive)
+          ? row('Origination fee',  originationValue(p.origination_fee_ngn))
           : '') +
         row('Daily interest',     daily_interest) +
         row('Collateral needed',  sats) +
@@ -230,17 +238,12 @@ export function buildLoanCreatedEmail(p: LoanCreatedParams): NotificationEmail {
 export function buildCollateralReceivedEmail(p: CollateralReceivedParams): NotificationEmail {
   const sid             = shortLoanId(p.loan_id);
   const principal       = NGN(p.principal_ngn);
-  const origination     = NGN(p.origination_fee_ngn);
   const net_amount      = NGN(p.amount_to_receive_ngn);
   const daily_interest  = NGN(p.daily_interest_ngn);
   const has_origination = parseFloat(p.origination_fee_ngn) > 0;
 
-  const lede_text = has_origination
-    ? `${net_amount} is being disbursed to your default account now (${principal} less ${origination} origination fee).`
-    : `${net_amount} is being disbursed to your default account now.`;
-  const lede_html = has_origination
-    ? `<b>${net_amount}</b> is being disbursed to your default account now (${principal} less ${origination} origination fee).`
-    : `<b>${net_amount}</b> is being disbursed to your default account now.`;
+  const lede_text = `${net_amount} is being disbursed to your default account now.`;
+  const lede_html = `<b>${net_amount}</b> is being disbursed to your default account now.`;
 
   return {
     subject: `Bitmonie loan ${sid} — collateral confirmed, disbursing now`,
@@ -249,7 +252,7 @@ export function buildCollateralReceivedEmail(p: CollateralReceivedParams): Notif
       `We've received your BTC collateral for loan ${sid}. ${lede_text}\n\n` +
       `  Loan amount:     ${principal}\n` +
       (has_origination
-        ? `  Origination fee: −${origination}\n  You'll receive:  ${net_amount}\n`
+        ? `  Origination fee: ${originationValue(p.origination_fee_ngn)}\n`
         : '') +
       `  Daily interest:  ${daily_interest}\n\n` +
       `Repay any time. Interest (0.3%/day on outstanding principal) accrues daily until you repay.${FOOTER_TEXT}`,
@@ -259,7 +262,7 @@ export function buildCollateralReceivedEmail(p: CollateralReceivedParams): Notif
       `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
         row('Loan amount',     principal) +
         (has_origination
-          ? row('Origination fee', `−${origination}`) + row("You'll receive", net_amount)
+          ? row('Origination fee', originationValue(p.origination_fee_ngn))
           : '') +
         row('Daily interest',  daily_interest) +
       `</table>` +
@@ -274,7 +277,6 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
   const sid            = shortLoanId(p.loan_id);
   const amount         = NGN(p.amount_ngn);
   const principal      = NGN(p.principal_ngn);
-  const origination    = NGN(p.origination_fee_ngn);
   const daily_interest = NGN(p.daily_interest_ngn);
   const account_line   = p.account_name ? `${p.account_unique} (${p.account_name})` : p.account_unique;
   const has_origination = parseFloat(p.origination_fee_ngn) > 0;
@@ -286,7 +288,7 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
       `${amount} has been sent to your account for loan ${sid}.\n\n` +
       `  Loan amount:    ${principal}\n` +
       (has_origination
-        ? `  Origination fee: −${origination}\n  You received:   ${amount}\n\n`
+        ? `  Origination fee: ${originationValue(p.origination_fee_ngn)}\n\n`
         : '\n') +
       `  Bank:           ${p.bank_name}\n` +
       `  Account:        ${account_line}\n\n` +
@@ -302,7 +304,7 @@ export function buildLoanDisbursedEmail(p: LoanDisbursedParams): NotificationEma
       `<table style="font-family:system-ui,sans-serif;font-size:14px">` +
         row('Loan amount',     principal) +
         (has_origination
-          ? row('Origination fee', `−${origination}`) + row('You received', amount)
+          ? row('Origination fee', originationValue(p.origination_fee_ngn))
           : '') +
         row('Bank',            p.bank_name) +
         row('Account',         account_line) +
@@ -329,6 +331,10 @@ export function buildRepaymentEmail(p: RepaymentParams): NotificationEmail {
   if (parseFloat(p.applied_to_custody) > 0) {
     breakdown_lines.push(`  Custody fees paid:    ${NGN(p.applied_to_custody)}`);
     breakdown_rows.push(row('Custody fees paid',    NGN(p.applied_to_custody)));
+  }
+  if (parseFloat(p.applied_to_origination) > 0) {
+    breakdown_lines.push(`  Origination fee paid: ${NGN(p.applied_to_origination)}`);
+    breakdown_rows.push(row('Origination fee paid', NGN(p.applied_to_origination)));
   }
   if (parseFloat(p.applied_to_interest) > 0) {
     breakdown_lines.push(`  Interest paid:        ${NGN(p.applied_to_interest)}`);

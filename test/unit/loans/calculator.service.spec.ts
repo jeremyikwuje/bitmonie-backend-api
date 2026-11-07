@@ -18,7 +18,7 @@ import {
 //   collateral_ngn         = 500_000 / 0.60 ≈ 833_333.33
 //   collateral_sat         = ceil(833_333.33 / 0.97) = 859_107
 //   initial_collateral_usd = (859_107 / 100_000_000) × 65_000 ≈ $558.4226
-//   origination            = waived (0)
+//   origination            = ceil(500_000 / 100_000) × 1,000 = 5,000
 //   daily_custody_fee_ngn  = 0 (custody removed; field retained for stability)
 //   daily_interest_ngn     = 500_000 × 0.003 = 1,500
 
@@ -38,21 +38,26 @@ function calculate(overrides: Partial<{
   });
 }
 
-// ── Origination fee (currently waived — ORIGINATION_FEE_PER_100K_NGN = 0) ─────
+// ── Origination fee (N1,000 per started N100k) ────────────────────────────────
 
 describe('CalculatorService — origination fee', () => {
-  it('is waived at every supported principal', () => {
-    const principals = ['10000', '150000', '333000', '500000', '10000000'];
-    for (const p of principals) {
-      const result = calculate({ principal_ngn: new Decimal(p) });
-      expect(result.origination_fee_ngn).toEqual(new Decimal('0'));
-    }
+  it.each([
+    ['10000',    '1000'],    // minimum loan → one unit
+    ['100000',   '1000'],    // exactly one N100k
+    ['100001',   '2000'],    // a started second N100k counts
+    ['170000',   '2000'],
+    ['500000',   '5000'],
+    ['10000000', '100000'],  // max self-serve → 1%
+  ])('principal N%s → fee N%s', (principal, fee) => {
+    const result = calculate({ principal_ngn: new Decimal(principal) });
+    expect(result.origination_fee_ngn).toEqual(new Decimal(fee));
   });
 
-  it('still scales as ORIGINATION_FEE_PER_100K_NGN × ceil(principal / 100k)', () => {
+  it('is ceil(principal / 100k) × ORIGINATION_FEE_PER_100K_NGN', () => {
     const result = calculate({ principal_ngn: new Decimal('333000') });
     expect(result.origination_fee_ngn).toEqual(ORIGINATION_FEE_PER_100K_NGN.mul(4));
   });
+
 });
 
 // ── Daily custody fee (removed — always 0) ────────────────────────────────────
@@ -92,9 +97,16 @@ describe('CalculatorService — daily interest', () => {
 // ── Disclosure (net disbursement) ─────────────────────────────────────────────
 
 describe('CalculatorService — disclosure', () => {
-  it('amount_to_receive_ngn = principal − origination (origination currently 0)', () => {
+  it('amount_to_receive_ngn = full principal — the fee is owed at repayment, not netted', () => {
     const result = calculate();
     expect(result.amount_to_receive_ngn).toEqual(PRINCIPAL);
+    expect(result.origination_fee_ngn).toEqual(new Decimal('5000'));
+  });
+
+  it('sizes collateral on the full principal, not the net payout', () => {
+    // The customer owes the full principal, so collateral covers all of it.
+    const result = calculate();
+    expect(result.collateral_amount_sat).toBe(859_107n);
   });
 });
 

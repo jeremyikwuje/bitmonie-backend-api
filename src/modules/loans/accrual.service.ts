@@ -12,23 +12,27 @@ export interface AccrualLoanInput {
   principal_ngn:           Decimal;
   daily_interest_rate_bps: number;
   daily_custody_fee_ngn:   Decimal;
+  origination_fee_ngn:     Decimal;
+  origination_fee_netted:  boolean;          // true → fee was netted at disbursement, never owed
   collateral_received_at:  Date | null;      // accrual starts here; null → loan never activated
 }
 
 export interface AccrualRepaymentInput {
-  applied_to_principal: Decimal;
-  applied_to_interest:  Decimal;
-  applied_to_custody:   Decimal;
-  created_at:           Date;
+  applied_to_principal:   Decimal;
+  applied_to_interest:    Decimal;
+  applied_to_custody:     Decimal;
+  applied_to_origination: Decimal;
+  created_at:             Date;
 }
 
 export interface Outstanding {
-  principal_ngn:         Decimal;       // outstanding principal (after repayments)
-  accrued_interest_ngn:  Decimal;       // unpaid interest
-  accrued_custody_ngn:   Decimal;       // unpaid custody
-  total_outstanding_ngn: Decimal;       // sum of the three
-  days_elapsed:          number;        // ceil of (as_of − collateral_received_at) in days
-  as_of:                 Date;
+  principal_ngn:          Decimal;       // outstanding principal (after repayments)
+  accrued_interest_ngn:   Decimal;       // unpaid interest
+  accrued_custody_ngn:    Decimal;       // unpaid custody (always 0 — custody removed)
+  origination_fee_ngn:    Decimal;       // unpaid origination fee (0 once paid, or if netted)
+  total_outstanding_ngn:  Decimal;       // sum of the four
+  days_elapsed:           number;        // ceil of (as_of − collateral_received_at) in days
+  as_of:                  Date;
 }
 
 const MS_PER_DAY      = 86_400_000;
@@ -57,13 +61,21 @@ export class AccrualService {
   }): Outstanding {
     const { loan, repayments, as_of } = params;
 
-    // Loan never activated — nothing has accrued.
+    // Origination fee owed at repayment — a fixed amount, not time-accrued.
+    // Legacy loans netted it from the disbursement, so it was never owed.
+    const origination_due = loan.origination_fee_netted
+      ? new Decimal(0)
+      : loan.origination_fee_ngn;
+
+    // Loan never activated — nothing has accrued. The fee is still shown as
+    // part of what the loan will cost (it becomes owed once disbursed).
     if (!loan.collateral_received_at) {
       return {
         principal_ngn:         loan.principal_ngn,
         accrued_interest_ngn:  new Decimal(0),
         accrued_custody_ngn:   new Decimal(0),
-        total_outstanding_ngn: loan.principal_ngn,
+        origination_fee_ngn:   origination_due,
+        total_outstanding_ngn: loan.principal_ngn.plus(origination_due),
         days_elapsed:          0,
         as_of,
       };
@@ -118,6 +130,10 @@ export class AccrualService {
       (sum, r) => sum.plus(r.applied_to_interest),
       new Decimal(0),
     );
+    const paid_origination = relevant.reduce(
+      (sum, r) => sum.plus(r.applied_to_origination),
+      new Decimal(0),
+    );
 
     // ── Outstanding = gross accrued minus what's been paid (floored at 0) ──
     // Custody fee removed: gross accrual is 0 regardless of any non-zero
@@ -127,14 +143,17 @@ export class AccrualService {
     const outstanding_principal = Decimal.max(loan.principal_ngn.minus(paid_principal), new Decimal(0));
     const outstanding_interest  = Decimal.max(gross_interest.minus(paid_interest), new Decimal(0));
     const outstanding_custody   = new Decimal(0);
+    const outstanding_origination = Decimal.max(origination_due.minus(paid_origination), new Decimal(0));
 
     return {
       principal_ngn:         outstanding_principal,
       accrued_interest_ngn:  outstanding_interest,
       accrued_custody_ngn:   outstanding_custody,
+      origination_fee_ngn:   outstanding_origination,
       total_outstanding_ngn: outstanding_principal
         .plus(outstanding_interest)
-        .plus(outstanding_custody),
+        .plus(outstanding_custody)
+        .plus(outstanding_origination),
       days_elapsed: final_day,
       as_of,
     };

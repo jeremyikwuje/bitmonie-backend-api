@@ -32,7 +32,7 @@ Explicitly **not** in this design: in-place loan modification, refinancing, term
 | 4 | **Three coverage tiers govern customer notifications:** WARN at `< 1.20` (informational), MARGIN_CALL at `< 1.15` (urgent top-up notice — act immediately), LIQUIDATE at `< 1.10` (auto-execute). |
 | 5 | **No time guarantee on margin call.** Customer copy is direct: "top up or repay immediately — we liquidate at 110% coverage." Bitmonie does not absorb fast-decline risk by holding liquidation. The notice is a courtesy heads-up, not a contractual window. |
 | 6 | **Recovery-aware dedupe.** Each tier's notification fires once per crossing. When coverage rises back above a tier (top-up or repayment), the dedupe clears so a future re-deterioration re-notifies. |
-| 7 | **Calculator returns daily rates only.** No term input, no projected total, no "if held 30 days" preview. Output: `origination_fee_ngn` (currently 0), `daily_interest_ngn`, `daily_custody_fee_ngn` (always 0 — retained for API stability), plus collateral + liquidation-price math. |
+| 7 | **Calculator returns daily rates only.** No term input, no projected total, no "if held 30 days" preview. Output: `origination_fee_ngn` (N1,000 per started N100k — see CLAUDE.md §10), `daily_interest_ngn`, `daily_custody_fee_ngn` (always 0 — retained for API stability), plus collateral + liquidation-price math. |
 | 8 | **Self-termination via accrual is surfaced in checkout copy.** "Daily charges accrue. Even if BTC stays flat, your loan will eventually reach the liquidation line — at current rates, that's roughly day 200 from disbursement." |
 | 9 | Margin-call notification does **not** create a loan status row. Loan stays ACTIVE. Email-out + structured log is sufficient — no new self-transition reason code, no new status-log entry. |
 | 10 | All other loan rules unchanged: liquidation math (§5.4a), repayment waterfall, partial repayments, add-collateral, collateral release, partial unique index on `PENDING_COLLATERAL` per user, 30-min `INVOICE_EXPIRED` for collateral-payment window (separate concern from loan duration — kept). |
@@ -94,7 +94,7 @@ There is no `EXPIRED` end state for the loan itself; `EXPIRED` only applies to P
 ```json
 {
   "principal_ngn": "6000000",
-  "origination_fee_ngn": "0",
+  "origination_fee_ngn": "60000",
   "daily_interest_ngn": "18000",
   "daily_custody_fee_ngn": "0",
   "collateral_amount_sat": "6666667",

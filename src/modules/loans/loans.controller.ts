@@ -215,7 +215,7 @@ export class LoansController {
     description:
       'Returns the user\'s permanent NGN virtual account (where to send a bank transfer), ' +
       'the live outstanding breakdown, and the minimum partial-repayment floor. ' +
-      'Repayments apply via custody → interest → principal waterfall.',
+      'Repayments apply via custody → origination → interest → principal waterfall.',
   })
   @ApiResponse({ status: 200, description: 'Repayment account + outstanding returned' })
   @ApiResponse({ status: 404, description: 'Loan not found' })

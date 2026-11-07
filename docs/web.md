@@ -155,7 +155,8 @@ Single-shot snapshot the web client polls on app focus and after every write tha
 
 Fields:
 
-- `outstanding_ngn` — sum of `AccrualService.compute(loan, repayments, now)` across all `ACTIVE` loans, displayed via `displayNgn(..., 'ceil')` to match repayment-side rounding (customer pays us → ceil).
+- `outstanding_ngn` — sum of `AccrualService.compute(loan, repayments, now)` across all `ACTIVE` loans, displayed via `displayNgn(..., 'ceil')` to match repayment-side rounding (customer pays us → ceil). Includes any unpaid origination fee.
+- **Origination fee (owed at repayment).** The customer receives the full principal; the one-time origination fee (`origination_fee_ngn` on the calculator, checkout and loan) is owed on top and settled first by the repayment waterfall (custody → origination → interest → principal). Every loan `outstanding` block (`GET /v1/loans/:id`, `GET /v1/loans/:id/repayment-instructions`) carries `origination_fee_ngn` = the unpaid part (`"0"` once paid); each repayment row carries `applied_to_origination`. Legacy loans with `origination_fee_netted: true` had the fee deducted from the payout and never owe it.
 - `daily_accrual_ngn` — total amount the user's outstanding will grow by tomorrow if they take no action: interest + custody, summed across every `ACTIVE` loan. Interest is computed against the current outstanding principal (post-repayments), so partial repayments lower it. Custody is fixed at origination and accrues regardless of repayments. Drives the "₦X accrues daily" urgency line on Home. `"0"` when no `ACTIVE` loans.
 - `active_loan_count` — count of loans in `ACTIVE`. `PENDING_COLLATERAL` excluded — it has zero outstanding.
 - `attention[]` — loans needing user action, sorted by `urgency` desc. Web renders this as the peek-stack on Home (top card visible, others peek with a `+N more` indicator). Empty array when nothing needs attention.

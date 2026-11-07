@@ -13,6 +13,8 @@ function makeLoan(overrides: Partial<{
   principal_ngn: string;
   daily_interest_rate_bps: number;
   daily_custody_fee_ngn: string;
+  origination_fee_ngn: string;
+  origination_fee_netted: boolean;
   collateral_received_at: Date | null;
   sat_ngn_rate_at_creation: string;
   collateral_release_address: string | null;
@@ -24,6 +26,8 @@ function makeLoan(overrides: Partial<{
     principal_ngn:              '80000',                           // N80,000
     daily_interest_rate_bps:    30,
     daily_custody_fee_ngn:      '100',
+    origination_fee_ngn:        '0',                               // fee case has its own test
+    origination_fee_netted:     false,
     collateral_received_at:     new Date(Date.now() - 1_000),      // ~1s ago — day 1 accrual
     sat_ngn_rate_at_creation:   '1.000000',                        // baseline for sanity-bound checks
     collateral_release_address: null,
@@ -44,6 +48,7 @@ function makeDeps(
     applied_to_principal: string;
     applied_to_interest:  string;
     applied_to_custody:   string;
+    applied_to_origination?: string;
     created_at:           Date;
   }> = [],
 ): LiquidationDeps & { prisma: jest.Mocked<LiquidationDeps['prisma']>; redis: jest.Mocked<LiquidationDeps['redis']>; log: jest.Mock; blink: { swapBtcToUsd: jest.Mock }; send_email: jest.Mock } {
@@ -61,7 +66,11 @@ function makeDeps(
   const prisma = {
     $queryRaw:    jest.fn().mockResolvedValue(loans),
     $transaction: jest.fn().mockImplementation((fn: (tx: typeof mock_tx) => Promise<unknown>) => fn(mock_tx)),
-    loanRepayment: { findMany: jest.fn().mockResolvedValue(repayments) },
+    loanRepayment: {
+      findMany: jest.fn().mockResolvedValue(
+        repayments.map((r) => ({ applied_to_origination: '0', ...r })),
+      ),
+    },
     user: { findUnique: jest.fn().mockResolvedValue({ email: 'borrower@example.com', first_name: 'Ada' }) },
     userRepaymentAccount: {
       findFirst: jest.fn().mockResolvedValue({
@@ -308,6 +317,27 @@ describe('runLiquidationCycle', () => {
     await runLiquidationCycle(deps);
 
     expect(deps.prisma.$transaction).toHaveBeenCalled();
+    const mock_tx = (deps.prisma as unknown as { _mock_tx: MockTx })._mock_tx;
+    expect(mock_tx.loan.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: LoanStatus.LIQUIDATED }) }),
+    );
+  });
+
+  it('counts an unpaid origination fee in the liquidation ratio', async () => {
+    // 1-day-old N80,000 loan with a N1,000 fee owed at repayment.
+    // outstanding without fee = 80_000 + 240 = 80_240 → ratio 89_000 / 80_240 ≈ 1.109 (no liquidation)
+    // outstanding with fee    = 81_240             → ratio 89_000 / 81_240 ≈ 1.096 < 1.10 → liquidates
+    const loan = makeLoan({
+      collateral_amount_sat: BigInt(100_000),
+      principal_ngn:         '80000',
+      origination_fee_ngn:   '1000',
+    });
+    const deps = makeDeps([loan], {
+      [REDIS_KEYS.PRICE('SAT_NGN')]: JSON.stringify({ buy: '1.000000', sell: '0.890000' }),
+    });
+
+    await runLiquidationCycle(deps);
+
     const mock_tx = (deps.prisma as unknown as { _mock_tx: MockTx })._mock_tx;
     expect(mock_tx.loan.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: LoanStatus.LIQUIDATED }) }),

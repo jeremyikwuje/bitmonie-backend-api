@@ -196,16 +196,16 @@ describe('BlinkWebhookController', () => {
     expect(outflows.dispatch).not.toHaveBeenCalled();
   });
 
-  it('nets origination fee from the disbursement amount (principal − origination)', async () => {
+  it('disburses the full principal — the origination fee is owed at repayment, not netted', async () => {
     await request(app.getHttpServer())
       .post('/webhooks/blink')
       .set(SVIX_HEADERS)
       .send(VALID_RAW_BODY)
       .expect(200);
 
-    // principal_ngn 500_000 − origination_fee_ngn 2_500 = 497_500
+    // principal_ngn 500_000 (the loan's N2,500 origination fee is not deducted)
     const call = disbursements.createForLoan.mock.calls[0][0] as { amount: Decimal };
-    expect(call.amount.toString()).toBe('497500');
+    expect(call.amount.toString()).toBe('500000');
   });
 
   it('skips loan actions when source_type is not LOAN (future offramp flow)', async () => {

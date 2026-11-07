@@ -39,6 +39,8 @@ function make_loan(overrides: Partial<{
     collateral_received_at: overrides.collateral_received_at ?? new Date('2026-01-01'),
     daily_interest_rate_bps: overrides.daily_interest_rate_bps ?? 30,
     daily_custody_fee_ngn: new Decimal(overrides.daily_custody_fee_ngn ?? '700'),
+    origination_fee_ngn: new Decimal('0'),
+    origination_fee_netted: false,
     repayments: overrides.repayments ?? [],
   };
 }
