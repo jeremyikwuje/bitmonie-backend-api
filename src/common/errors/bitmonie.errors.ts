@@ -530,6 +530,18 @@ export class LoanDisabledException extends BitmonieException {
   }
 }
 
+// Public loan-application intake is switched off (LOAN_APPLICATIONS_OPEN).
+// Global switch, not per-user — see LoanApplicationsOpenGuard.
+export class LoanApplicationsClosedException extends BitmonieException {
+  constructor() {
+    super(
+      'LOAN_APPLICATIONS_CLOSED',
+      'Online loan applications are currently closed. Please contact the loans team directly.',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
 // ── AUTH ────────────────────────────────────────────────────────
 
 // Generic "rejected" credential. Customer auth is passwordless, so this is

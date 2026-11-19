@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import request from 'supertest';
 import type { LoanApplication } from '@prisma/client';
@@ -9,6 +10,7 @@ import { LoanApplicationsController } from '@/modules/loan-applications/loan-app
 import { LoanApplicationsService } from '@/modules/loan-applications/loan-applications.service';
 import { BotTrapGuard } from '@/modules/loan-applications/guards/bot-trap.guard';
 import { LoanApplicationsThrottlerGuard } from '@/modules/loan-applications/guards/loan-applications-throttler.guard';
+import { LoanApplicationsOpenGuard } from '@/modules/loan-applications/guards/loan-applications-open.guard';
 import { GlobalExceptionFilter } from '@/common/filters/global-exception.filter';
 
 function make_application_row(overrides: Partial<LoanApplication> = {}): LoanApplication {
@@ -45,29 +47,83 @@ function valid_body(): Record<string, unknown> {
   };
 }
 
+async function build_app(
+  service: { create: jest.Mock },
+  loan_applications_open: boolean,
+): Promise<INestApplication> {
+  const module: TestingModule = await Test.createTestingModule({
+    imports: [
+      // Per-IP cap is 5/hour in prod; keep it tight here so test 8.10 stays fast.
+      ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 5 }]),
+    ],
+    controllers: [LoanApplicationsController],
+    providers: [
+      { provide: LoanApplicationsService, useValue: service },
+      {
+        provide:  ConfigService,
+        useValue: { get: (key: string) => (key === 'app' ? { loan_applications_open } : undefined) },
+      },
+      LoanApplicationsOpenGuard,
+      BotTrapGuard,
+      LoanApplicationsThrottlerGuard,
+    ],
+  }).compile();
+
+  const app = module.createNestApplication();
+  app.useGlobalFilters(new GlobalExceptionFilter());
+  await app.init();
+  return app;
+}
+
+describe('LoanApplicationsController (integration) — intake closed', () => {
+  let app: INestApplication;
+  let service: { create: jest.Mock };
+
+  beforeEach(async () => {
+    service = { create: jest.fn() };
+    app = await build_app(service, false);
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('rejects a valid submission with 403 LOAN_APPLICATIONS_CLOSED and persists nothing', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/loan-applications')
+      .send(valid_body())
+      .expect(403);
+
+    expect(res.body.error.code).toBe('LOAN_APPLICATIONS_CLOSED');
+    expect(service.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects before validation — an invalid body still gets 403, not 400', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/loan-applications')
+      .send({ first_name: '' })
+      .expect(403);
+
+    expect(res.body.error.code).toBe('LOAN_APPLICATIONS_CLOSED');
+  });
+
+  it('rejects before the bot trap — a honeypot submission gets 403, not a silent 201', async () => {
+    await request(app.getHttpServer())
+      .post('/loan-applications')
+      .send({ ...valid_body(), website: 'spam' })
+      .expect(403);
+
+    expect(service.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('LoanApplicationsController (integration)', () => {
   let app: INestApplication;
   let service: { create: jest.Mock };
 
   beforeEach(async () => {
     service = { create: jest.fn() };
-
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [
-        // Per-IP cap is 5/hour in prod; keep it tight here so test 8.10 stays fast.
-        ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 5 }]),
-      ],
-      controllers: [LoanApplicationsController],
-      providers: [
-        { provide: LoanApplicationsService, useValue: service },
-        BotTrapGuard,
-        LoanApplicationsThrottlerGuard,
-      ],
-    }).compile();
-
-    app = module.createNestApplication();
-    app.useGlobalFilters(new GlobalExceptionFilter());
-    await app.init();
+    app = await build_app(service, true);
   });
 
   afterEach(async () => {

@@ -22,6 +22,7 @@ import { CreateLoanApplicationDto } from './dto/create-loan-application.dto';
 import { LoanApplicationsService } from './loan-applications.service';
 import { BotTrapGuard, type LoanApplicationDropMarker } from './guards/bot-trap.guard';
 import { LoanApplicationsThrottlerGuard } from './guards/loan-applications-throttler.guard';
+import { LoanApplicationsOpenGuard } from './guards/loan-applications-open.guard';
 import {
   LOAN_APPLICATION_THROTTLE_LIMIT,
   LOAN_APPLICATION_THROTTLE_TTL_MS,
@@ -59,9 +60,10 @@ export class LoanApplicationsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  // Open-switch first: a closed endpoint rejects before anything else runs.
   // Bot-trap MUST come before the throttler so a tripped submission
-  // doesn't consume the per-IP quota. Both run before the validation pipe.
-  @UseGuards(BotTrapGuard, LoanApplicationsThrottlerGuard)
+  // doesn't consume the per-IP quota. All run before the validation pipe.
+  @UseGuards(LoanApplicationsOpenGuard, BotTrapGuard, LoanApplicationsThrottlerGuard)
   @Throttle({
     default: {
       ttl:   LOAN_APPLICATION_THROTTLE_TTL_MS,
@@ -79,10 +81,11 @@ export class LoanApplicationsController {
   )
   @ApiOperation({
     summary:     'Submit a public loan application',
-    description: 'Public, unauthenticated. Persists the application and notifies ops by email. Honeypot + fill-time bot traps silently drop suspicious submissions.',
+    description: 'Public, unauthenticated. Closed unless LOAN_APPLICATIONS_OPEN=true. Persists the application and notifies ops by email. Honeypot + fill-time bot traps silently drop suspicious submissions.',
   })
   @ApiResponse({ status: 201, description: 'Application accepted' })
   @ApiResponse({ status: 400, description: 'Validation failed' })
+  @ApiResponse({ status: 403, description: 'LOAN_APPLICATIONS_CLOSED — public intake is switched off' })
   @ApiResponse({ status: 429, description: 'Rate limited' })
   async create(
     @Body() dto: CreateLoanApplicationDto,

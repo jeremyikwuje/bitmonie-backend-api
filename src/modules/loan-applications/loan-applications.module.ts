@@ -5,6 +5,7 @@ import { LoanApplicationsService } from './loan-applications.service';
 import { LoanApplicationsRepository } from './loan-applications.repository';
 import { BotTrapGuard } from './guards/bot-trap.guard';
 import { LoanApplicationsThrottlerGuard } from './guards/loan-applications-throttler.guard';
+import { LoanApplicationsOpenGuard } from './guards/loan-applications-open.guard';
 import { DatabaseModule } from '@/database/database.module';
 import { OpsAlertsModule } from '@/modules/ops-alerts/ops-alerts.module';
 
@@ -14,6 +15,7 @@ import { OpsAlertsModule } from '@/modules/ops-alerts/ops-alerts.module';
   providers:   [
     LoanApplicationsService,
     LoanApplicationsRepository,
+    LoanApplicationsOpenGuard,
     BotTrapGuard,
     LoanApplicationsThrottlerGuard,
   ],

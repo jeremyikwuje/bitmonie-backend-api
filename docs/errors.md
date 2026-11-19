@@ -135,5 +135,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 | `TRANSACTION_FACTOR_NOT_SET` | 422 | Sensitive op called by a user with neither PIN nor TOTP configured — they must set one before retrying |
 | `IDEMPOTENCY_CONFLICT` | 409 | Duplicate Idempotency-Key in flight |
 | `REPAYMENT_ACCOUNT_NOT_READY` | 422 | User's permanent NGN repayment VA hasn't been provisioned yet (KYC tier-1 incomplete or backed by a non-supportable id type) |
+| `LOAN_APPLICATIONS_CLOSED` | 403 | `POST /v1/loan-applications` called while public intake is closed (`LOAN_APPLICATIONS_OPEN` unset/false — the default) |
 
 Add new codes here before using them in code.

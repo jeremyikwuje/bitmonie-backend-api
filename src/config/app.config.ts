@@ -10,6 +10,9 @@ export interface AppConfig {
   // Optional override for the loans-team intake address. Falls back to
   // internal_alert_email when unset — see OpsAlertsService.alertNewLoanApplication.
   loan_applications_email: string;
+  // Public POST /v1/loan-applications intake. Closed unless explicitly
+  // LOAN_APPLICATIONS_OPEN=true — closed 2026-11 after a bot-spam wave.
+  loan_applications_open: boolean;
   session_secret: string;
 }
 
@@ -21,5 +24,6 @@ export default registerAs('app', (): AppConfig => ({
   log_level: process.env.LOG_LEVEL ?? 'info',
   internal_alert_email: process.env.INTERNAL_ALERT_EMAIL ?? '',
   loan_applications_email: process.env.LOAN_APPLICATIONS_EMAIL ?? '',
+  loan_applications_open: process.env.LOAN_APPLICATIONS_OPEN === 'true',
   session_secret: process.env.SESSION_SECRET ?? '',
 }));
